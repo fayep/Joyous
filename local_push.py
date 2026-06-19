@@ -136,11 +136,13 @@ def make_self_signed_cert():
 
 
 def native_to_bin(png_path: str) -> bytes:
-    """Convert a native LA PNG (L=hi byte, A=lo byte, top-to-bottom) to .bin wire format."""
+    """Convert a native paletted PNG (R=hi byte, G=lo byte in palette) to .bin wire format."""
     import numpy as np
     from PIL import Image
-    arr = np.array(Image.open(png_path).convert('LA'))
-    hi, lo = arr[:, :, 0], arr[:, :, 1]
+    img = Image.open(png_path)
+    idx = np.array(img)
+    pal = np.array(img.getpalette(), dtype=np.uint8).reshape(256, 3)
+    hi, lo = pal[idx, 0], pal[idx, 1]
     return np.stack([hi[::-1], lo[::-1]], axis=2).reshape(-1).tobytes()
 
 

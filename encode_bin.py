@@ -62,6 +62,31 @@ PALETTES = {
 
 HI_BYTES = [0x01, 0x02, 0x03, 0x04, 0x06, 0x07]
 
+# Native PNG format: paletted (mode P), 192 entries used (6 colors × 31 wipe steps).
+# Palette index = hi_index * 32 + lo // 8
+# Palette RGB: R=hi_byte, G=lo_byte, B=0
+_HI_TO_IDX = {v: i for i, v in enumerate(HI_BYTES)}
+_NATIVE_PAL = np.zeros((256, 3), dtype=np.uint8)
+for _hi_i, _hi_v in enumerate(HI_BYTES):
+    for _lo_s in range(31):
+        _NATIVE_PAL[_hi_i * 32 + _lo_s] = [_hi_v, _lo_s * 8, 0]
+
+
+def hi_lo_to_native(hi: np.ndarray, lo: np.ndarray) -> "Image.Image":
+    """Encode hi/lo byte arrays (top-to-bottom) as a paletted PNG image."""
+    hi_idx = np.vectorize(_HI_TO_IDX.get)(hi).astype(np.uint8)
+    idx = (hi_idx * 32 + lo // 8).astype(np.uint8)
+    img = Image.frombytes('P', (hi.shape[1], hi.shape[0]), idx.tobytes())
+    img.putpalette(_NATIVE_PAL.flatten().tolist())
+    return img
+
+
+def native_to_hi_lo(img: "Image.Image"):
+    """Decode a native paletted PNG back to (hi, lo) byte arrays (top-to-bottom)."""
+    idx = np.array(img)
+    pal = np.array(img.getpalette(), dtype=np.uint8).reshape(256, 3)
+    return pal[idx, 0], pal[idx, 1]
+
 # InkJoy frame (default)
 W, H = 1600, 1200
 
@@ -215,9 +240,8 @@ def encode(img_path: str, out_path: str, lo_template: str | None = None,
         native_path = out_path
 
     if native_path:
-        native = Image.fromarray(np.stack([hi, lo], axis=2), 'LA')
-        native.save(native_path, format='PNG', optimize=True)
-        print(f"Written native LA PNG to {native_path} ({os.path.getsize(native_path)} bytes)")
+        hi_lo_to_native(hi, lo).save(native_path, format='PNG', optimize=True)
+        print(f"Written native PNG to {native_path} ({os.path.getsize(native_path)} bytes)")
 
     if not is_png:
         hi_flip = hi[::-1, :]

@@ -46,26 +46,26 @@ FALLBACK = (128, 128, 128)  # unknown index → grey
 WIDTH, HEIGHT = 1600, 1200
 
 
-def decode_transition(data: bytes) -> Image.Image:
-    raw = np.frombuffer(data, dtype=np.uint8).reshape(HEIGHT, WIDTH, 2)
-    lo = raw[:, :, 1]  # wipe order 0-248, stored directly (no scaling)
-    return Image.fromarray(lo[::-1], "L")
-
-
-def decode(data: bytes, palette: dict) -> Image.Image:
+def _bin_to_hi_lo(data: bytes):
     expected = WIDTH * HEIGHT * 2
     if len(data) != expected:
         print(f"Warning: expected {expected} bytes, got {len(data)}", file=sys.stderr)
-
     raw = np.frombuffer(data, dtype=np.uint8).reshape(HEIGHT, WIDTH, 2)
-    hi = raw[:, :, 0]  # color index
+    # stored bottom-to-top; flip to top-to-bottom
+    return raw[::-1, :, 0], raw[::-1, :, 1]
 
+
+def decode_transition(data: bytes) -> Image.Image:
+    _, lo = _bin_to_hi_lo(data)
+    return Image.fromarray(lo, "L")
+
+
+def decode(data: bytes, palette: dict) -> Image.Image:
+    hi, _ = _bin_to_hi_lo(data)
     rgb = np.full((HEIGHT, WIDTH, 3), FALLBACK, dtype=np.uint8)
     for idx, color in palette.items():
         rgb[hi == idx] = color
-
-    # File is stored bottom-to-top
-    return Image.fromarray(rgb[::-1], "RGB")
+    return Image.fromarray(rgb, "RGB")
 
 
 def load(path: str) -> bytes:
