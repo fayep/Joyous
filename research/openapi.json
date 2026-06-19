@@ -1,0 +1,1982 @@
+{
+  "openapi": "3.1.0",
+  "components": {
+    "schemas": {
+      "AlbumAddPhotoRequest": {
+        "description": "Add a single photo to an album via multipart/form-data",
+        "type": "object",
+        "required": [
+          "albumId",
+          "file"
+        ],
+        "properties": {
+          "albumId": {
+            "type": "string",
+            "description": "Album ID",
+            "pattern": "\\S"
+          },
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "Image file to upload (jpg, png)"
+          }
+        }
+      },
+      "AlbumCreateRequest": {
+        "description": "Create or rename album request",
+        "type": "object",
+        "properties": {
+          "albumName": {
+            "type": "string",
+            "description": "Album name",
+            "examples": [
+              "My Album"
+            ]
+          }
+        }
+      },
+      "AlbumDeleteImgRequest": {
+        "description": "Remove photos from album request body",
+        "type": "object",
+        "required": [
+          "albumId",
+          "imgIdList"
+        ],
+        "properties": {
+          "albumId": {
+            "type": "string",
+            "description": "Album ID",
+            "pattern": "\\S"
+          },
+          "imgIdList": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Image ID list to remove",
+            "minItems": 1
+          }
+        }
+      },
+      "AlbumDetailDTO": {
+        "description": "Album detail",
+        "type": "object",
+        "properties": {
+          "albumId": {
+            "type": "string",
+            "description": "Album ID",
+            "examples": [
+              "b2a2f3a5-7b4c-4d9d-9d3d-2f28b1a9a111"
+            ]
+          },
+          "albumName": {
+            "type": "string",
+            "description": "Album name",
+            "examples": [
+              "My Album"
+            ]
+          },
+          "coverImg": {
+            "type": "string",
+            "description": "Album cover image URL (signed)",
+            "examples": [
+              "https://cdn.example.com/xxx"
+            ]
+          },
+          "coverImgThumbnail": {
+            "type": "string",
+            "description": "Album cover thumbnail URL (signed)",
+            "examples": [
+              "https://cdn.example.com/xxx_thumb"
+            ]
+          },
+          "owner": {
+            "type": "string",
+            "description": "Owner type. Allowed values: PRIVATE, TEMPORARY, SYSTEM, PUBLIC, OFFICIAL",
+            "examples": [
+              "PRIVATE"
+            ]
+          },
+          "imgCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of photos in album",
+            "examples": [
+              12
+            ]
+          }
+        }
+      },
+      "AlbumDetailResponse": {
+        "description": "Response containing album detail",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AlbumDetailDTO"
+          }
+        }
+      },
+      "AlbumImgVisitSignRequest": {
+        "description": "Generate signed visit URL request body",
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string",
+            "description": "File URI (object key)",
+            "examples": [
+              "123/open/album/xxx.jpg"
+            ],
+            "pattern": "\\S"
+          }
+        }
+      },
+      "AlbumListImgRequest": {
+        "description": "List album photos request body",
+        "type": "object",
+        "required": [
+          "albumId"
+        ],
+        "properties": {
+          "albumId": {
+            "type": "string",
+            "description": "Album ID",
+            "pattern": "\\S"
+          }
+        }
+      },
+      "AlbumListResponse": {
+        "description": "Response containing a list of albums",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlbumDetailDTO"
+            }
+          }
+        }
+      },
+      "AlbumPhotoDetailDTO": {
+        "description": "Album photo detail",
+        "type": "object",
+        "properties": {
+          "imgId": {
+            "type": "string",
+            "description": "Image ID in album",
+            "examples": [
+              "a77e0c0b-6c2b-4c8f-a2a4-9d3f1a1d2b3c"
+            ]
+          },
+          "originUri": {
+            "type": "string",
+            "description": "Stored origin URI (object key)",
+            "examples": [
+              "123/open/album/xxx.jpg"
+            ]
+          },
+          "originUrl": {
+            "type": "string",
+            "description": "Signed URL for origin image",
+            "examples": [
+              "https://cdn.example.com/xxx.jpg"
+            ]
+          },
+          "thumbnailUrl": {
+            "type": "string",
+            "description": "Signed URL for thumbnail image",
+            "examples": [
+              "https://cdn.example.com/xxx_thumb.jpg"
+            ]
+          }
+        }
+      },
+      "AlbumPhotoListResponse": {
+        "description": "Response containing a list of album photos",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlbumPhotoDetailDTO"
+            }
+          }
+        }
+      },
+      "DeviceCurrentStatusDTO": {
+        "description": "Current status of the device",
+        "type": "object",
+        "properties": {
+          "wifi": {
+            "type": "string",
+            "description": "WiFi switch. Allowed values: on, off",
+            "examples": [
+              "on"
+            ]
+          },
+          "ble": {
+            "type": "string",
+            "description": "Bluetooth switch. Allowed values: on, off",
+            "examples": [
+              "on"
+            ]
+          },
+          "tf": {
+            "type": "string",
+            "description": "TF card status. Allowed values: present, absent",
+            "examples": [
+              "present"
+            ]
+          },
+          "tfsize": {
+            "type": "number",
+            "description": "TF card total size (GB)",
+            "examples": [
+              32.0
+            ]
+          },
+          "tfused": {
+            "type": "number",
+            "description": "TF card used size (GB)",
+            "examples": [
+              2.5
+            ]
+          },
+          "orientation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Device orientation. Allowed values: 0 (Portrait), 90 (Landscape Left), 180 (Upside-down), 270 (Landscape Right)",
+            "examples": [
+              0
+            ]
+          },
+          "battery": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Battery level (0-100)",
+            "examples": [
+              85
+            ]
+          },
+          "wifiRssi": {
+            "type": "integer",
+            "format": "int32",
+            "description": "WiFi signal strength (dBm)",
+            "examples": [
+              -45
+            ]
+          },
+          "wifiName": {
+            "type": "string",
+            "description": "Connected WiFi SSID",
+            "examples": [
+              "MyHomeWiFi"
+            ]
+          },
+          "bleRssi": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Bluetooth signal strength (dBm)",
+            "examples": [
+              -60
+            ]
+          },
+          "version": {
+            "type": "string",
+            "description": "ESP firmware version",
+            "examples": [
+              "1.0.5"
+            ]
+          },
+          "countryCode": {
+            "type": "string",
+            "description": "Country code",
+            "examples": [
+              "US"
+            ]
+          },
+          "fpgaVer": {
+            "type": "string",
+            "description": "FPGA version",
+            "examples": [
+              "1.0.2"
+            ]
+          }
+        }
+      },
+      "DeviceDetailDTO": {
+        "description": "Device detail information",
+        "type": "object",
+        "properties": {
+          "deviceId": {
+            "type": "string",
+            "description": "Device ID",
+            "examples": [
+              "dev_123456"
+            ]
+          },
+          "deviceName": {
+            "type": "string",
+            "description": "Device Name",
+            "examples": [
+              "Living Room Frame"
+            ]
+          },
+          "resolution": {
+            "description": "Resolution information",
+            "type": "object",
+            "$ref": "#/components/schemas/Resolution"
+          },
+          "status": {
+            "type": "string",
+            "description": "Online status. Allowed values: ONLINE, OFFLINE, SLEEPING",
+            "examples": [
+              "ONLINE"
+            ]
+          },
+          "orientation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Device orientation. Allowed values: 0 (Portrait), 90 (Landscape Left), 180 (Upside-down), 270 (Landscape Right)",
+            "examples": [
+              0
+            ]
+          },
+          "lastPlayThumbnailUrl": {
+            "type": "string",
+            "description": "Last played thumbnail URL"
+          },
+          "currentStatus": {
+            "description": "Full current status data of the device",
+            "type": "object",
+            "$ref": "#/components/schemas/DeviceCurrentStatusDTO"
+          }
+        }
+      },
+      "DeviceListResponse": {
+        "description": "Response containing a list of devices",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceDetailDTO"
+            }
+          }
+        }
+      },
+      "DevicePlayStrategyDetailDTO": {
+        "description": "Carousel list item (widget-related fields omitted)",
+        "type": "object",
+        "properties": {
+          "strategyId": {
+            "type": "string",
+            "description": "Strategy ID",
+            "examples": [
+              "9e6f6f52-1f67-4f6e-8e9c-6b51d7d0c0aa"
+            ]
+          },
+          "deviceId": {
+            "type": "string",
+            "description": "Device ID",
+            "examples": [
+              "dev_123456"
+            ]
+          },
+          "device": {
+            "description": "Device detail",
+            "type": "object",
+            "$ref": "#/components/schemas/DeviceDetailDTO"
+          },
+          "strategyType": {
+            "type": "string",
+            "description": "Strategy type. Allowed values: TRIGGER_ON_SERVER (server triggered), TRIGGER_ON_DEVICE (device triggered), FULL_DEVICE (fully controlled by device)",
+            "examples": [
+              "TRIGGER_ON_SERVER"
+            ]
+          },
+          "updateType": {
+            "type": "string",
+            "description": "Update time type. Allowed values: FIXED (use updateTimeList), INTERVAL (use beginTime/endTime/intervalMinutes)",
+            "examples": [
+              "FIXED"
+            ]
+          },
+          "updateDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Update frequency in days",
+            "examples": [
+              1
+            ]
+          },
+          "updateTimeList": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Update time list (HH:mm)",
+            "examples": [
+              [
+                "08:00",
+                "20:00"
+              ]
+            ]
+          },
+          "beginTime": {
+            "type": "string",
+            "description": "Begin time (HH:mm)",
+            "examples": [
+              "08:00"
+            ]
+          },
+          "endTime": {
+            "type": "string",
+            "description": "End time (HH:mm)",
+            "examples": [
+              "20:00"
+            ]
+          },
+          "intervalMinutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Interval minutes when updateType=INTERVAL",
+            "examples": [
+              60
+            ]
+          },
+          "playOrder": {
+            "type": "string",
+            "description": "Play order. Allowed values: SEQUENTIALLY, SHUFFLE",
+            "examples": [
+              "SEQUENTIALLY"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Status. Allowed values: ACTIVE, INACTIVE",
+            "examples": [
+              "ACTIVE"
+            ]
+          },
+          "orientation": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Orientation. Allowed values: 0 (Portrait), 90 (Landscape Left), 180 (Upside-down), 270 (Landscape Right)",
+            "examples": [
+              0
+            ]
+          },
+          "playNow": {
+            "type": "boolean",
+            "description": "Play immediately",
+            "examples": [
+              true
+            ]
+          },
+          "idle": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Idle after play. Allowed values: 0 (sleep), 1 (no sleep)",
+            "examples": [
+              0
+            ]
+          },
+          "timezone": {
+            "type": "string",
+            "description": "Timezone ID",
+            "examples": [
+              "Asia/Shanghai"
+            ]
+          },
+          "albumIdList": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Album ID list"
+          },
+          "albumList": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlbumDetailDTO"
+            },
+            "description": "Album list"
+          },
+          "imgCount": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total image count",
+            "examples": [
+              10
+            ]
+          },
+          "widgetKey": {
+            "type": "string",
+            "description": "Widget key, present when strategyType is widget-based"
+          },
+          "widget": {
+            "description": "Widget detail information",
+            "type": "object",
+            "$ref": "#/components/schemas/WidgetDetailDTO"
+          },
+          "cddExtend": {
+            "description": "Countdown day widget extend configuration",
+            "type": "object",
+            "$ref": "#/components/schemas/WidgetCddExtendDTO"
+          },
+          "moonExtend": {
+            "description": "Moon phase widget extend configuration",
+            "type": "object",
+            "$ref": "#/components/schemas/WidgetMoonExtendDTO"
+          },
+          "skyCanvasExtend": {
+            "description": "Weather canvas widget extend configuration",
+            "type": "object",
+            "$ref": "#/components/schemas/WidgetSkyCanvasExtendDTO"
+          },
+          "calendarExtend": {
+            "description": "Calendar widget extend configuration",
+            "type": "object",
+            "$ref": "#/components/schemas/WidgetCalendarExtendDTO"
+          }
+        }
+      },
+      "DevicePlayStrategyListRequest": {
+        "description": "List carousels request body",
+        "type": "object",
+        "properties": {
+          "deviceId": {
+            "type": "string",
+            "description": "Filter by device ID",
+            "examples": [
+              "dev_123456"
+            ]
+          }
+        }
+      },
+      "DevicePlayStrategyListResponse": {
+        "description": "Response containing a list of carousels (device play strategies)",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DevicePlayStrategyDetailDTO"
+            }
+          }
+        }
+      },
+      "DevicePlayStrategyResponse": {
+        "description": "Response containing a carousel (device play strategy)",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/DevicePlayStrategyDetailDTO"
+          }
+        }
+      },
+      "DevicePlayStrategySaveRequest": {
+        "description": "Create carousel request body",
+        "type": "object",
+        "required": [
+          "deviceId",
+          "playOrder",
+          "albumIdList",
+          "timezone"
+        ],
+        "properties": {
+          "deviceId": {
+            "type": "string",
+            "description": "Device ID",
+            "examples": [
+              "dev_123456"
+            ],
+            "pattern": "\\S"
+          },
+          "strategyType": {
+            "type": "string",
+            "description": "Strategy type. Allowed values: TRIGGER_ON_SERVER (server triggered), TRIGGER_ON_DEVICE (device triggered), FULL_DEVICE (fully controlled by device)",
+            "examples": [
+              "TRIGGER_ON_SERVER"
+            ]
+          },
+          "updateType": {
+            "type": "string",
+            "description": "Update time type. Allowed values: FIXED (use updateTimeList), INTERVAL (use beginTime/endTime/intervalMinutes)",
+            "examples": [
+              "FIXED"
+            ]
+          },
+          "updateDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Update frequency in days",
+            "examples": [
+              1
+            ]
+          },
+          "updateTimeList": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Update time list (HH:mm)",
+            "examples": [
+              [
+                "08:00",
+                "20:00"
+              ]
+            ]
+          },
+          "beginTime": {
+            "type": "string",
+            "description": "Begin time (HH:mm)",
+            "examples": [
+              "08:00"
+            ]
+          },
+          "endTime": {
+            "type": "string",
+            "description": "End time (HH:mm)",
+            "examples": [
+              "20:00"
+            ]
+          },
+          "intervalMinutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Interval minutes when updateType=INTERVAL",
+            "examples": [
+              60
+            ]
+          },
+          "playOrder": {
+            "type": "string",
+            "description": "Play order. Allowed values: SEQUENTIALLY, SHUFFLE",
+            "examples": [
+              "SEQUENTIALLY"
+            ],
+            "pattern": "\\S"
+          },
+          "albumIdList": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Album ID list as image source",
+            "minItems": 1
+          },
+          "playNow": {
+            "type": "boolean",
+            "description": "Play immediately after creation",
+            "examples": [
+              true
+            ]
+          },
+          "idle": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Idle after play. Allowed values: 0 (sleep), 1 (no sleep)",
+            "examples": [
+              0
+            ]
+          },
+          "timezone": {
+            "type": "string",
+            "description": "Timezone ID, will also be injected into request header 'timezone' for downstream",
+            "examples": [
+              "Asia/Shanghai"
+            ],
+            "pattern": "\\S"
+          },
+          "status": {
+            "type": "string",
+            "description": "Status. Allowed values: ACTIVE, INACTIVE",
+            "examples": [
+              "ACTIVE",
+              "INACTIVE"
+            ]
+          }
+        }
+      },
+      "DevicePubkeyResponse": {
+        "description": "Response containing latest device pubkey report",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/DevicePubkeyResult"
+          }
+        }
+      },
+      "DevicePubkeyResult": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "source": {
+            "type": "string"
+          },
+          "panel": {
+            "type": "string"
+          },
+          "stamac": {
+            "type": "string"
+          },
+          "uid": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "key_epoch": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "alg": {
+            "type": "string"
+          },
+          "pubkey_b64": {
+            "type": "string"
+          },
+          "fingerprint_sha256": {
+            "type": "string"
+          }
+        }
+      },
+      "DevicePublishAlbumRequest": {
+        "description": "Publish an existing album image to device request body",
+        "type": "object",
+        "required": [
+          "deviceId",
+          "albumId",
+          "imgId"
+        ],
+        "properties": {
+          "deviceId": {
+            "type": "string",
+            "description": "ID of the device",
+            "examples": [
+              "dev_123456"
+            ],
+            "pattern": "\\S"
+          },
+          "albumId": {
+            "type": "string",
+            "description": "Album ID",
+            "examples": [
+              "b2a2f3a5-7b4c-4d9d-9d3d-2f28b1a9a111"
+            ],
+            "pattern": "\\S"
+          },
+          "imgId": {
+            "type": "string",
+            "description": "Image ID in album",
+            "examples": [
+              "a77e0c0b-6c2b-4c8f-a2a4-9d3f1a1d2b3c"
+            ],
+            "pattern": "\\S"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "Current timezone ID (e.g., Asia/Shanghai, Europe/Paris)",
+            "examples": [
+              "Asia/Shanghai",
+              "Europe/Paris"
+            ]
+          }
+        }
+      },
+      "DevicePublishRequest": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "Image file to upload (jpg, png)"
+          },
+          "url": {
+            "type": "string",
+            "description": "Image URL (http or https), e.g., https://example.com/image.jpg"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "Current timezone ID (e.g., Asia/Shanghai, Europe/Paris)",
+            "examples": [
+              "Asia/Shanghai",
+              "Europe/Paris"
+            ]
+          }
+        }
+      },
+      "DevicePublishResponse": {
+        "description": "Response containing publish result (play record ID)",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "LoginDataDTO": {
+        "description": "Login response containing token",
+        "type": "object",
+        "properties": {
+          "uid": {
+            "type": "string",
+            "description": "User ID",
+            "examples": [
+              "user_123"
+            ]
+          },
+          "token": {
+            "type": "string",
+            "description": "JWT Token",
+            "examples": [
+              "eyJhbGciOiJIUzI1NiIs..."
+            ]
+          },
+          "expireAt": {
+            "description": "Token expire time",
+            "type": "string",
+            "examples": [
+              "2026-06-01T00:00:00.000Z"
+            ],
+            "$ref": "#/components/schemas/ZonedDateTime"
+          }
+        }
+      },
+      "LoginRequest": {
+        "description": "User login request body",
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "User email address",
+            "examples": [
+              "user@example.com"
+            ],
+            "pattern": "\\S"
+          },
+          "password": {
+            "type": "string",
+            "description": "User password",
+            "examples": [
+              "password123"
+            ],
+            "pattern": "\\S"
+          }
+        }
+      },
+      "LoginResponse": {
+        "description": "Response containing login result",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/LoginDataDTO"
+          }
+        }
+      },
+      "Resolution": {
+        "type": "object",
+        "description": "Resolution details",
+        "properties": {
+          "width": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Width",
+            "examples": [
+              1200
+            ]
+          },
+          "height": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Height",
+            "examples": [
+              1600
+            ]
+          }
+        }
+      },
+      "StringApiResponse": {
+        "description": "Response containing a string value",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "type": "string"
+          }
+        }
+      },
+      "VoidApiResponse": {
+        "description": "Response without data",
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "WidgetCalendarExtendDTO": {
+        "type": "object",
+        "description": "Calendar widget extend configuration",
+        "properties": {
+          "imgUri": {
+            "type": "string",
+            "description": "Image URI path"
+          },
+          "imgUrl": {
+            "type": "string",
+            "description": "Image URL"
+          },
+          "imgThumbnailUrl": {
+            "type": "string",
+            "description": "Image thumbnail URL"
+          }
+        }
+      },
+      "WidgetCddExtendDTO": {
+        "type": "object",
+        "description": "Countdown day widget extend info",
+        "properties": {
+          "imgUri": {
+            "type": "string",
+            "description": "Image URI path"
+          },
+          "imgUrl": {
+            "type": "string",
+            "description": "Image URL"
+          },
+          "imgThumbnailUrl": {
+            "type": "string",
+            "description": "Image thumbnail URL"
+          },
+          "targetDate": {
+            "type": "string",
+            "description": "Target date"
+          },
+          "title": {
+            "type": "string",
+            "description": "Title (1-25 characters)"
+          },
+          "mainColor": {
+            "type": "string",
+            "description": "Main color"
+          },
+          "subColor": {
+            "type": "string",
+            "description": "Sub color"
+          },
+          "blurRadius": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Blur radius"
+          },
+          "template": {
+            "type": "string",
+            "description": "Template"
+          },
+          "showEndDate": {
+            "type": "boolean",
+            "description": "Whether to show end date"
+          },
+          "dateStyle": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Date style"
+          }
+        },
+        "required": [
+          "targetDate",
+          "title"
+        ]
+      },
+      "WidgetDetailDTO": {
+        "type": "object",
+        "description": "Widget detail",
+        "properties": {
+          "widgetKey": {
+            "type": "string",
+            "description": "Widget key"
+          },
+          "widgetName": {
+            "type": "string",
+            "description": "Widget name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Widget description"
+          },
+          "logoUrl": {
+            "type": "string",
+            "description": "Logo URL"
+          },
+          "previewUrl": {
+            "type": "string",
+            "description": "Preview URL"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether enabled"
+          },
+          "templateList": {
+            "type": "array",
+            "items": {},
+            "description": "Template list"
+          }
+        }
+      },
+      "WidgetMoonExtendDTO": {
+        "type": "object",
+        "description": "Moon phase widget extend info",
+        "required": [
+          "lat",
+          "lon",
+          "templateName",
+          "textureStyle",
+          "bgColor"
+        ],
+        "properties": {
+          "lat": {
+            "type": "number",
+            "description": "Latitude"
+          },
+          "lon": {
+            "type": "number",
+            "description": "Longitude"
+          },
+          "templateName": {
+            "type": "string",
+            "description": "Template name"
+          },
+          "textureStyle": {
+            "type": "string",
+            "description": "Texture style"
+          },
+          "bgColor": {
+            "type": "string",
+            "description": "Background color"
+          }
+        }
+      },
+      "WidgetSkyCanvasExtendDTO": {
+        "type": "object",
+        "description": "Weather canvas widget extend configuration",
+        "properties": {
+          "imgUri": {
+            "type": "string",
+            "description": "Image URI path"
+          },
+          "lat": {
+            "type": "number",
+            "description": "Latitude"
+          },
+          "lon": {
+            "type": "number",
+            "description": "Longitude"
+          },
+          "imageSource": {
+            "type": "string",
+            "description": "Image source"
+          },
+          "categoryIdMap": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int64"
+              }
+            },
+            "description": "Custom category ID map"
+          },
+          "albumId": {
+            "type": "string",
+            "description": "User album ID"
+          },
+          "dateStyle": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Date style"
+          },
+          "showTemp": {
+            "type": "boolean",
+            "description": "Whether to show temperature"
+          },
+          "showWeatherDesc": {
+            "type": "boolean",
+            "description": "Whether to show weather description"
+          },
+          "showDate": {
+            "type": "boolean",
+            "description": "Whether to show date"
+          },
+          "useFahrenheit": {
+            "type": "boolean",
+            "description": "Whether to use Fahrenheit"
+          },
+          "showTomorrow": {
+            "type": "boolean",
+            "description": "Whether to show tomorrow's weather"
+          },
+          "showCity": {
+            "type": "boolean",
+            "description": "Whether to show city name"
+          },
+          "cityName": {
+            "type": "string",
+            "description": "City name"
+          },
+          "templateName": {
+            "type": "string",
+            "description": "Template name"
+          },
+          "blurRadius": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Blur radius"
+          }
+        }
+      },
+      "ZonedDateTime": {
+        "type": "string",
+        "format": "date-time",
+        "examples": [
+          "2022-03-10T12:15:50-04:00"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "SecurityScheme": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Authentication"
+      }
+    }
+  },
+  "info": {
+    "description": "Open API for InkJoy Platform.\n\n## Authentication\nUse `Authorization: Bearer <token>`.\n\n## Base URLs\n- Global: https://openapi.inkjoyframe.com\n- Mainland: https://openapi.advisor.epaperframe.com\n\n## Notes\n- All responses use a unified `Result` wrapper (`code`, `msg`, `data`).\n\n## Demos\n- Web Tool: https://openapi.inkjoyframe.com/inkjoy-web-tool-demo.html\n- NAS Memories: https://github.com/InkJoy-Frame/inkjoy-nas-memories\n",
+    "title": "InkJoy Open API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://openapi.inkjoyframe.com",
+      "description": "Global Server"
+    },
+    {
+      "url": "https://openapi.advisor.epaperframe.com",
+      "description": "Mainland Server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Albums",
+      "description": "Operations related to personal albums (create, rename, delete, add/remove photos)"
+    },
+    {
+      "name": "Authentication",
+      "description": "Operations related to authentication"
+    },
+    {
+      "name": "Carousels",
+      "description": "Operations related to creating and listing personal album carousels (device play strategies)"
+    },
+    {
+      "name": "Devices",
+      "description": "Operations related to device management and control"
+    }
+  ],
+  "paths": {
+    "/api/v1/album": {
+      "post": {
+        "summary": "Create album",
+        "description": "Creates a personal album for the current user.",
+        "tags": [
+          "Albums"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Album created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/album/img": {
+      "post": {
+        "summary": "Add photo to album",
+        "description": "Uploads an image file via multipart/form-data and adds it into a personal album.",
+        "tags": [
+          "Albums"
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumAddPhotoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Album updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumDetailResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/album/img/del": {
+      "post": {
+        "summary": "Remove photos from album",
+        "description": "Removes photos from a personal album by imgId list.",
+        "tags": [
+          "Albums"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumDeleteImgRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Photos removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoidApiResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/album/img/list": {
+      "post": {
+        "summary": "List album photos",
+        "description": "Lists photos in an album.",
+        "tags": [
+          "Albums"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumListImgRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Photo list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumPhotoListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/album/img/visitSignUrl": {
+      "post": {
+        "summary": "Generate signed visit URL",
+        "description": "Generates a signed URL for visiting an album image URI.",
+        "tags": [
+          "Albums"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumImgVisitSignRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/album/list": {
+      "post": {
+        "summary": "List albums",
+        "description": "Lists personal albums of the current user.",
+        "tags": [
+          "Albums"
+        ],
+        "responses": {
+          "200": {
+            "description": "Album list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/album/{albumId}": {
+      "put": {
+        "summary": "Rename album",
+        "description": "Updates the album name for a personal album.",
+        "tags": [
+          "Albums"
+        ],
+        "parameters": [
+          {
+            "description": "Album ID",
+            "required": true,
+            "name": "albumId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlbumCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Album updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Delete album",
+        "description": "Deletes a personal album.",
+        "tags": [
+          "Albums"
+        ],
+        "parameters": [
+          {
+            "description": "Album ID",
+            "required": true,
+            "name": "albumId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Album deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoidApiResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "summary": "Login by email",
+        "description": "Authenticates a user using email and password, returning a JWT token.",
+        "tags": [
+          "Authentication"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        }
+      }
+    },
+    "/api/v1/devicePlayStrategy": {
+      "post": {
+        "summary": "Create carousel",
+        "description": "Creates a device play strategy that can reference album photos for carousel playback.",
+        "tags": [
+          "Carousels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePlayStrategySaveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Carousel created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevicePlayStrategyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devicePlayStrategy/changeStatus/{strategyId}/{status}": {
+      "put": {
+        "summary": "Change carousel status",
+        "description": "Changes carousel status. Allowed values: ACTIVE, INACTIVE.",
+        "tags": [
+          "Carousels"
+        ],
+        "parameters": [
+          {
+            "description": "New status. Allowed values: ACTIVE, INACTIVE",
+            "required": true,
+            "name": "status",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Carousel strategy ID",
+            "required": true,
+            "name": "strategyId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoidApiResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devicePlayStrategy/list": {
+      "post": {
+        "summary": "List carousels",
+        "description": "Lists carousels (device play strategies) of the current user, including both album and widget strategies.",
+        "tags": [
+          "Carousels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePlayStrategyListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Carousel list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevicePlayStrategyListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devicePlayStrategy/{strategyId}": {
+      "put": {
+        "summary": "Update carousel",
+        "description": "Updates an existing album carousel (device play strategy).",
+        "tags": [
+          "Carousels"
+        ],
+        "parameters": [
+          {
+            "description": "Carousel strategy ID",
+            "required": true,
+            "name": "strategyId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePlayStrategySaveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Carousel updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevicePlayStrategyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Delete carousel",
+        "description": "Deletes an existing album carousel (device play strategy).",
+        "tags": [
+          "Carousels"
+        ],
+        "parameters": [
+          {
+            "description": "Carousel strategy ID",
+            "required": true,
+            "name": "strategyId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Carousel deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoidApiResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices": {
+      "get": {
+        "summary": "List devices",
+        "description": "Retrieves a list of devices bound to the current user.",
+        "tags": [
+          "Devices"
+        ],
+        "responses": {
+          "200": {
+            "description": "List of devices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/publish/album": {
+      "post": {
+        "summary": "Publish album image to device",
+        "description": "Selects an existing image in a personal album and sends it to the specified device for display.",
+        "tags": [
+          "Devices"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePublishAlbumRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Publish successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevicePublishResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{deviceId}/pubkey": {
+      "get": {
+        "summary": "Get latest device pubkey report",
+        "description": "Retrieves the latest pubkey report of the specified device.",
+        "tags": [
+          "Devices"
+        ],
+        "parameters": [
+          {
+            "description": "ID of the device",
+            "required": true,
+            "name": "deviceId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest pubkey report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevicePubkeyResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/devices/{deviceId}/publish": {
+      "post": {
+        "summary": "Publish image to device",
+        "description": "Sends a single image to the specified device for display. Supports uploading a file or providing an image URL.",
+        "tags": [
+          "Devices"
+        ],
+        "parameters": [
+          {
+            "description": "ID of the device",
+            "required": true,
+            "name": "deviceId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Publish successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevicePublishResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    }
+  }
+}
