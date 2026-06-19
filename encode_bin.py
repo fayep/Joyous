@@ -27,6 +27,7 @@ import pillow_heif
 pillow_heif.register_heif_opener()
 
 import argparse
+import os
 import struct
 import sys
 import math
@@ -171,7 +172,7 @@ def load_lo_template(path: str) -> np.ndarray:
 
 def encode(img_path: str, out_path: str, lo_template: str | None = None,
            crop_bottom: bool = False, portrait: bool = False, gamma: float = 1.0,
-           target: str = 'inkjoy'):
+           target: str = 'inkjoy', native_path: str | None = None):
     tw, th = RESOLUTIONS.get(target, RESOLUTIONS['inkjoy'])
     img = Image.open(img_path).convert('RGB')
     if crop_bottom:
@@ -200,28 +201,28 @@ def encode(img_path: str, out_path: str, lo_template: str | None = None,
     print(f"Dithering {tw}×{th} image with Stucki in RGB space...", flush=True)
     indices = stucki_dither(img_np, palette)
 
-    is_png = out_path.lower().endswith('.png')
-
-    if is_png:
-        # Map palette indices back to exact RGB values and save as PNG.
-        # Every pixel is an exact Spectra 6 color so the display's internal
-        # quantizer passes them through unchanged.
-        rgb_out = palette[indices].astype(np.uint8)
-        Image.fromarray(rgb_out, 'RGB').save(out_path)
-        print(f"Written {tw}×{th} pre-dithered PNG to {out_path}")
+    if lo_template:
+        print(f"Loading lo-byte from {lo_template}...")
+        lo = load_lo_template(lo_template)
     else:
-        if lo_template:
-            print(f"Loading lo-byte from {lo_template}...")
-            lo = load_lo_template(lo_template)
-        else:
-            print("Generating clock wipe lo-byte...")
-            lo = make_clock_wipe_lo(tw, th)
+        print("Generating clock wipe lo-byte...")
+        lo = make_clock_wipe_lo(tw, th)
 
-        hi = np.array([[HI_BYTES[i] for i in row] for row in indices], dtype=np.uint8)
+    hi = np.array([[HI_BYTES[i] for i in row] for row in indices], dtype=np.uint8)
+
+    is_png = out_path.lower().endswith('.png')
+    if is_png:
+        native_path = out_path
+
+    if native_path:
+        native = Image.fromarray(np.stack([hi, lo], axis=2), 'LA')
+        native.save(native_path, format='PNG', optimize=True)
+        print(f"Written native LA PNG to {native_path} ({os.path.getsize(native_path)} bytes)")
+
+    if not is_png:
         hi_flip = hi[::-1, :]
         lo_flip = lo[::-1, :]
         out = np.stack([hi_flip, lo_flip], axis=2).reshape(-1)
-
         with open(out_path, 'wb') as f:
             f.write(bytes(out))
         print(f"Written {len(out)} bytes to {out_path}")
@@ -235,10 +236,38 @@ def encode(img_path: str, out_path: str, lo_template: str | None = None,
         print(f"  {labels[u]:6s}: {c:7d} ({100*c/total:.1f}%)")
 
 
+def compose(dithered_path: str, transition_path: str, out_path: str, target: str = 'inkjoy'):
+    """Combine a pre-dithered RGB PNG + greyscale transition PNG into a .bin."""
+    palette = PALETTES.get(target, PALETTE_INKJOY)
+
+    dithered = np.array(Image.open(dithered_path).convert('RGB'), dtype=np.float64)
+    h, w = dithered.shape[:2]
+
+    # Map each pixel to nearest palette color → palette index → HI_BYTE
+    flat = dithered.reshape(-1, 3)
+    dists = np.sum((flat[:, None, :] - palette[None, :, :]) ** 2, axis=2)
+    indices = np.argmin(dists, axis=1).reshape(h, w).astype(np.uint8)
+    hi = np.vectorize(HI_BYTES.__getitem__)(indices).astype(np.uint8)
+
+    # Load transition greyscale — values stored directly as lo bytes (0-248, no scaling)
+    lo = np.array(Image.open(transition_path).convert('L'), dtype=np.uint8)
+
+    out = np.stack([hi[::-1], lo[::-1]], axis=2).reshape(-1)
+    with open(out_path, 'wb') as f:
+        f.write(bytes(out))
+
+    unique, counts = np.unique(indices, return_counts=True)
+    labels = ['black', 'white', 'yellow', 'red', 'blue', 'green']
+    print(f"Written {len(out)} bytes to {out_path}")
+    print("\nColor balance:")
+    for u, c in zip(unique, counts):
+        print(f"  {labels[u]:6s}: {c:7d} ({c/h/w:.1%})")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Encode image to InkJoy .bin")
-    parser.add_argument("input", help="Input image path")
-    parser.add_argument("output", help="Output .bin path")
+    parser.add_argument("input", nargs='?', help="Input image path")
+    parser.add_argument("output", nargs='?', help="Output .bin path")
     parser.add_argument("--lo-template", help="Reference .bin to copy lo-byte wipe pattern from")
     parser.add_argument("--crop-bottom", action="store_true",
                         help="Crop the bottom portion before encoding (aspect matches --portrait)")
@@ -248,8 +277,21 @@ def main():
                         help="Gamma correction before dithering (>1 reduces highlights, e.g. 1.3)")
     parser.add_argument("--target", choices=list(RESOLUTIONS.keys()), default='inkjoy',
                         help="Target display (affects resolution and output format)")
+    parser.add_argument("--save-native", metavar="PATH",
+                        help="Also save a compact lossless LA PNG (L=color index, A=wipe order)")
+    parser.add_argument("--compose", nargs=2, metavar=("DITHERED_PNG", "TRANSITION_PNG"),
+                        help="Combine pre-dithered RGB PNG + greyscale transition PNG into .bin")
     args = parser.parse_args()
-    encode(args.input, args.output, args.lo_template, args.crop_bottom, args.portrait, args.gamma, args.target)
+
+    if args.compose:
+        out = args.output or args.input
+        if not out:
+            parser.error("output path required with --compose")
+        compose(args.compose[0], args.compose[1], out, args.target)
+    elif args.input and args.output:
+        encode(args.input, args.output, args.lo_template, args.crop_bottom, args.portrait, args.gamma, args.target, args.save_native)
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":

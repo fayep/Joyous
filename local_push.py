@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["paho-mqtt", "requests"]
+# dependencies = ["paho-mqtt", "requests", "Pillow", "numpy"]
 # ///
 """
 InkJoy local bin push — bypasses server, hosts bin locally, triggers frame via MQTT.
@@ -135,10 +135,24 @@ def make_self_signed_cert():
     return cert, key
 
 
-def push_local(bin_path: str, local_ip: str, port: int, use_tls: bool = False, play_json: dict | None = None):
+def native_to_bin(png_path: str) -> bytes:
+    """Convert a native LA PNG (L=hi byte, A=lo byte, top-to-bottom) to .bin wire format."""
+    import numpy as np
+    from PIL import Image
+    arr = np.array(Image.open(png_path).convert('LA'))
+    hi, lo = arr[:, :, 0], arr[:, :, 1]
+    return np.stack([hi[::-1], lo[::-1]], axis=2).reshape(-1).tobytes()
+
+
+def push_local(bin_path: str, local_ip: str, port: int, use_tls: bool = False, play_json: dict | None = None, native: bool = False):
     """Host the bin and send a crafted play message to the frame."""
-    BinServer.bin_data = open(bin_path, 'rb').read()
-    BinServer.bin_name = os.path.basename(bin_path)
+    if native:
+        print(f"Converting native PNG {bin_path} → .bin…")
+        BinServer.bin_data = native_to_bin(bin_path)
+        BinServer.bin_name = os.path.splitext(os.path.basename(bin_path))[0] + '.bin'
+    else:
+        BinServer.bin_data = open(bin_path, 'rb').read()
+        BinServer.bin_name = os.path.basename(bin_path)
 
     global _tls
     _tls = use_tls
@@ -232,7 +246,9 @@ def main():
     cap.add_argument('--listen', type=int, default=60)
 
     push = sub.add_parser('push', help='Push local bin to frame')
-    push.add_argument('bin_file')
+    push.add_argument('bin_file', help='.bin file or native LA PNG (with --native)')
+    push.add_argument('--native', action='store_true',
+                      help='Input is a native LA PNG; convert to .bin on the fly')
     push.add_argument('--local-ip', default=None)
     push.add_argument('--port', type=int, default=8080)
     push.add_argument('--tls', action='store_true',
@@ -247,7 +263,7 @@ def main():
     elif args.cmd == 'push':
         ip = args.local_ip or get_local_ip()
         tmpl = json.load(open(args.play_json)) if args.play_json else None
-        push_local(args.bin_file, ip, args.port, args.tls, tmpl)
+        push_local(args.bin_file, ip, args.port, args.tls, tmpl, args.native)
     else:
         parser.print_help()
 
