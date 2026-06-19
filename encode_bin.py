@@ -33,22 +33,31 @@ import math
 import numpy as np
 from PIL import Image
 
-# ISFR-lite internal palette (BGR from sub_1400017b0 → RGB for our use)
-# Palette order matches bin hi-byte values:
-#   index 0 → hi=0x01 (black)
-#   index 1 → hi=0x02 (white)
-#   index 2 → hi=0x03 (yellow)
-#   index 3 → hi=0x04 (red)
-#   index 4 → hi=0x06 (blue)
-#   index 5 → hi=0x07 (green)
-PALETTE_RGB = np.array([
-    [ 30,  30,  30],   # 0x01 black
-    [149, 162, 165],   # 0x02 white
-    [166, 165,  17],   # 0x03 yellow
-    [121,  23,  17],   # 0x04 red
-    [  0,  76, 136],   # 0x06 blue
-    [ 46,  91,  65],   # 0x07 green
+# Palette order: black, white, yellow, red, blue, green
+# InkJoy: muted physical pigment colors (reverse-engineered from ISFR-lite.exe BGR values)
+PALETTE_INKJOY = np.array([
+    [ 30,  30,  30],   # black
+    [149, 162, 165],   # white
+    [166, 165,  17],   # yellow
+    [121,  23,  17],   # red
+    [  0,  76, 136],   # blue
+    [ 46,  91,  65],   # green
 ], dtype=np.float64)
+
+# Samsung EM32DX: sRGB monitor equivalents from official spec sheet
+PALETTE_SAMSUNG = np.array([
+    [  0,   0,   0],   # black  #000000
+    [255, 255, 255],   # white  #FFFFFF
+    [255, 235,   0],   # yellow #FFEB00
+    [154,   0,   0],   # red    #9A0000
+    [  0,  36, 154],   # blue   #00249A
+    [ 20,  85,  16],   # green  #145510
+], dtype=np.float64)
+
+PALETTES = {
+    'inkjoy':  PALETTE_INKJOY,
+    'samsung': PALETTE_SAMSUNG,
+}
 
 HI_BYTES = [0x01, 0x02, 0x03, 0x04, 0x06, 0x07]
 
@@ -65,13 +74,13 @@ RESOLUTIONS = {
 A, B, C, D = 8/42, 4/42, 2/42, 1/42
 
 
-def nearest_color(rgb: np.ndarray) -> int:
+def nearest_color(rgb: np.ndarray, palette: np.ndarray) -> int:
     """Euclidean RGB nearest color — matches sub_140001850."""
-    dists = np.sum((PALETTE_RGB - rgb) ** 2, axis=1)
+    dists = np.sum((palette - rgb) ** 2, axis=1)
     return int(np.argmin(dists))
 
 
-def stucki_dither(img_rgb: np.ndarray) -> np.ndarray:
+def stucki_dither(img_rgb: np.ndarray, palette: np.ndarray) -> np.ndarray:
     """
     Stucki error diffusion in RGB float space.
     img_rgb: (H, W, 3) float64 in [0, 255]
@@ -83,21 +92,20 @@ def stucki_dither(img_rgb: np.ndarray) -> np.ndarray:
         D C B C D
     """
     rows, cols = img_rgb.shape[:2]
-    # Float64 buffer with 2-row lookahead padding
     buf = np.zeros((rows + 4, cols + 4, 3), dtype=np.float64)
-    buf[2:rows+2, 2:cols+2] = img_rgb  # offset by (2 rows, 2 cols) for boundary safety
+    buf[2:rows+2, 2:cols+2] = img_rgb
     out = np.zeros((rows, cols), dtype=np.uint8)
 
     for y in range(rows):
-        brow = y + 2   # buf row index for current image row
-        bcol_base = 2  # buf col offset for image col 0
+        brow = y + 2
+        bcol_base = 2
 
         for x in range(cols):
             bc = bcol_base + x
             pixel = np.clip(buf[brow, bc], 0, 255)
-            idx = nearest_color(pixel)
+            idx = nearest_color(pixel, palette)
             out[y, x] = idx
-            err = pixel - PALETTE_RGB[idx]
+            err = pixel - palette[idx]
 
             # Row 0
             buf[brow,   bc+1] += err * A
@@ -182,13 +190,15 @@ def encode(img_path: str, out_path: str, lo_template: str | None = None,
         print(f"Rotated 90° CCW for portrait display → {img.size}")
     img = img.resize((tw, th), Image.LANCZOS)
 
+    palette = PALETTES.get(target, PALETTE_INKJOY)
+
     img_np = np.array(img, dtype=np.float64)
     if gamma != 1.0:
         img_np = 255.0 * np.power(img_np / 255.0, gamma)
         print(f"Applied gamma {gamma} (highlights {'reduced' if gamma > 1 else 'boosted'})")
 
     print(f"Dithering {tw}×{th} image with Stucki in RGB space...", flush=True)
-    indices = stucki_dither(img_np)
+    indices = stucki_dither(img_np, palette)
 
     is_png = out_path.lower().endswith('.png')
 
@@ -196,7 +206,7 @@ def encode(img_path: str, out_path: str, lo_template: str | None = None,
         # Map palette indices back to exact RGB values and save as PNG.
         # Every pixel is an exact Spectra 6 color so the display's internal
         # quantizer passes them through unchanged.
-        rgb_out = PALETTE_RGB[indices].astype(np.uint8)
+        rgb_out = palette[indices].astype(np.uint8)
         Image.fromarray(rgb_out, 'RGB').save(out_path)
         print(f"Written {tw}×{th} pre-dithered PNG to {out_path}")
     else:
