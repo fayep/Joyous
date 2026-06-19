@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["Pillow", "numpy"]
+# dependencies = ["Pillow", "numpy", "pillow-heif"]
 # ///
 """
 InkJoy local bin encoder — reverse-engineered from ISFR-lite.exe.
@@ -22,6 +22,9 @@ Bin file format (1600×1200, bottom-to-top row order):
 Usage:
     uv run encode_bin.py input.jpg output.bin [--lo-template reference.bin]
 """
+
+import pillow_heif
+pillow_heif.register_heif_opener()
 
 import argparse
 import struct
@@ -49,7 +52,14 @@ PALETTE_RGB = np.array([
 
 HI_BYTES = [0x01, 0x02, 0x03, 0x04, 0x06, 0x07]
 
+# InkJoy frame (default)
 W, H = 1600, 1200
+
+# Known target resolutions
+RESOLUTIONS = {
+    'inkjoy':  (1600, 1200),  # InkJoy portrait frame
+    'samsung': (2560, 1440),  # Samsung EM32DX
+}
 
 # Stucki kernel weights (A=8/42, B=4/42, C=2/42, D=1/42)
 A, B, C, D = 8/42, 4/42, 2/42, 1/42
@@ -108,7 +118,7 @@ def stucki_dither(img_rgb: np.ndarray) -> np.ndarray:
     return out
 
 
-def make_clock_wipe_lo(rows=H, cols=W) -> np.ndarray:
+def make_clock_wipe_lo(cols=1600, rows=1200) -> np.ndarray:
     """
     Generate the lo-byte clock wipe pattern (31 quantized steps, 0-248).
     Square clock wipe: pixels sweep outward from center in clockwise order,
@@ -152,58 +162,59 @@ def load_lo_template(path: str) -> np.ndarray:
 
 
 def encode(img_path: str, out_path: str, lo_template: str | None = None,
-           crop_bottom: bool = False, portrait: bool = False):
+           crop_bottom: bool = False, portrait: bool = False, gamma: float = 1.0,
+           target: str = 'inkjoy'):
+    tw, th = RESOLUTIONS.get(target, RESOLUTIONS['inkjoy'])
     img = Image.open(img_path).convert('RGB')
     if crop_bottom:
         iw, ih = img.size
         if portrait:
-            # Portrait frame: crop ratio is H:W = 1200:1600 = 3:4 (tall)
-            crop_h = round(iw * W / H)  # iw * (4/3) for portrait 3:4 source
+            crop_h = round(iw * tw / th)  # portrait: source height = iw * (tw/th)
         else:
-            # Landscape frame: crop ratio is W:H = 1600:1200 = 4:3 (wide)
-            crop_h = round(iw * H / W)  # iw * (3/4)
+            crop_h = round(iw * th / tw)  # landscape: source height = iw * (th/tw)
         crop_h = min(crop_h, ih)
         top = ih - crop_h
         img = img.crop((0, top, iw, ih))
-        mode = "portrait 3:4" if portrait else "landscape 4:3"
-        print(f"Cropped bottom {mode}: ({0}, {top}, {iw}, {ih}) → {img.size}")
+        ratio = f"{'portrait' if portrait else 'landscape'} {tw}:{th}"
+        print(f"Cropped bottom {ratio}: ({0}, {top}, {iw}, {ih}) → {img.size}")
     if portrait:
-        # Frame display maps bin X→display Y (portrait rotation).
-        # Pre-rotate 90° CW so content appears upright on portrait display.
-        # If image appears upside-down on frame, use --rotate-ccw instead.
         img = img.transpose(Image.ROTATE_90)
         print(f"Rotated 90° CCW for portrait display → {img.size}")
-    img = img.resize((W, H), Image.LANCZOS)
+    img = img.resize((tw, th), Image.LANCZOS)
 
-    # The bin is stored bottom-to-top. ISFR-lite processes top-to-bottom.
-    # We dither top-to-bottom then flip when writing.
-    img_np = np.array(img, dtype=np.float64)  # (H, W, 3), top-to-bottom
+    img_np = np.array(img, dtype=np.float64)
+    if gamma != 1.0:
+        img_np = 255.0 * np.power(img_np / 255.0, gamma)
+        print(f"Applied gamma {gamma} (highlights {'reduced' if gamma > 1 else 'boosted'})")
 
-    print(f"Dithering {W}×{H} image with Stucki in RGB space...", flush=True)
-    indices = stucki_dither(img_np)  # (H, W) palette indices 0-5
+    print(f"Dithering {tw}×{th} image with Stucki in RGB space...", flush=True)
+    indices = stucki_dither(img_np)
 
-    if lo_template:
-        print(f"Loading lo-byte from {lo_template}...")
-        lo = load_lo_template(lo_template)  # (H, W), top-to-bottom display order
+    is_png = out_path.lower().endswith('.png')
+
+    if is_png:
+        # Map palette indices back to exact RGB values and save as PNG.
+        # Every pixel is an exact Spectra 6 color so the display's internal
+        # quantizer passes them through unchanged.
+        rgb_out = PALETTE_RGB[indices].astype(np.uint8)
+        Image.fromarray(rgb_out, 'RGB').save(out_path)
+        print(f"Written {tw}×{th} pre-dithered PNG to {out_path}")
     else:
-        print("Generating clock wipe lo-byte...")
-        lo = make_clock_wipe_lo()  # (H, W), top-to-bottom display order
+        if lo_template:
+            print(f"Loading lo-byte from {lo_template}...")
+            lo = load_lo_template(lo_template)
+        else:
+            print("Generating clock wipe lo-byte...")
+            lo = make_clock_wipe_lo(tw, th)
 
-    # Build bin: bottom-to-top row order
-    # hi byte = HI_BYTES[palette_index]
-    hi = np.array([[HI_BYTES[i] for i in row] for row in indices], dtype=np.uint8)
+        hi = np.array([[HI_BYTES[i] for i in row] for row in indices], dtype=np.uint8)
+        hi_flip = hi[::-1, :]
+        lo_flip = lo[::-1, :]
+        out = np.stack([hi_flip, lo_flip], axis=2).reshape(-1)
 
-    # Interleave hi and lo: each pixel is (hi, lo)
-    # Rows stored bottom-to-top: flip both arrays
-    hi_flip = hi[::-1, :]   # (H, W)
-    lo_flip = lo[::-1, :]   # (H, W)
-
-    out = np.stack([hi_flip, lo_flip], axis=2).reshape(-1)  # (H*W*2,)
-
-    with open(out_path, 'wb') as f:
-        f.write(bytes(out))
-
-    print(f"Written {len(out)} bytes to {out_path}")
+        with open(out_path, 'wb') as f:
+            f.write(bytes(out))
+        print(f"Written {len(out)} bytes to {out_path}")
 
     # Print color balance
     unique, counts = np.unique(indices, return_counts=True)
@@ -222,9 +233,13 @@ def main():
     parser.add_argument("--crop-bottom", action="store_true",
                         help="Crop the bottom portion before encoding (aspect matches --portrait)")
     parser.add_argument("--portrait", action="store_true",
-                        help="Frame is in portrait mode: use 3:4 crop and pre-rotate 90° CW")
+                        help="Frame is in portrait mode: use 3:4 crop and pre-rotate 90° CCW")
+    parser.add_argument("--gamma", type=float, default=1.0,
+                        help="Gamma correction before dithering (>1 reduces highlights, e.g. 1.3)")
+    parser.add_argument("--target", choices=list(RESOLUTIONS.keys()), default='inkjoy',
+                        help="Target display (affects resolution and output format)")
     args = parser.parse_args()
-    encode(args.input, args.output, args.lo_template, args.crop_bottom, args.portrait)
+    encode(args.input, args.output, args.lo_template, args.crop_bottom, args.portrait, args.gamma, args.target)
 
 
 if __name__ == "__main__":
