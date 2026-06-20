@@ -1,12 +1,12 @@
 # Compiled binaries
 inkjoy
-inkjoy-proxy/inkjoy-proxy
-inkjoy-proxy/inkjoy-proxy-mipsle
-InkJoyOfflineTool/
+InkJoy/inkjoy-proxy/inkjoy-proxy
+InkJoy/inkjoy-proxy/inkjoy-proxy-mipsle
+InkJoy/InkJoyOfflineTool/
 images/
 # APK files and decompiled output
 *.apk
-com.inkjoyframe.domus/
+InkJoy/com.inkjoyframe.domus/
 
 # Logs
 *.log
