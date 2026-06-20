@@ -40,6 +40,75 @@ CONTENT_TYPE = "png"
 
 
 # ---------------------------------------------------------------------------
+# SSDP discovery
+# ---------------------------------------------------------------------------
+
+SSDP_ADDR = "239.255.255.250"
+SSDP_PORT = 1900
+SSDP_MX   = 3
+
+def ssdp_discover(timeout: float = SSDP_MX + 1.0, st: str = "ssdp:all") -> list[dict]:
+    """Send an SSDP M-SEARCH and return all responses as dicts with keys: ip, st, usn, location, raw."""
+    msg = (
+        f"M-SEARCH * HTTP/1.1\r\n"
+        f"HOST: {SSDP_ADDR}:{SSDP_PORT}\r\n"
+        f'MAN: "ssdp:discover"\r\n'
+        f"MX: {SSDP_MX}\r\n"
+        f"ST: {st}\r\n"
+        f"\r\n"
+    ).encode()
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+    sock.settimeout(timeout)
+    sock.bind(("", 0))
+    sock.sendto(msg, (SSDP_ADDR, SSDP_PORT))
+
+    seen = {}
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            data, addr = sock.recvfrom(4096)
+        except socket.timeout:
+            break
+        text = data.decode(errors="replace")
+        headers = {}
+        for line in text.splitlines()[1:]:
+            if ":" in line:
+                k, _, v = line.partition(":")
+                headers[k.strip().upper()] = v.strip()
+        ip = addr[0]
+        key = (ip, headers.get("ST", ""), headers.get("USN", ""))
+        if key not in seen:
+            seen[key] = {
+                "ip":       ip,
+                "st":       headers.get("ST", ""),
+                "usn":      headers.get("USN", ""),
+                "location": headers.get("LOCATION", ""),
+                "server":   headers.get("SERVER", ""),
+                "raw":      text,
+            }
+    sock.close()
+    return list(seen.values())
+
+
+def find_samsung(timeout: float = SSDP_MX + 1.0) -> str | None:
+    """Return the IP of the first SSDP responder that looks like the Samsung display, or None."""
+    devices = ssdp_discover(timeout=timeout)
+    for d in devices:
+        combined = f"{d['st']} {d['usn']} {d['server']} {d['location']}".lower()
+        if "samsung" in combined or "epaper" in combined or "mdc" in combined:
+            return d["ip"]
+    # Fallback: if only one device responded from our subnet, assume it's ours
+    subnet = ".".join(SAMSUNG_IP.split(".")[:3]) + "."
+    local = [d for d in devices if d["ip"].startswith(subnet) and d["ip"] != MAC_IP]
+    if len(local) == 1:
+        return local[0]["ip"]
+    return None
+
+
+# ---------------------------------------------------------------------------
 # MDC packet builder
 # Reverse-engineered from MDCContentDownloadCommand.Set.l() in the APK.
 #
@@ -105,6 +174,21 @@ def send_mdc(url: str, ip: str = SAMSUNG_IP, port: int = MDC_PORT, timeout: floa
                 print("  (no response within timeout)", flush=True)
 
 
+def wait_for_wake(ip: str = SAMSUNG_IP, timeout_per_attempt: float = 2.0,
+                  poll_interval: float = 3.0, max_wait: float = 300.0) -> bool:
+    print(f"Waiting for display to wake (press the button on the display)…", flush=True)
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((ip, MDC_PORT), timeout=timeout_per_attempt):
+                print("Display is awake!", flush=True)
+                return True
+        except (OSError, socket.timeout):
+            time.sleep(poll_interval)
+    print(f"Timed out after {max_wait:.0f}s — display never woke.", flush=True)
+    return False
+
+
 def send_wol(mac: str = SAMSUNG_MAC):
     mac_bytes = bytes.fromhex(mac.replace(":", "").replace("-", ""))
     packet = b"\xff" * 6 + mac_bytes * 16
@@ -158,14 +242,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description="Samsung EM32DX MDC image push")
     parser.add_argument("--port", type=int, default=PORT)
-    parser.add_argument("--display-ip", default=SAMSUNG_IP)
+    parser.add_argument("--display-ip", default=None,
+                        help=f"Display IP (default: auto-discover via SSDP, fallback {SAMSUNG_IP})")
     sub = parser.add_subparsers(dest="cmd")
 
     sub.add_parser("serve", help="Start HTTP server (keep running)")
 
+    sub.add_parser("discover", help="SSDP scan and print all devices found")
+
     p = sub.add_parser("push", help="Push image to display via MDC")
     p.add_argument("image", help="Pre-dithered PNG to display")
     p.add_argument("--no-wake", action="store_true", help="Skip WoL")
+    p.add_argument("--wait-for-wake", action="store_true",
+                   help="Poll MDC port until display wakes (press button); skips WoL")
     p.add_argument("--no-mdc", action="store_true", help="Skip MDC command (serve only)")
     p.add_argument("--pin", default=MDC_PIN, help=f"MDC PIN (default: {MDC_PIN})")
 
@@ -173,20 +262,47 @@ def main():
 
     args = parser.parse_args()
 
+    # Resolve display IP: explicit > SSDP > hardcoded fallback
+    display_ip = args.display_ip
+    if display_ip is None and args.cmd in ("push", "wake", "discover", None):
+        if args.cmd != "discover":
+            print("No --display-ip given, scanning via SSDP…", flush=True)
+        found = find_samsung()
+        if found:
+            print(f"Found display at {found}", flush=True)
+            display_ip = found
+        else:
+            display_ip = SAMSUNG_IP
+            if args.cmd != "discover":
+                print(f"SSDP found nothing, falling back to {display_ip}", flush=True)
+
     if args.cmd == "serve":
         print(f"Serving at http://0.0.0.0:{args.port}/", flush=True)
         print(f"Content URL: http://{MAC_IP}:{args.port}/content?id={CONTENT_ID}&content_type={CONTENT_TYPE}", flush=True)
         http.server.HTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
 
+    elif args.cmd == "discover":
+        devices = ssdp_discover()
+        if not devices:
+            print("No SSDP devices found.")
+        for d in devices:
+            print(f"\n  ip={d['ip']}  ST={d['st']}")
+            if d['usn']:      print(f"    USN:      {d['usn']}")
+            if d['server']:   print(f"    Server:   {d['server']}")
+            if d['location']: print(f"    Location: {d['location']}")
+
     elif args.cmd == "push":
         shutil.copy2(args.image, IMAGE_PATH)
         print(f"Image: {args.image} → {IMAGE_PATH}", flush=True)
-        if not args.no_wake:
+        if args.wait_for_wake:
+            if not wait_for_wake(ip=display_ip):
+                return
+        elif not args.no_wake:
             send_wol()
             time.sleep(2)
         if not args.no_mdc:
             url = f"http://{MAC_IP}:{args.port}/content?id={CONTENT_ID}&content_type={CONTENT_TYPE}"
-            send_mdc(url, ip=args.display_ip, pin=args.pin)
+            send_mdc(url, ip=display_ip, pin=args.pin)
 
     elif args.cmd == "wake":
         send_wol()

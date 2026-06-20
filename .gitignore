@@ -2,7 +2,8 @@
 inkjoy
 inkjoy-proxy/inkjoy-proxy
 inkjoy-proxy/inkjoy-proxy-mipsle
-
+InkJoyOfflineTool/
+images/
 # APK files and decompiled output
 *.apk
 com.inkjoyframe.domus/
