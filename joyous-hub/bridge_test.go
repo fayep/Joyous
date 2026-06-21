@@ -52,13 +52,12 @@ func TestParseMQTTConfigMissingFields(t *testing.T) {
 	}
 }
 
-// TestUpstreamAllowDefault: default allow list passes login/heart/play_ack/fpga_ota_ack,
-// blocks everything else.
+// TestUpstreamAllowDefault: default frame→broker list.
 func TestUpstreamAllowDefault(t *testing.T) {
 	allow := DefaultUpstreamAllow()
 
-	mustPass := []string{"login", "heart", "play_ack", "fpga_ota_ack"}
-	mustBlock := []string{"image_refresh", "play", "ota", "mqtt_config", "shutdown", "fpga"}
+	mustPass := []string{"login", "heart", "play_ack", "fpga_ota_ack", "shutdown", "image_refresh_ack", "ota_ack"}
+	mustBlock := []string{"image_refresh", "play", "ota", "mqtt_config", "shutdown_ack", "fpga", "wifi_sleep_ack"}
 
 	for _, action := range mustPass {
 		if !allow.Allows(action) {

@@ -1,27 +1,13 @@
 // inkjoy-proxy — Transparent MQTT MITM proxy for the InkJoy frame.
 //
-// Runs on the EdgeRouter X (MIPS32LE). iptables redirects the frame's TCP
+// Runs on a LAN gateway (MIPS32LE). iptables redirects the frame's TCP
 // connection to port 1883 here; we relay all packets to the real broker while
 // decoding every MQTT message in both directions.
 //
-// In --replace-bin mode, any broker→frame PUBLISH on the frame's inkjoyap
-// topic has its binUri/imgUri fields swapped to point at a local HTTP server,
-// allowing fully local image delivery without server involvement.
+// Build (MIPS32LE soft-float):
+//   GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -o inkjoy-proxy .
 //
-// Build for EdgeRouter X (Mediatek MT7621, MIPS32LE, no FPU):
-//   GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -o inkjoy-proxy ./inkjoy-proxy/
-//
-// Deploy:
-//   scp inkjoy-proxy ubnt@192.168.1.1:/tmp/
-//   ssh ubnt@192.168.1.1 "sudo iptables -t nat -A PREROUTING -i eth1 \
-//       -p tcp --dport 1883 -j REDIRECT --to-port 18830"
-//   ssh ubnt@192.168.1.1 "sudo /tmp/inkjoy-proxy [flags]"
-//
-// Flags:
-//   --broker   upstream broker addr (default 13.39.148.101:1883)
-//   --listen   local listen addr   (default :18830)
-//   --replace-bin  URL to substitute for binUri/imgUri in play messages
-//   --inject-play  path to JSON file to inject as a play message immediately
+// Deploy: see deploy.sh (requires ROUTER_SSH in .env).
 
 package main
 
@@ -45,7 +31,7 @@ import (
 var (
 	broker       = flag.String("broker", "13.39.148.101:1883", "upstream MQTT broker")
 	listenAddr   = flag.String("listen", ":18830", "local listen address (all interfaces)")
-	controlAddr  = flag.String("control", "192.168.1.1:18831", "control/log port (LAN only — not exposed to WAN)")
+	controlAddr  = flag.String("control", ":18831", "control/log listen address")
 	replaceBin   = flag.String("replace-bin", "", "replace download URL in intercepted play messages")
 	injectPlay   = flag.String("inject-play", "", "JSON file to inject as a play message immediately on connect")
 	captureDir   = flag.String("capture-dir", "/tmp/ij_capture", "dir to append unknown broker→frame messages; empty = disabled")
@@ -730,7 +716,7 @@ const STAMAC = "AA:BB:CC:DD:EE:FF"
 //   {"url": "http://192.168.1.10:8080/image.bin"}
 //
 // Example from Mac:
-//   echo '{"url":"http://192.168.1.10:8080/image.bin"}' | ssh ubnt@router nc localhost 18831
+//   echo '{"url":"http://192.168.1.10:8080/image.bin"}' | nc router 18831
 
 func runControlServer() {
 	ln, err := net.Listen("tcp", *controlAddr)

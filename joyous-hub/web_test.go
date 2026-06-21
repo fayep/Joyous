@@ -20,6 +20,7 @@ func buildTestHub(t *testing.T) *Hub {
 		images:    NewImageStore(dir),
 		samsung:   NewSamsungStore(dir),
 		publisher: &noopPublisher{},
+		mqttLog:   NewMQTTLogBuffer(20),
 	}
 }
 
@@ -384,5 +385,30 @@ func TestDeleteImage(t *testing.T) {
 	_, err := h.images.ServeBin(id)
 	if err == nil {
 		t.Error("image should be deleted")
+	}
+}
+
+func TestMQTTLogsAPI(t *testing.T) {
+	h := buildTestHub(t)
+	h.mqttLog.AddLocal("frame→hub", "/device/report/AA", []byte(`{"action":"heart"}`), "")
+	h.mqttLog.AddUpstream("hub→cloud", "/device/report/AA", []byte(`{"action":"login"}`), "")
+
+	rec := httptest.NewRecorder()
+	h.handleMQTTLogs(rec, httptest.NewRequest("GET", "/api/mqtt/logs", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var out struct {
+		Local    []MQTTLogEntry `json:"local"`
+		Upstream []MQTTLogEntry `json:"upstream"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Local) != 1 || out.Local[0].Action != "heart" {
+		t.Fatalf("local=%+v", out.Local)
+	}
+	if len(out.Upstream) != 1 || out.Upstream[0].Action != "login" {
+		t.Fatalf("upstream=%+v", out.Upstream)
 	}
 }

@@ -107,12 +107,7 @@ func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 	}, nil
 }
 
-// ShouldIntercept reports whether an incoming cloud→frame action should be
-// handled locally by the hub rather than forwarded to the frame.
-func ShouldIntercept(action string) bool {
-	switch action {
-	case "mqtt_config", "wifi_sleep", "play":
-		return true
-	}
-	return false
+// ShouldIntercept reports whether cloud→frame action is handled locally by the hub.
+func ShouldIntercept(action string, intercept AllowList) bool {
+	return intercept.Allows(action)
 }

@@ -6,7 +6,7 @@
 #   sudo bash inkjoy-capture.sh --live   # print decoded MQTT JSON inline
 #
 # Copy captures off the router:
-#   scp "ubnt@192.168.1.1:/tmp/inkjoy_*.pcap.gz" ~/
+#   scp "user@router:/tmp/inkjoy_*.pcap.gz" ~/
 
 IFACE=eth4
 MQTT_HOST=13.39.148.101

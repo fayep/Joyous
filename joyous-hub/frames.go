@@ -23,7 +23,7 @@ func registerInjectedPlay(msgid string) {
 }
 
 func isInjectedPlay(ackMsgid string) bool {
-	_, ok := injectedPlays.LoadAndDelete(ackMsgid)
+	_, ok := injectedPlays.Load(ackMsgid)
 	return ok
 }
 

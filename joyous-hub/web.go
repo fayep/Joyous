@@ -23,6 +23,23 @@ type Hub struct {
 	publisher  MQTTPublisher
 	serverAddr string // e.g. "192.168.1.5:8080" — used in play URLs
 	mqttPort   int    // MQTT broker port the frame should connect to (e.g. 11883)
+	mqttLog    *MQTTLogBuffer
+}
+
+// handleMQTTLogs serves GET /api/mqtt/logs — last N messages per side for the web UI.
+func (h *Hub) handleMQTTLogs(w http.ResponseWriter, r *http.Request) {
+	local, upstream := h.mqttLog.Snapshot()
+	if local == nil {
+		local = []MQTTLogEntry{}
+	}
+	if upstream == nil {
+		upstream = []MQTTLogEntry{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"local":    local,
+		"upstream": upstream,
+	})
 }
 
 // handleDevices serves GET /api/devices.
@@ -431,6 +448,23 @@ const indexHTML = `<!DOCTYPE html>
   #send-picker{display:none;position:fixed;z-index:1000;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 12px #0002;min-width:160px;max-height:min(50vh,320px);overflow-y:auto;-webkit-overflow-scrolling:touch}
   .send-picker-item{padding:.5rem .85rem;cursor:pointer;font-size:.9rem;white-space:nowrap}
   .send-picker-item:hover{background:#f0f0ff}
+  .mqtt-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  @media(max-width:900px){.mqtt-grid{grid-template-columns:1fr}}
+  .mqtt-col h2{font-size:1rem;margin:0 0 .75rem;color:#333}
+  .mqtt-log{max-height:70vh;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:.5rem}
+  .mqtt-entry{border:1px solid #e0e0e0;border-radius:6px;padding:.6rem .75rem;font-size:.8rem;background:#fafafa}
+  .mqtt-entry.clampable{cursor:pointer}
+  .mqtt-entry.clampable:not(.expanded):hover{border-color:#bbb;background:#f5f5f5}
+  .mqtt-entry .meta{display:flex;flex-wrap:wrap;gap:.35rem .6rem;align-items:center;margin-bottom:.35rem;color:#555}
+  .mqtt-entry .time{font-family:monospace;color:#888}
+  .mqtt-entry .dir{font-weight:600;color:#1a1a2e}
+  .mqtt-entry .action{background:#e8eaf6;color:#1a1a2e;padding:1px 6px;border-radius:4px;font-family:monospace;font-size:.75rem}
+  .mqtt-entry .note{color:#856404;background:#fff3cd;padding:1px 6px;border-radius:4px;font-size:.75rem}
+  .mqtt-entry .topic{font-family:monospace;font-size:.72rem;color:#666;word-break:break-all;margin-bottom:.25rem}
+  .mqtt-entry pre{margin:0;white-space:pre-wrap;word-break:break-word;font-size:.72rem;line-height:1.35;background:#fff;border:1px solid #eee;border-radius:4px;padding:.4rem .5rem}
+  .mqtt-entry.clampable:not(.expanded) pre{display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden}
+  .mqtt-expand-hint{font-size:.68rem;color:#888;margin-top:.2rem}
+  .mqtt-empty{color:#888;font-size:.9rem;margin:0}
 </style>
 </head>
 <body>
@@ -440,6 +474,7 @@ const indexHTML = `<!DOCTYPE html>
     <button class="active" onclick="showTab('devices',this)">Devices</button>
     <button onclick="showTab('album',this)">Album</button>
     <button onclick="showTab('inkjoy',this)">InkJoy</button>
+    <button onclick="showTab('mqtt',this)">MQTT</button>
     <button onclick="showTab('samsung',this)">Samsung</button>
   </nav>
 </header>
@@ -535,6 +570,19 @@ const indexHTML = `<!DOCTYPE html>
       </div>
     </div>
   </div>
+  <div id="tab-mqtt" style="display:none">
+    <p style="color:#666;font-size:.9rem;margin-top:0">Last 20 messages per side. Newest at top. Scroll the column; click a long message to expand its body.</p>
+    <div class="mqtt-grid">
+      <div class="mqtt-col card">
+        <h2>Frame ↔ Hub</h2>
+        <div id="mqtt-local" class="mqtt-log"><p class="mqtt-empty">No messages yet.</p></div>
+      </div>
+      <div class="mqtt-col card">
+        <h2>Hub ↔ Cloud</h2>
+        <div id="mqtt-upstream" class="mqtt-log"><p class="mqtt-empty">No messages yet.</p></div>
+      </div>
+    </div>
+  </div>
   <div id="tab-samsung" style="display:none">
     <div style="display:flex;gap:1.5rem;align-items:flex-start">
       <div style="min-width:220px">
@@ -611,6 +659,65 @@ function showTab(name,btn){
   btn.classList.add('active');
   if(name==='devices'||name==='samsung') startSamsungReachabilityPoll();
   else stopSamsungReachabilityPoll();
+  if(name==='mqtt') startMQTTLogPoll();
+  else stopMQTTLogPoll();
+}
+
+let mqttLogTimer=null;
+const mqttExpanded=new Set();
+function mqttEntryKey(e){ return e.time+'\0'+e.topic+'\0'+e.dir; }
+function startMQTTLogPoll(){
+  if(mqttLogTimer) return;
+  loadMQTTLogs();
+  mqttLogTimer=setInterval(loadMQTTLogs, 1000);
+}
+function stopMQTTLogPoll(){
+  if(mqttLogTimer){ clearInterval(mqttLogTimer); mqttLogTimer=null; }
+}
+function esc(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function mqttBodyLong(body){
+  return body && (body.length>180 || body.split('\n').length>6);
+}
+function renderMQTTEntries(entries){
+  if(!entries||!entries.length) return '<p class="mqtt-empty">No messages yet.</p>';
+  const list=entries.slice().reverse();
+  return list.map(e=>{
+    const note=e.note?'<span class="note">'+esc(e.note)+'</span>':'';
+    const action=e.action?'<span class="action">'+esc(e.action)+'</span>':'';
+    const longBody=mqttBodyLong(e.body);
+    const key=mqttEntryKey(e);
+    const expanded=mqttExpanded.has(key);
+    const cls='mqtt-entry'+(longBody?' clampable':'')+(expanded?' expanded':'');
+    const body=e.body?'<pre>'+esc(e.body)+'</pre>':'';
+    const hint=longBody&&!expanded?'<div class="mqtt-expand-hint">Click to expand</div>':'';
+    const dataKey=longBody?' data-key="'+encodeURIComponent(key)+'" onclick="toggleMQTTEntry(this)"':'';
+    return '<div class="'+cls+'"'+dataKey+'><div class="meta"><span class="time">'+esc(e.time)+'</span><span class="dir">'+esc(e.dir)+'</span>'+action+note+'</div><div class="topic">'+esc(e.topic)+'</div>'+body+hint+'</div>';
+  }).join('');
+}
+function toggleMQTTEntry(el){
+  const key=decodeURIComponent(el.dataset.key);
+  if(mqttExpanded.has(key)) mqttExpanded.delete(key);
+  else mqttExpanded.add(key);
+  el.classList.toggle('expanded');
+  const hint=el.querySelector('.mqtt-expand-hint');
+  if(hint) hint.textContent=el.classList.contains('expanded')?'Click to collapse':'Click to expand';
+}
+function setMQTTColumn(id,html){
+  const el=document.getElementById(id);
+  const y=el.scrollTop;
+  el.innerHTML=html;
+  el.scrollTop=y;
+}
+async function loadMQTTLogs(){
+  try{
+    const r=await fetch('/api/mqtt/logs');
+    if(!r.ok) return;
+    const data=await r.json();
+    setMQTTColumn('mqtt-local',renderMQTTEntries(data.local));
+    setMQTTColumn('mqtt-upstream',renderMQTTEntries(data.upstream));
+  }catch(_){}
 }
 
 let samsungReachabilityTimer=null;

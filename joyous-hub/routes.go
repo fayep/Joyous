@@ -51,6 +51,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("POST /api/devices/{id}/redirect", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleRedirect(w, r, r.PathValue("id"))
 	})
+	mux.HandleFunc("GET /api/mqtt/logs", hub.handleMQTTLogs)
 	mux.HandleFunc("GET /api/samsung", hub.handleSamsungList)
 	mux.HandleFunc("POST /api/samsung/poll", hub.handleSamsungPoll)
 	mux.HandleFunc("PUT /api/samsung/{frameId}/config", func(w http.ResponseWriter, r *http.Request) {

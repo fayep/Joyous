@@ -34,13 +34,9 @@ if pgrep -f "${INSTALL_ROOT}.*joyous-hub.*:${HTTP_PORT#:}" >/dev/null 2>&1; then
 fi
 
 echo "==> starting hub in foreground (logs → this terminal)"
-echo "    http://${SERVER_ADDR}"
+echo "    http://${SERVER_ADDR}  (or server_addr from config.yaml)"
+echo "    config: ~/Library/Application Support/Joyous/config.yaml"
 echo "    Ctrl+C to stop"
 echo ""
 
-exec "$BIN" \
-	--data-dir="$DATA_DIR" \
-	--listen-mqtt=":${MQTT_PORT}" \
-	--listen-http=":${HTTP_PORT}" \
-	--server-addr="$SERVER_ADDR" \
-	--discover-subnets="$DISCOVER_SUBNETS"
+exec "$BIN"

@@ -119,19 +119,30 @@ func TestParseLoginPayload(t *testing.T) {
 	}
 }
 
-// TestShouldInterceptCloudToFrame: mqtt_config is always intercepted; others pass through.
+// TestShouldInterceptCloudToFrame: intercept list vs downstream allow list.
 func TestShouldInterceptCloudToFrame(t *testing.T) {
-	intercept := []string{"mqtt_config"}
-	passThrough := []string{"play", "ota", "heart_ack", "login_ack", "device_config", "fpga"}
-
-	for _, a := range intercept {
-		if !ShouldIntercept(a) {
+	intercept := DefaultIntercept()
+	for _, a := range []string{"mqtt_config", "wifi_sleep", "ota", "fpga"} {
+		if !ShouldIntercept(a, intercept) {
 			t.Errorf("ShouldIntercept(%q) should be true", a)
 		}
 	}
-	for _, a := range passThrough {
-		if ShouldIntercept(a) {
+	for _, a := range []string{"heart_ack", "login_ack", "device_config", "play"} {
+		if ShouldIntercept(a, intercept) {
 			t.Errorf("ShouldIntercept(%q) should be false", a)
 		}
+	}
+}
+
+func TestDefaultDownstreamAllow(t *testing.T) {
+	allow := DefaultDownstreamAllow()
+	intercept := DefaultIntercept()
+	for _, action := range []string{"login_ack", "heart_ack", "play", "shutdown_ack", "image_refresh_ack"} {
+		if !allow.Allows(action) {
+			t.Errorf("downstream should allow %q", action)
+		}
+	}
+	if ShouldIntercept("play", intercept) {
+		t.Error("cloud play should not be intercepted")
 	}
 }

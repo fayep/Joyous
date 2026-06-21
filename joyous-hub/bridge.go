@@ -54,7 +54,7 @@ func BuildMQTTConfigPayload(mac string, cfg UpstreamConfig) []byte {
 	return b
 }
 
-// AllowList controls which frame→cloud action types are forwarded upstream.
+// AllowList is a set of MQTT action names used for frame→broker or broker→frame filtering.
 type AllowList struct {
 	set map[string]bool
 }
@@ -64,13 +64,38 @@ func (a AllowList) Allows(action string) bool {
 	return a.set[action]
 }
 
-// DefaultUpstreamAllow returns the default allow list.
-func DefaultUpstreamAllow() AllowList {
-	return ParseUpstreamAllow("login,heart,play_ack,fpga_ota_ack")
+// DefaultUpstreamAllowCSV is the default frame→broker (upstream) allow list.
+func DefaultUpstreamAllowCSV() string {
+	return "login,heart,play_ack,fpga_ota_ack,shutdown,image_refresh_ack,ota_ack"
 }
 
-// ParseUpstreamAllow parses a comma-separated list of allowed action names.
-func ParseUpstreamAllow(s string) AllowList {
+// DefaultDownstreamAllowCSV is the default broker→frame passthrough list.
+func DefaultDownstreamAllowCSV() string {
+	return "login_ack,heart_ack,play,device_config,shutdown_ack,image_refresh_ack,wifi_sleep"
+}
+
+// DefaultInterceptCSV is the default broker→frame intercept list (hub handles locally).
+func DefaultInterceptCSV() string {
+	return "mqtt_config,wifi_sleep,ota,fpga"
+}
+
+// DefaultUpstreamAllow returns the default frame→broker allow list.
+func DefaultUpstreamAllow() AllowList {
+	return ParseAllowList(DefaultUpstreamAllowCSV())
+}
+
+// DefaultDownstreamAllow returns the default broker→frame allow list.
+func DefaultDownstreamAllow() AllowList {
+	return ParseAllowList(DefaultDownstreamAllowCSV())
+}
+
+// DefaultIntercept returns the default broker→frame intercept list.
+func DefaultIntercept() AllowList {
+	return ParseAllowList(DefaultInterceptCSV())
+}
+
+// ParseAllowList parses a comma-separated list of action names.
+func ParseAllowList(s string) AllowList {
 	set := map[string]bool{}
 	for _, part := range strings.Split(s, ",") {
 		part = strings.TrimSpace(part)
@@ -79,4 +104,9 @@ func ParseUpstreamAllow(s string) AllowList {
 		}
 	}
 	return AllowList{set: set}
+}
+
+// ParseUpstreamAllow parses a comma-separated frame→broker allow list.
+func ParseUpstreamAllow(s string) AllowList {
+	return ParseAllowList(s)
 }

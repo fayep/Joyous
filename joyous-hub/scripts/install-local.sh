@@ -17,6 +17,8 @@ APP_DISPLAY_NAME="Joyous Hub"
 APP="$INSTALL_ROOT/${APP_BUNDLE}"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 LOG_DIR="$HOME/Library/Logs/joyous-hub"
+CONFIG_DIR="$HOME/Library/Application Support/Joyous"
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
 STAGING_BIN="$INSTALL_ROOT/bin/joyous-hub"
 ENTITLEMENTS="${ENTITLEMENTS:-$INSTALL_ROOT/entitlements.plist}"
 USER_ID="$(id -u)"
@@ -197,6 +199,29 @@ else
 fi
 
 echo "==> writing launchd plist..."
+mkdir -p "$CONFIG_DIR"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+	echo "==> creating default config at $CONFIG_FILE"
+	cat >"$CONFIG_FILE" <<EOF
+listen_mqtt: ":${MQTT_PORT}"
+listen_http: ":${HTTP_PORT}"
+upstream: "13.39.148.101:1883"
+upstream_usr: ""
+upstream_pwd: ""
+upstream_allow: "login,heart,play_ack,fpga_ota_ack,shutdown,image_refresh_ack,ota_ack"
+downstream_allow: "login_ack,heart_ack,play,device_config,shutdown_ack,image_refresh_ack,wifi_sleep"
+intercept: "mqtt_config,wifi_sleep,ota,fpga"
+data_dir: "${DATA_DIR}"
+server_addr: "${SERVER_ADDR}"
+discover_subnets: "${DISCOVER_SUBNETS}"
+log_dir: ""
+capture_dir: ""
+ota_dir: ""
+EOF
+	chmod 600 "$CONFIG_FILE"
+else
+	echo "==> using existing config $CONFIG_FILE"
+fi
 # Run the signed app binary directly — not `open -W`, which cannot block on LSUIElement
 # apps and spams stderr with GetProcessPID errors while KeepAlive restart-loops.
 cat >"$PLIST" <<EOF
@@ -213,12 +238,6 @@ cat >"$PLIST" <<EOF
 	<key>ProgramArguments</key>
 	<array>
 		<string>${BIN}</string>
-		<string>--data-dir=${DATA_DIR}</string>
-		<string>--listen-mqtt=:${MQTT_PORT}</string>
-		<string>--listen-http=:${HTTP_PORT}</string>
-		<string>--server-addr=${SERVER_ADDR}</string>
-		<string>--discover-subnets</string>
-		<string>${DISCOVER_SUBNETS}</string>
 	</array>
 	<key>WorkingDirectory</key>
 	<string>${INSTALL_ROOT}</string>
@@ -264,6 +283,10 @@ if [[ "$ready" != "1" ]]; then
 fi
 
 echo "==> hub is up at http://${SERVER_ADDR}"
+echo ""
+echo "Config: ${CONFIG_FILE}"
+echo "  Edit upstream_usr / upstream_pwd there, then:"
+echo "    launchctl kickstart -k ${TARGET}"
 echo ""
 echo "Local Network permission:"
 echo "  Run on this Mac's console (Screen Sharing, not SSH):"

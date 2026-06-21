@@ -10,12 +10,12 @@ The frame communicates over MQTT and downloads images via HTTP(S). This pipeline
 |------|---------|
 | `encode_bin.py` | Encode any image to the InkJoy `.bin` format (Stucki dithering, 6-color e-ink palette) |
 | `local_push.py` | Serve a `.bin` over HTTP and push a play message directly to the frame via MQTT |
-| `inkjoy-proxy/` | Transparent MQTT proxy that runs on the EdgeRouter X, intercepts broker traffic, and injects play messages covertly |
+| `inkjoy-proxy/` | Transparent MQTT proxy on a LAN gateway; intercepts broker traffic and injects play messages |
 
 ## Requirements
 
 - **Mac**: Python 3.11+, [uv](https://github.com/astral-sh/uv)
-- **Router**: EdgeRouter X (or similar); SSH access as `ubnt@192.168.1.1`
+- **Router** (optional): MIPS32LE gateway with SSH; set `ROUTER_SSH` in `InkJoy/inkjoy-proxy/.env`
 - **Frame**: InkJoy e-ink frame on the LAN (tested with device MAC `AA:BB:CC:DD:EE:FF`)
 
 ## Quick start
@@ -38,7 +38,8 @@ Options:
 ### 2. Deploy the proxy (first time only)
 
 ```bash
-cd inkjoy-proxy
+cd InkJoy/inkjoy-proxy
+cp .env.example .env   # ROUTER_SSH=user@your-router
 ./deploy.sh
 ```
 
@@ -53,10 +54,10 @@ To stop: `./deploy.sh --stop`
 python3 -m http.server --bind 192.168.1.100 8080 --directory /tmp
 
 # Inject a play message — fires on the frame's next MQTT heartbeat
-echo '{"url":"http://192.168.1.100:8080/image.bin"}' | nc 192.168.1.1 18831
+echo '{"url":"http://YOUR_HOST:8080/image.bin"}' | nc YOUR_ROUTER 18831
 
 # Watch live proxy logs
-nc 192.168.1.1 18831
+nc YOUR_ROUTER 18831
 ```
 
 The proxy suppresses the `play_ack` that the frame sends back, so the server never learns an image was displayed.
@@ -77,16 +78,16 @@ Reverse-engineered from `ISFR-lite.exe` (the vendor's offline encoder) via Binar
 
 ### Proxy (`inkjoy-proxy/`)
 
-A transparent TCP proxy deployed on the EdgeRouter X. An iptables PREROUTING rule redirects all traffic destined for the broker IP (`13.39.148.101:1883`) through the proxy regardless of which LAN port the frame is on.
+A transparent TCP proxy on a LAN gateway. An iptables PREROUTING rule redirects traffic destined for the broker IP (`13.39.148.101:1883`) through the proxy.
 
 The proxy:
 - Forwards all MQTT traffic unchanged in both directions
-- Queues inject commands received on the control port (`192.168.1.1:18831`)
+- Queues inject commands on the control port (`:18831` on the router)
 - Fires the injected play message on the next broker→frame packet
 - Tracks injected message IDs and drops matching `play_ack` replies so the server never sees them
 - Fans all log output to every connected control-port client in real time
 
-**Cross-compile for EdgeRouter X:**
+**Cross-compile for MIPS32LE routers:**
 ```bash
 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -o inkjoy-proxy-mipsle .
 ```
