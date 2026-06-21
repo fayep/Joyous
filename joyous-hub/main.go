@@ -1,0 +1,358 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+	mochi "github.com/mochi-mqtt/server/v2"
+	"github.com/mochi-mqtt/server/v2/hooks/auth"
+	"github.com/mochi-mqtt/server/v2/listeners"
+	"github.com/mochi-mqtt/server/v2/packets"
+)
+
+func main() {
+	mqttAddr := flag.String("listen-mqtt", ":1883", "local MQTT broker address")
+	httpAddr := flag.String("listen-http", ":8080", "HTTP server address")
+	upstream := flag.String("upstream", "13.39.148.101:1883", "upstream broker (empty = local-only)")
+	upstreamUsr := flag.String("upstream-usr", "REDACTED_MQTT_USER", "upstream broker username")
+	upstreamPwd := flag.String("upstream-pwd", "REDACTED_MQTT_PASSWORD", "upstream broker password")
+	upstreamAllow := flag.String("upstream-allow", "login,heart,play_ack,fpga_ota_ack",
+		"comma-separated frame→cloud action whitelist")
+	dataDir := flag.String("data-dir", "./data", "data directory for devices.json and images/")
+	serverAddr := flag.String("server-addr", "", "public HTTP address for image URLs (auto-detect if empty)")
+	discoverSubnetsFlag := flag.String("discover-subnets", "", "comma-separated LAN prefixes for MDC fallback sweep (e.g. 192.168.50 or 192.168.50.0/23); SSDP multicast always runs")
+	probeNetworkFlag := flag.String("probe-network", "", "test TCP connectivity to IP:1515 and exit (triggers Local Network permission)")
+	logDirFlag := flag.String("log-dir", "", "append hub logs to stdout.log and stderr.log in this directory")
+	flag.Parse()
+
+	if dir := strings.TrimSpace(*logDirFlag); dir != "" {
+		if err := setupFileLogging(dir); err != nil {
+			log.Fatalf("log-dir: %v", err)
+		}
+	}
+
+	if ip := strings.TrimSpace(*probeNetworkFlag); ip != "" {
+		if err := probeNetworkTarget(ip); err != nil {
+			log.Fatalf("probe-network %s: %v", ip, err)
+		}
+		log.Printf("probe-network ok: %s", ip)
+		return
+	}
+
+	discoverSubnets = parseDiscoverSubnets(*discoverSubnetsFlag)
+	if len(discoverSubnets) > 0 {
+		log.Printf("discovery subnets: %v", discoverSubnets)
+	}
+
+	if err := os.MkdirAll(*dataDir, 0755); err != nil {
+		log.Fatalf("data-dir: %v", err)
+	}
+
+	allowList := ParseUpstreamAllow(*upstreamAllow)
+	devices := NewDeviceRegistry(*dataDir)
+	if err := devices.Load(); err != nil {
+		log.Printf("warn: load devices: %v", err)
+	}
+	imageStore := NewImageStore(*dataDir)
+	samsungStore := NewSamsungStore(*dataDir)
+
+	// ── local MQTT broker ───────────────────────────────────────────────────
+	broker := mochi.New(&mochi.Options{})
+	_ = broker.AddHook(new(auth.AllowHook), nil) // accept all connections on LAN
+
+	tcpListener := listeners.NewTCP(listeners.Config{
+		ID:      "tcp",
+		Address: *mqttAddr,
+	})
+	if err := broker.AddListener(tcpListener); err != nil {
+		log.Fatalf("broker listener: %v", err)
+	}
+
+	// ── bridges (one per frame MAC) ─────────────────────────────────────────
+	bridges := &bridgeSet{
+		upstreamHost: *upstream,
+		upstreamUsr:  *upstreamUsr,
+		upstreamPwd:  *upstreamPwd,
+		allow:        allowList,
+		broker:       broker,
+		devices:      devices,
+	}
+
+	// ── broker hooks ────────────────────────────────────────────────────────
+	_ = broker.AddHook(&frameHook{bridges: bridges, devices: devices, allow: allowList}, nil)
+
+	// ── HTTP server ─────────────────────────────────────────────────────────
+	addr := *serverAddr
+	if addr == "" {
+		addr = localAddr(*httpAddr)
+	}
+	hub := &Hub{
+		devices:    devices,
+		images:     imageStore,
+		samsung:    samsungStore,
+		publisher:  &brokerPublisher{broker: broker},
+		serverAddr: addr,
+	}
+
+	mux := http.NewServeMux()
+	registerRoutes(mux, hub)
+
+	httpServer := &http.Server{Addr: *httpAddr, Handler: accessLogMiddleware(mux)}
+
+	// ── start everything ────────────────────────────────────────────────────
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := broker.Serve(); err != nil {
+		log.Fatalf("broker serve: %v", err)
+	}
+	log.Printf("MQTT broker listening on %s", *mqttAddr)
+
+	go func() {
+		log.Printf("HTTP server listening on %s (images at http://%s)", *httpAddr, addr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTP: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("shutting down...")
+
+	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	httpServer.Shutdown(shutCtx)
+	broker.Close()
+	devices.Save()
+}
+
+// ── broker publisher ─────────────────────────────────────────────────────────
+
+type brokerPublisher struct{ broker *mochi.Server }
+
+func (p *brokerPublisher) Publish(topic string, payload []byte) error {
+	return p.broker.Publish(topic, payload, false, 0)
+}
+
+// ── per-frame upstream bridge set ───────────────────────────────────────────
+
+type bridgeSet struct {
+	upstreamHost string
+	upstreamUsr  string
+	upstreamPwd  string
+	allow        AllowList
+	broker       *mochi.Server
+	devices      *DeviceRegistry
+	m            map[string]*upstreamBridge
+}
+
+func (bs *bridgeSet) get(mac string) *upstreamBridge {
+	if bs.m == nil {
+		bs.m = make(map[string]*upstreamBridge)
+	}
+	if b, ok := bs.m[mac]; ok {
+		return b
+	}
+	b := &upstreamBridge{mac: mac, set: bs}
+	bs.m[mac] = b
+	if bs.upstreamHost != "" {
+		go b.connect()
+	}
+	return b
+}
+
+type upstreamBridge struct {
+	mac    string
+	set    *bridgeSet
+	client mqtt.Client
+	cfg    UpstreamConfig
+}
+
+func (b *upstreamBridge) connect() {
+	host := b.set.upstreamHost
+	usr := b.set.upstreamUsr
+	pwd := b.set.upstreamPwd
+	if b.cfg.Host != "" {
+		host = fmt.Sprintf("%s:%d", b.cfg.Host, b.cfg.Port)
+		usr = b.cfg.Username
+		pwd = b.cfg.Password
+	}
+	if host == "" {
+		return
+	}
+
+	opts := mqtt.NewClientOptions().
+		AddBroker("tcp://" + host).
+		SetClientID(b.mac).
+		SetUsername(usr).
+		SetPassword(pwd).
+		SetAutoReconnect(true).
+		SetOnConnectHandler(func(c mqtt.Client) {
+			log.Printf("[%s] upstream connected to %s", b.mac, host)
+			c.Subscribe("/inkjoyap/"+b.mac, 0, b.onCloudMessage)
+		}).
+		SetConnectionLostHandler(func(c mqtt.Client, err error) {
+			log.Printf("[%s] upstream disconnected: %v", b.mac, err)
+		})
+
+	b.client = mqtt.NewClient(opts)
+	tok := b.client.Connect()
+	tok.Wait()
+	if err := tok.Error(); err != nil {
+		log.Printf("[%s] upstream connect error: %v", b.mac, err)
+	}
+}
+
+func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
+	payload := msg.Payload()
+
+	// Extract action for intercept check.
+	var env struct{ Action string `json:"action"` }
+	json.Unmarshal(payload, &env)
+
+	if ShouldIntercept(env.Action) {
+		cfg, err := ParseMQTTConfig(payload)
+		if err != nil {
+			log.Printf("[%s] bad mqtt_config: %v", b.mac, err)
+			return
+		}
+		log.Printf("[%s] mqtt_config: new upstream %s:%d", b.mac, cfg.Host, cfg.Port)
+		oldClient := b.client
+		b.cfg = cfg
+		go func() {
+			if oldClient != nil {
+				oldClient.Disconnect(250)
+			}
+			b.connect()
+		}()
+		// ACK to real broker on frame's behalf.
+		ack := buildActionPayloadFor(b.mac, "mqtt_config_ack", map[string]any{"result": 0})
+		b.client.Publish("/device/report/"+b.mac, 0, false, ack)
+		return
+	}
+
+	// Forward to local broker → frame receives it.
+	b.set.broker.Publish("/inkjoyap/"+b.mac, payload, false, 0)
+}
+
+func (b *upstreamBridge) forward(payload []byte) {
+	if b.client == nil || !b.client.IsConnected() {
+		return
+	}
+	b.client.Publish("/device/report/"+b.mac, 0, false, payload)
+}
+
+// ── broker hook (OnPublished) ────────────────────────────────────────────────
+
+type frameHook struct {
+	mochi.HookBase
+	bridges *bridgeSet
+	devices *DeviceRegistry
+	allow   AllowList
+}
+
+func (h *frameHook) ID() string { return "frame-hook" }
+
+func (h *frameHook) Provides(b byte) bool {
+	return b == mochi.OnPublished
+}
+
+func (h *frameHook) OnPublished(_ *mochi.Client, pk packets.Packet) {
+	topic := pk.TopicName
+	payload := pk.Payload
+
+	mac, ok := ExtractTopicMAC(topic)
+	if !ok {
+		return
+	}
+
+	dir := TopicDirection(topic)
+	if dir != DirFrameToCloud {
+		return // cloud→frame publishes injected by bridges; nothing to do
+	}
+
+	// Update device registry.
+	var env struct {
+		Action string `json:"action"`
+	}
+	json.Unmarshal(payload, &env)
+
+	switch env.Action {
+	case "login":
+		info, err := ParseLoginPayload(payload)
+		if err == nil {
+			h.devices.MarkConnected(mac)
+			h.devices.UpdateLogin(mac, info)
+		}
+	case "heart":
+		info, err := ParseHeartPayload(payload)
+		if err == nil {
+			h.devices.UpdateHeart(mac, info)
+		}
+	default:
+		h.devices.MarkConnected(mac) // any publish = still alive
+	}
+
+	// Forward to upstream if allowed.
+	if h.allow.Allows(env.Action) && h.bridges.upstreamHost != "" {
+		bridge := h.bridges.get(mac)
+		bridge.forward(payload)
+	}
+}
+
+// handleRedirect sends mqtt_config to the real broker to redirect a frame to a new broker.
+func (h *Hub) handleRedirect(w http.ResponseWriter, r *http.Request, deviceID string) {
+	dev, ok := h.devices.Get(deviceID)
+	if !ok || dev.Type != DeviceTypeInkJoy {
+		http.Error(w, "inkjoy device required", http.StatusBadRequest)
+		return
+	}
+	mac := dev.MAC
+	var cfg UpstreamConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil || cfg.Host == "" {
+		http.Error(w, "body: {host,port,usr,pwd} required", http.StatusBadRequest)
+		return
+	}
+	payload := BuildMQTTConfigPayload(mac, cfg)
+	topic := "/inkjoyap/" + mac
+	if err := h.publisher.Publish(topic, payload); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+func localAddr(httpAddr string) string {
+	_, port, _ := net.SplitHostPort(httpAddr)
+	if port == "" {
+		port = "8080"
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "localhost:" + port
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ip4 := ipnet.IP.To4(); ip4 != nil {
+				s := ip4.String()
+				if !strings.HasPrefix(s, "169.") {
+					return s + ":" + port
+				}
+			}
+		}
+	}
+	return "localhost:" + port
+}

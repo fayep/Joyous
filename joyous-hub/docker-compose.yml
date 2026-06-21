@@ -1,0 +1,20 @@
+# Deprecated: joyous-hub now deploys natively on macOS (see install.sh).
+# Docker bridge networking breaks SSDP multicast; use launchd instead.
+services:
+  joyous-hub:
+    build: .
+    image: joyous-hub:latest
+    restart: unless-stopped
+    ports:
+      - "11883:1883"
+      - "18080:8080"
+    volumes:
+      - /Volumes/tank/Media/photoframe:/data
+    command:
+      - --data-dir=/data
+      - --listen-mqtt=:1883
+      - --listen-http=:8080
+      - --server-addr=hubhost.local:18080
+      - --discover-subnets=192.168.50.0/24
+    # SSDP multicast does not work through Docker Desktop; unicast sweep covers listed /24s.
+    # Samsung EM32DX widget: place signed joyous-widget.wgt and frame PNGs under /data/samsung/
