@@ -11,7 +11,10 @@ images/
 # APK files and decompiled output
 *.apk
 InkJoy/com.inkjoyframe.domus/
-
+InkJoy/inkjoy-0.*
+InkJoy/firmware*
+Samsung/epaper-decompiled
 # Logs
 *.log
 proxy.log
+**/screenlog.0
