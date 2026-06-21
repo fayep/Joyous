@@ -170,6 +170,8 @@ cat >"$APP/Contents/Info.plist" <<EOF
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Joyous Hub discovers photo frames on your LAN using SSDP multicast and Samsung MDC.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Joyous Hub uses Bluetooth to adopt InkJoy e-paper frames and redirect them to the local hub.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_upnp._tcp</string>
@@ -219,7 +221,7 @@ cat >"$PLIST" <<EOF
 		<string>--data-dir=${DATA_DIR}</string>
 		<string>--listen-mqtt=:${MQTT_PORT}</string>
 		<string>--listen-http=:${HTTP_PORT}</string>
-		<string>--server-addr=${SERVER_ADDR}</string>
+<string>--server-addr=${SERVER_ADDR}</string>
 		<string>--discover-subnets</string>
 		<string>${DISCOVER_SUBNETS}</string>
 		<string>--log-dir=${LOG_DIR}</string>

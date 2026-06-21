@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -17,8 +19,10 @@ type Hub struct {
 	devices    *DeviceRegistry
 	images     *ImageStore
 	samsung    *SamsungStore
+	hubIP      string // resolved non-loopback LAN IP, used for play URLs and BLE adoption
 	publisher  MQTTPublisher
 	serverAddr string // e.g. "192.168.1.5:8080" — used in play URLs
+	mqttPort   int    // MQTT broker port the frame should connect to (e.g. 11883)
 }
 
 // handleDevices serves GET /api/devices.
@@ -27,8 +31,156 @@ func (h *Hub) handleDevices(w http.ResponseWriter, r *http.Request) {
 	if devs == nil {
 		devs = []Device{}
 	}
+	// Convert stored UTC sleep times → server local time for display.
+	for i := range devs {
+		devs[i].SleepBeginTime = utcHHMMToLocal(devs[i].SleepBeginTime)
+		devs[i].SleepEndTime = utcHHMMToLocal(devs[i].SleepEndTime)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(devs)
+}
+
+// utcHHMMToLocal converts a "HH:MM" string from UTC to the server's local timezone.
+// Returns the input unchanged on any parse error or if it's empty/00:00.
+func utcHHMMToLocal(hhmm string) string {
+	if hhmm == "" || hhmm == "00:00" {
+		return hhmm
+	}
+	now := time.Now()
+	t, err := time.ParseInLocation("2006-01-02 15:04",
+		now.UTC().Format("2006-01-02")+" "+hhmm, time.UTC)
+	if err != nil {
+		return hhmm
+	}
+	return t.In(time.Local).Format("15:04")
+}
+
+// localHHMMToUTC converts a "HH:MM" string from the server's local timezone to UTC.
+func localHHMMToUTC(hhmm string) string {
+	if hhmm == "" || hhmm == "00:00" {
+		return hhmm
+	}
+	now := time.Now()
+	t, err := time.ParseInLocation("2006-01-02 15:04",
+		now.Format("2006-01-02")+" "+hhmm, time.Local)
+	if err != nil {
+		return hhmm
+	}
+	return t.UTC().Format("15:04")
+}
+
+// handleBLEScan serves POST /api/inkjoy/ble/scan — scans for IJ_ BLE frames.
+func (h *Hub) handleBLEScan(w http.ResponseWriter, r *http.Request) {
+	frames, err := ScanBLEFrames(8 * time.Second)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(frames)
+}
+
+// handleBLEAdopt serves POST /api/inkjoy/ble/adopt — provisions a frame via BluFi.
+func (h *Hub) handleBLEAdopt(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Address string `json:"address"`
+		SSID    string `json:"ssid"`
+		WifiPwd string `json:"wifi_pwd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Address == "" || body.SSID == "" {
+		http.Error(w, "address, ssid and wifi_pwd required", http.StatusBadRequest)
+		return
+	}
+
+	// Derive MQTT host from hub's server address (same host, different port).
+	mqttHost := h.hubIP
+	if mqttHost == "" {
+		mqttHost, _, _ = net.SplitHostPort(h.serverAddr)
+	}
+	if mqttHost == "" {
+		mqttHost = h.serverAddr
+	}
+
+	if err := AdoptBLEFrame(body.Address, body.SSID, body.WifiPwd, mqttHost, h.mqttPort, "inkjoy", "inkjoy"); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// handleSleep serves POST /api/devices/{id}/sleep — sends wifi_sleep to an InkJoy frame.
+func (h *Hub) handleSleep(w http.ResponseWriter, r *http.Request, id string) {
+	dev, ok := h.devices.Get(id)
+	if !ok || dev.Type != DeviceTypeInkJoy {
+		http.Error(w, "inkjoy device required", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		BeginTime string `json:"beginTime"`
+		EndTime   string `json:"endTime"`
+		Mode      int    `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if body.Mode == 0 {
+		body.Mode = 2
+	}
+	// Convert local→UTC for the frame; store UTC in registry.
+	utcBegin := localHHMMToUTC(body.BeginTime)
+	utcEnd := localHHMMToUTC(body.EndTime)
+	payload := buildActionPayloadFor(dev.MAC, "wifi_sleep", map[string]any{
+		"beginTime": utcBegin,
+		"endTime":   utcEnd,
+		"mode":      body.Mode,
+	})
+	if err := h.publisher.Publish("/inkjoyap/"+dev.MAC, payload); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.devices.UpdateSleep(dev.MAC, utcBegin, utcEnd)
+	h.devices.Save()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// handleDevicePatch serves PATCH /api/devices/{id} — updates mutable fields (name, portrait).
+func (h *Hub) handleDevicePatch(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		Name     *string `json:"name"`
+		Portrait *bool   `json:"portrait"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	found := true
+	if body.Name != nil {
+		found = h.devices.SetName(id, *body.Name)
+	}
+	if body.Portrait != nil {
+		found = h.devices.SetPortrait(id, *body.Portrait)
+	}
+	if !found {
+		http.Error(w, "device not found", http.StatusNotFound)
+		return
+	}
+	h.devices.Save()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// handleDeviceDelete serves DELETE /api/devices/{id}.
+func (h *Hub) handleDeviceDelete(w http.ResponseWriter, r *http.Request, id string) {
+	if !h.devices.Delete(id) {
+		http.Error(w, "device not found", http.StatusNotFound)
+		return
+	}
+	h.devices.Save()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 // handleImages serves GET /api/images.
@@ -169,30 +321,42 @@ func buildActionPayloadFor(mac, action string, data map[string]any) []byte {
 	return b
 }
 
-func buildPlayPayload(mac, imgURL, serverAddr string) []byte {
-	// Parse host and path from imgURL (simple split, no net/url to keep import lean).
-	host := serverAddr
-	path := ""
-	if i := len("http://") + len(host); i < len(imgURL) {
-		path = imgURL[i:]
+// buildPlayPayload returns the MQTT payload and the msgid it embedded.
+// Callers should register the msgid via registerInjectedPlay so the
+// corresponding play_ack can be suppressed from upstream forwarding.
+func buildPlayPayload(mac, imgURL string) ([]byte, string) {
+	// imgURL is e.g. "https://192.168.1.7:1443/images/abc.bin"
+	// Strip scheme (http:// or https://)
+	rest := imgURL
+	if i := strings.Index(rest, "://"); i >= 0 {
+		rest = rest[i+3:]
 	}
-	// Port is embedded in host string (e.g. "192.168.1.5:8080").
-	port := "8080"
-	if j := len(host) - 1; j >= 0 {
-		for k := j; k >= 0; k-- {
-			if host[k] == ':' {
-				port = host[k+1:]
-				host = host[:k]
-				break
-			}
-		}
+	host, portStr, path := "", "8080", ""
+	if slash := strings.Index(rest, "/"); slash >= 0 {
+		path = rest[slash:]
+		rest = rest[:slash]
 	}
-	return buildActionPayloadFor(mac, "play", map[string]any{
-		"imgurl": imgURL,
-		"host":   host,
-		"port":   port,
-		"path":   path,
+	if h, p, err := net.SplitHostPort(rest); err == nil {
+		host, portStr = h, p
+	} else {
+		host = rest
+	}
+	port := 8080
+	fmt.Sscanf(portStr, "%d", &port)
+	msgid := fmt.Sprintf("%d", time.Now().UnixMilli())
+	b, _ := json.Marshal(map[string]any{
+		"action": "play",
+		"msgid":  msgid,
+		"stamac": mac,
+		"data": map[string]any{
+			"host":     host,
+			"port":     port,
+			"imgs":     []any{map[string]any{"imgid": "local-0", "imgurl": path}},
+			"mode":     2,
+			"strategy": 1,
+		},
 	})
+	return b, msgid
 }
 
 // ── Embedded static HTML ─────────────────────────────────────────────────────
@@ -209,6 +373,15 @@ const indexHTML = `<!DOCTYPE html>
   header h1{margin:0;font-size:1.2rem}
   nav button{background:none;border:none;color:#aaa;font-size:1rem;cursor:pointer;padding:.5rem 1rem}
   nav button.active{color:#fff;border-bottom:2px solid #fff}
+  .info-grid{display:grid;grid-template-columns:max-content 1fr;gap:.25rem .75rem;font-size:.9rem}
+  .info-grid .label{color:#888}
+  .frame-list-item{display:flex;align-items:center;gap:.6rem;padding:.5rem .75rem;border-radius:6px;cursor:pointer;margin-bottom:.3rem}
+  .frame-list-item:hover{background:#f0f0ff}
+  .frame-list-item.selected{background:#e8eaf6}
+  .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .dot.online{background:#28a745}.dot.offline{background:#dc3545}
+  .last-image-preview{max-width:100%;border-radius:6px;display:block;margin:.5rem 0}
+  .section-label{font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:#888;margin:1rem 0 .4rem}
   main{padding:2rem;max-width:1200px;margin:auto}
   .card{background:#fff;border-radius:8px;padding:1rem 1.5rem;margin-bottom:1rem;box-shadow:0 1px 3px #0002}
   .device-mac{font-family:monospace;font-weight:bold}
@@ -244,6 +417,9 @@ const indexHTML = `<!DOCTYPE html>
   #upload-zone{border:2px dashed #ccc;border-radius:8px;padding:2rem;text-align:center;margin-bottom:1rem;cursor:pointer}
   #upload-zone.drag{border-color:#1a1a2e;background:#f0f0ff}
   input[type=file]{display:none}
+  #send-picker{display:none;position:fixed;z-index:1000;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 12px #0002;min-width:160px}
+  .send-picker-item{padding:.5rem .85rem;cursor:pointer;font-size:.9rem;white-space:nowrap}
+  .send-picker-item:hover{background:#f0f0ff}
 </style>
 </head>
 <body>
@@ -252,9 +428,11 @@ const indexHTML = `<!DOCTYPE html>
   <nav>
     <button class="active" onclick="showTab('devices',this)">Devices</button>
     <button onclick="showTab('album',this)">Album</button>
+    <button onclick="showTab('inkjoy',this)">InkJoy</button>
     <button onclick="showTab('samsung',this)">Samsung</button>
   </nav>
 </header>
+<div id="send-picker"></div>
 <main>
   <div id="tab-devices">
     <div style="margin-bottom:1rem">
@@ -270,6 +448,82 @@ const indexHTML = `<!DOCTYPE html>
     <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg" multiple>
     <div id="image-grid" class="img-grid"></div>
   </div>
+  <div id="tab-inkjoy" style="display:none">
+    <!-- Adopt modal -->
+    <div id="adopt-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:1000;align-items:center;justify-content:center">
+      <div style="background:#fff;border-radius:10px;padding:1.5rem;min-width:320px;max-width:420px">
+        <h3 style="margin-top:0">Adopt frame</h3>
+        <p id="adopt-frame-name" style="font-family:monospace;color:#555;margin:.25rem 0 1rem"></p>
+        <label style="display:block;margin-bottom:.75rem">
+          WiFi network (SSID)<br>
+          <input id="adopt-ssid" style="width:100%;box-sizing:border-box;padding:.4rem;margin-top:.3rem;border:1px solid #ccc;border-radius:4px">
+        </label>
+        <label style="display:block;margin-bottom:1rem">
+          WiFi password<br>
+          <input id="adopt-pwd" type="password" style="width:100%;box-sizing:border-box;padding:.4rem;margin-top:.3rem;border:1px solid #ccc;border-radius:4px">
+        </label>
+        <div id="adopt-status" style="font-size:.9rem;color:#666;min-height:1.2em;margin-bottom:.75rem"></div>
+        <div style="display:flex;gap:.5rem;justify-content:flex-end">
+          <button class="btn btn-sm" onclick="closeAdopt()">Cancel</button>
+          <button class="btn btn-sm btn-primary" id="adopt-submit-btn" onclick="submitAdopt()">Adopt</button>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:1.5rem;align-items:flex-start">
+      <div style="min-width:220px">
+        <div class="section-label">Frames</div>
+        <div id="inkjoy-frame-list"><p style="color:#888;font-size:.9rem">No InkJoy frames yet.</p></div>
+        <div style="margin-top:.75rem">
+          <button class="btn btn-sm btn-primary" id="ble-scan-btn" onclick="startBLEScan()">Find new frames</button>
+          <span id="ble-scan-status" style="display:block;font-size:.8rem;color:#666;margin-top:.4rem"></span>
+        </div>
+        <div id="ble-scan-results" style="margin-top:.75rem"></div>
+      </div>
+      <div id="inkjoy-editor" style="flex:1;display:none">
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem">
+            <div class="dot" id="ij-dot"></div>
+            <h3 style="margin:0" id="ij-title"></h3>
+            <span id="ij-status-badge" class="badge"></span>
+          </div>
+          <div style="display:flex;gap:.5rem;margin-bottom:.75rem">
+            <input id="ij-name-input" placeholder="Friendly name" style="padding:.3rem .5rem;border:1px solid #ccc;border-radius:4px;flex:1">
+            <button class="btn btn-sm btn-primary" onclick="saveIJName()">Rename</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:1rem">
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.9rem;cursor:pointer">
+              <input type="checkbox" id="ij-portrait" onchange="saveIJPortrait()">
+              Portrait orientation (3:4 crop, rotate 90°)
+            </label>
+          </div>
+          <div class="info-grid" id="ij-info"></div>
+        </div>
+        <div class="card">
+          <div class="section-label" style="margin-top:0">Currently displayed</div>
+          <div id="ij-last-image"><p style="color:#888;font-size:.9rem">Nothing sent yet this session.</p></div>
+          <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" onclick="ijSendImage()">Send image from album</button>
+            <button class="btn btn-sm" style="background:#6c757d;color:#fff" onclick="ijRefresh()">Refresh display</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-label" style="margin-top:0">Sleep schedule</div>
+          <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap">
+            <label style="font-size:.9rem">Sleep from <input type="time" id="ij-sleep-begin" style="margin-left:.4rem;padding:.3rem"></label>
+            <label style="font-size:.9rem">to <input type="time" id="ij-sleep-end" style="padding:.3rem"></label>
+            <button class="btn btn-sm btn-primary" onclick="ijSaveSleep()">Save</button>
+            <button class="btn btn-sm" style="background:#6c757d;color:#fff" onclick="ijClearSleep()">Clear (always on)</button>
+          </div>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">Frame will not display images during the sleep window. Clear sets begin=end=00:00.</p>
+        </div>
+        <div class="card" style="border:1px solid #f5c6cb">
+          <div class="section-label" style="margin-top:0;color:#dc3545">Danger zone</div>
+          <button class="btn btn-sm" style="background:#dc3545;color:#fff" onclick="ijDeleteDevice()">Remove frame from hub</button>
+          <span style="margin-left:.75rem;font-size:.85rem;color:#888">Does not affect the frame itself.</span>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="tab-samsung" style="display:none">
     <div class="card">
       <p>Install URL for Samsung E-Paper app (Custom App player):</p>
@@ -282,18 +536,17 @@ const indexHTML = `<!DOCTYPE html>
     </div>
     <div id="samsung-editor" class="card" style="display:none">
       <h3 style="margin-top:0" id="samsung-frame-title"></h3>
+      <div style="display:flex;gap:.5rem;margin-bottom:.75rem">
+        <input id="samsung-name-input" placeholder="Friendly name" style="padding:.3rem .5rem;border:1px solid #ccc;border-radius:4px;flex:1">
+        <button class="btn btn-sm btn-primary" onclick="saveSamsungName()">Rename</button>
+      </div>
       <div style="display:flex;flex-wrap:wrap;gap:1rem;align-items:end;margin-bottom:1rem">
         <label>Poll interval (min)<br><input type="number" id="samsung-poll" min="1" value="60" style="width:5rem;padding:.3rem"></label>
         <label>Inactive begin<br><input type="time" id="samsung-inactive-begin" style="padding:.3rem"></label>
         <label>Inactive end<br><input type="time" id="samsung-inactive-end" style="padding:.3rem"></label>
-        <label>Crop format<br>
-          <select id="samsung-crop-format" style="padding:.3rem">
-            <option value="16:9">Landscape 16:9</option>
-            <option value="9:16">Portrait 9:16</option>
-            <option value="4:3">Landscape 4:3</option>
-            <option value="3:4">Portrait 3:4</option>
-            <option value="1:1">Square 1:1</option>
-          </select>
+        <label style="display:flex;align-items:center;gap:.4rem">
+          <input type="checkbox" id="samsung-portrait">
+          Portrait
         </label>
         <label>Width<br><input type="number" id="samsung-display-width" min="0" placeholder="2560" style="width:6rem;padding:.3rem"></label>
         <label>Height<br><input type="number" id="samsung-display-height" min="0" placeholder="1440" style="width:6rem;padding:.3rem"></label>
@@ -320,25 +573,8 @@ function showTab(name,btn){
 }
 
 async function loadDevices(){
-  const r=await fetch('/api/devices'); devices=await r.json();
-  const el=document.getElementById('device-list');
-  if(!devices||!devices.length){el.innerHTML='<p>No frames yet. Connect an InkJoy frame via MQTT, or click Discover for Samsung displays.</p>';return;}
-  el.innerHTML=devices.map(d=>{
-    const label=d.name||d.mac||d.ip||d.id;
-    const type=d.type||'inkjoy';
-    const status=d.connected?'<span class="badge online">online</span>':'<span class="badge offline">offline</span>';
-    const meta=type==='inkjoy'
-      ? ((d.firmware?'fw '+d.firmware+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.rssi?'📶'+d.rssi+'dBm ':''))
-      : (d.ip?d.ip+' ':'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
-    const refreshBtn=type==='inkjoy'?'<button class="btn btn-sm btn-primary" onclick="refreshDevice(\''+d.id+'\')">Refresh display</button> ':'';
-    return '<div class="card">'+
-      '<span class="badge" style="background:#eee;color:#333;margin-right:.5rem">'+type+'</span>'+
-      '<strong>'+label+'</strong> '+status+' '+
-      '<span style="margin-left:.5rem;color:#666;font-size:.9rem">'+meta+'</span>'+
-      '<div style="margin-top:.5rem">'+refreshBtn+
-      '<button class="btn btn-sm btn-primary" onclick="sendToFrame(\''+d.id+'\')">Send image</button>'+
-      '</div></div>';
-  }).join('');
+  await loadDevicesInner();
+  loadIJFrames();
 }
 
 async function discoverFrames(){
@@ -375,34 +611,65 @@ async function loadImages(){
     '<div class="card-body">'+
       '<div class="name" title="'+img.name+'">'+img.name+'</div>'+
       '<button class="btn btn-sm btn-primary" onclick="openCrop(\''+img.id+'\')">Frame</button> '+
-      '<button class="btn btn-sm btn-primary" onclick="sendImageToFrame(\''+img.id+'\')">Send</button> '+
+      '<button class="btn btn-sm btn-primary" id="send-btn-'+img.id+'" onclick="sendImageToFrame(event,\''+img.id+'\')">Send</button> '+
       '<button class="btn btn-sm" style="background:#dc3545;color:#fff" onclick="deleteImg(\''+img.id+'\')">✕</button>'+
     '</div>'+
   '</div>').join('');
 }
 
-async function sendToFrame(deviceId){
-  if(!devices.length){alert('No devices — discover or connect a frame first');return;}
-  let imageId=prompt('Image id from album:\n'+(images.length?images.map(i=>i.id+' '+i.name).join('\n'):'(upload images first)'));
-  if(!imageId)return;
-  imageId=imageId.trim().split(/\s+/)[0];
-  const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/display',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({image_id:imageId})
-  });
-  if(!r.ok)alert('Error: '+(await r.text()));
+const sendPicker=document.getElementById('send-picker');
+let sendPickerImageId=null;
+function closePickers(){sendPicker.style.display='none';sendPickerImageId=null;}
+document.addEventListener('click',e=>{
+  if(!sendPicker.contains(e.target)&&!e.target.id.startsWith('send-btn-')) closePickers();
+});
+
+async function doSend(imageId, deviceId, feedbackBtn){
+  closePickers();
+  const orig=feedbackBtn?feedbackBtn.textContent:'';
+  try{
+    if(feedbackBtn){feedbackBtn.disabled=true;feedbackBtn.textContent='Sending…';}
+    const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/display',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({image_id:imageId})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    if(feedbackBtn){feedbackBtn.textContent='✓ Sent';setTimeout(()=>{feedbackBtn.textContent=orig;feedbackBtn.disabled=false;},2000);}
+  }catch(e){
+    alert('Send failed: '+e.message);
+    if(feedbackBtn){feedbackBtn.textContent=orig;feedbackBtn.disabled=false;}
+  }
 }
 
-async function sendImageToFrame(imageId){
-  if(!devices.length){alert('No devices — discover or connect a frame first');return;}
-  let deviceId=devices.length===1?devices[0].id:prompt('Device id:\n'+devices.map(d=>d.id+' — '+(d.name||d.mac||d.ip)).join('\n'));
-  if(!deviceId)return;
-  deviceId=deviceId.trim().split(/\s+/)[0];
-  const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/display',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({image_id:imageId})
-  });
-  if(!r.ok)alert('Error: '+(await r.text()));
+function sendImageToFrame(evt, imageId){
+  evt.stopPropagation();
+  const frameDevices=devices.filter(d=>d.type==='inkjoy'||d.type==='samsung');
+  const btn=document.getElementById('send-btn-'+imageId);
+  if(!frameDevices.length){alert('No frames connected — check Devices tab.');return;}
+  if(frameDevices.length===1){doSend(imageId,frameDevices[0].id,btn);return;}
+  if(sendPickerImageId===imageId){closePickers();return;}
+  sendPickerImageId=imageId;
+  sendPicker.innerHTML=frameDevices.map(d=>{
+    const label=d.name||(d.mac?d.mac:d.ip)||d.id;
+    return '<div class="send-picker-item" onclick="doSend(\''+imageId+'\',\''+d.id+'\',document.getElementById(\'send-btn-'+imageId+'\'))">'+label+'</div>';
+  }).join('');
+  const r=btn.getBoundingClientRect();
+  sendPicker.style.left=r.left+'px';
+  sendPicker.style.top=(r.bottom+4)+'px';
+  sendPicker.style.display='block';
+}
+
+async function sendToFrame(deviceId){
+  const frameImages=images;
+  if(!frameImages.length){alert('No images in album — upload one first.');return;}
+  if(frameImages.length===1){doSend(frameImages[0].id,deviceId,null);return;}
+  // Show image picker modal — reuse album grid logic with a simple prompt for now
+  // (this path is rarely used; main flow is Album → Send)
+  const imageId=prompt('Image ID to send:\n'+frameImages.map(i=>i.id.slice(0,8)+' '+i.name).join('\n'));
+  if(!imageId)return;
+  const match=frameImages.find(i=>i.id.startsWith(imageId.trim()))||frameImages.find(i=>i.name.includes(imageId.trim()));
+  if(!match){alert('Image not found');return;}
+  doSend(match.id,deviceId,null);
 }
 
 async function deleteImg(id){
@@ -431,6 +698,247 @@ zone.addEventListener('drop',async e=>{
   loadImages();
 });
 
+// ── BLE adopt ────────────────────────────────────────────────────────────────
+let adoptTarget = null;
+
+async function startBLEScan(){
+  const btn=document.getElementById('ble-scan-btn');
+  const st=document.getElementById('ble-scan-status');
+  const res=document.getElementById('ble-scan-results');
+  btn.disabled=true; st.textContent='Scanning for 8 seconds…'; res.innerHTML='';
+  try{
+    const r=await fetch('/api/inkjoy/ble/scan',{method:'POST'});
+    if(!r.ok) throw new Error(await r.text());
+    const frames=await r.json();
+    if(!frames||!frames.length){st.textContent='No InkJoy frames found nearby.';return;}
+    st.textContent=frames.length+' frame(s) found:';
+    res.innerHTML=frames.map(f=>
+      '<div class="frame-list-item" style="background:#f0f7ff;margin-bottom:.3rem" onclick="openAdopt('+JSON.stringify(f)+')" title="Click to adopt">'+
+        '<div class="dot offline"></div>'+
+        '<span style="font-weight:500;font-size:.9rem">'+f.name+'</span>'+
+        '<button class="btn btn-sm btn-primary" style="margin-left:auto;font-size:.75rem" onclick="event.stopPropagation();openAdopt('+JSON.stringify(f)+')">Adopt</button>'+
+      '</div>'
+    ).join('');
+  }catch(e){
+    st.textContent='Scan failed: '+e.message;
+  }finally{
+    btn.disabled=false;
+  }
+}
+
+function openAdopt(frame){
+  adoptTarget=frame;
+  document.getElementById('adopt-frame-name').textContent=frame.name+'  '+frame.mac;
+  document.getElementById('adopt-ssid').value='';
+  document.getElementById('adopt-pwd').value='';
+  document.getElementById('adopt-status').textContent='';
+  document.getElementById('adopt-submit-btn').disabled=false;
+  document.getElementById('adopt-modal').style.display='flex';
+  setTimeout(()=>document.getElementById('adopt-ssid').focus(),100);
+}
+
+function closeAdopt(){
+  document.getElementById('adopt-modal').style.display='none';
+  adoptTarget=null;
+}
+
+async function submitAdopt(){
+  if(!adoptTarget)return;
+  const ssid=document.getElementById('adopt-ssid').value.trim();
+  const pwd=document.getElementById('adopt-pwd').value;
+  if(!ssid){alert('Enter WiFi network name');return;}
+  const st=document.getElementById('adopt-status');
+  const btn=document.getElementById('adopt-submit-btn');
+  st.textContent='Connecting via Bluetooth…'; btn.disabled=true;
+  try{
+    const r=await fetch('/api/inkjoy/ble/adopt',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({address:adoptTarget.address,ssid,wifi_pwd:pwd})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    st.style.color='#28a745'; st.textContent='Frame adopted! Waiting for it to connect…';
+    setTimeout(async()=>{
+      closeAdopt();
+      await loadDevicesInner(); loadIJFrames();
+      document.getElementById('ble-scan-results').innerHTML='';
+      document.getElementById('ble-scan-status').textContent='';
+    }, 4000);
+  }catch(e){
+    st.style.color='#dc3545'; st.textContent='Failed: '+e.message;
+    btn.disabled=false;
+  }
+}
+
+// ── InkJoy tab ───────────────────────────────────────────────────────────────
+let ijDevices=[], ijCurrentId=null;
+
+function loadIJFrames(){
+  const inkjoy=devices.filter(d=>d.type==='inkjoy');
+  ijDevices=inkjoy;
+  const el=document.getElementById('inkjoy-frame-list');
+  if(!inkjoy.length){el.innerHTML='<p style="color:#888;font-size:.9rem">No InkJoy frames yet.</p>';return;}
+  el.innerHTML=inkjoy.map(d=>{
+    const label=d.name||d.mac||d.id;
+    const sel=d.id===ijCurrentId?' selected':'';
+    const online=d.connected;
+    return '<div class="frame-list-item'+sel+'" onclick="openIJFrame(\''+d.id+'\')" id="ijli-'+d.id+'">'+
+      '<div class="dot '+(online?'online':'offline')+'"></div>'+
+      '<span style="font-weight:500">'+label+'</span>'+
+      (d.battery?'<span style="margin-left:auto;font-size:.8rem;color:#666">🔋'+d.battery+'%</span>':'')+
+      '</div>';
+  }).join('');
+  // On periodic refresh, only update status/info — never form inputs.
+  if(ijCurrentId){
+    const d=ijDevices.find(x=>x.id===ijCurrentId);
+    if(d) updateIJEditorStatus(d);
+  }
+}
+
+function openIJFrame(id){
+  ijCurrentId=id;
+  document.querySelectorAll('.frame-list-item').forEach(el=>el.classList.remove('selected'));
+  const li=document.getElementById('ijli-'+id);
+  if(li)li.classList.add('selected');
+  const d=ijDevices.find(x=>x.id===id);
+  if(d) renderIJEditor(d);  // full render including form inputs
+  document.getElementById('inkjoy-editor').style.display='';
+}
+
+// renderIJEditor does a full render including form inputs — call only when opening a frame.
+function renderIJEditor(d){
+  updateIJEditorStatus(d);
+  document.getElementById('ij-name-input').value=d.name||'';
+  document.getElementById('ij-portrait').checked=!!d.portrait;
+  document.getElementById('ij-sleep-begin').value=d.sleep_begin_time||'';
+  document.getElementById('ij-sleep-end').value=d.sleep_end_time||'';
+}
+
+// updateIJEditorStatus refreshes only the read-only parts — safe to call on every poll.
+function updateIJEditorStatus(d){
+  const label=d.name||d.mac||d.id;
+  document.getElementById('ij-title').textContent=label;
+  const dot=document.getElementById('ij-dot');
+  dot.className='dot '+(d.connected?'online':'offline');
+  const badge=document.getElementById('ij-status-badge');
+  badge.className='badge '+(d.connected?'online':'offline');
+  badge.textContent=d.connected?'online':'offline';
+  const ago=d.last_seen?timeAgo(d.last_seen):'never';
+  document.getElementById('ij-info').innerHTML=
+    '<span class="label">MAC</span><span style="font-family:monospace">'+d.mac+'</span>'+
+    '<span class="label">Firmware</span><span>'+(d.firmware||'—')+'</span>'+
+    '<span class="label">Battery</span><span>'+(d.battery?d.battery+'%':'—')+'</span>'+
+    '<span class="label">Signal</span><span>'+(d.rssi?d.rssi+' dBm':'—')+'</span>'+
+    '<span class="label">Last seen</span><span>'+ago+'</span>'+
+    '<span class="label">Last action</span><span>'+(d.last_action||'—')+'</span>';
+  const li=document.getElementById('ij-last-image');
+  if(d.last_image_id){
+    li.innerHTML='<img class="last-image-preview" src="/images/'+d.last_image_id+'/thumb?t='+Date.now()+'" alt="last sent">';
+  } else {
+    li.innerHTML='<p style="color:#888;font-size:.9rem">Nothing sent yet.</p>';
+  }
+}
+
+function timeAgo(iso){
+  const d=new Date(iso), now=Date.now(), s=Math.round((now-d)/1000);
+  if(s<5)return 'just now';
+  if(s<60)return s+'s ago';
+  if(s<3600)return Math.round(s/60)+'m ago';
+  if(s<86400)return Math.round(s/3600)+'h ago';
+  return Math.round(s/86400)+'d ago';
+}
+
+async function saveIJName(){
+  if(!ijCurrentId)return;
+  const name=document.getElementById('ij-name-input').value.trim();
+  await fetch('/api/devices/'+encodeURIComponent(ijCurrentId),{
+    method:'PATCH',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name})
+  });
+  await loadDevicesInner();
+  loadIJFrames();
+}
+
+async function saveIJPortrait(){
+  if(!ijCurrentId)return;
+  const portrait=document.getElementById('ij-portrait').checked;
+  await fetch('/api/devices/'+encodeURIComponent(ijCurrentId),{
+    method:'PATCH',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({portrait})
+  });
+}
+
+async function ijSendImage(){
+  if(!ijCurrentId)return;
+  let imageId=prompt('Image ID from album:\n'+(images.length?images.map(i=>i.id+' '+i.name).join('\n'):'(upload images first)'));
+  if(!imageId)return;
+  imageId=imageId.trim().split(/\s+/)[0];
+  const r=await fetch('/api/devices/'+encodeURIComponent(ijCurrentId)+'/display',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({image_id:imageId})
+  });
+  if(!r.ok){alert('Error: '+(await r.text()));return;}
+  await loadDevicesInner();
+  loadIJFrames();
+}
+
+async function ijRefresh(){
+  if(!ijCurrentId)return;
+  await fetch('/api/devices/'+encodeURIComponent(ijCurrentId)+'/refresh',{method:'POST'});
+}
+
+async function ijSaveSleep(){
+  if(!ijCurrentId)return;
+  const begin=document.getElementById('ij-sleep-begin').value;
+  const end=document.getElementById('ij-sleep-end').value;
+  const r=await fetch('/api/devices/'+encodeURIComponent(ijCurrentId)+'/sleep',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({beginTime:begin||'00:00',endTime:end||'00:00',mode:2})
+  });
+  if(!r.ok)alert('Error: '+(await r.text()));
+}
+
+async function ijClearSleep(){
+  if(!ijCurrentId)return;
+  document.getElementById('ij-sleep-begin').value='00:00';
+  document.getElementById('ij-sleep-end').value='00:00';
+  await fetch('/api/devices/'+encodeURIComponent(ijCurrentId)+'/sleep',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({beginTime:'00:00',endTime:'00:00',mode:2})
+  });
+}
+
+async function ijDeleteDevice(){
+  if(!ijCurrentId)return;
+  if(!confirm('Remove this frame from the hub? (The frame itself is unaffected.)'))return;
+  await fetch('/api/devices/'+encodeURIComponent(ijCurrentId),{method:'DELETE'});
+  ijCurrentId=null;
+  document.getElementById('inkjoy-editor').style.display='none';
+  await loadDevicesInner();
+  loadIJFrames();
+}
+
+async function loadDevicesInner(){
+  const r=await fetch('/api/devices'); devices=await r.json();
+  const el=document.getElementById('device-list');
+  if(!devices||!devices.length){el.innerHTML='<p>No frames yet. Connect an InkJoy frame via MQTT, or click Discover for Samsung displays.</p>';return;}
+  el.innerHTML=devices.map(d=>{
+    const label=d.name||d.mac||d.ip||d.id;
+    const type=d.type||'inkjoy';
+    const status=d.connected?'<span class="badge online">online</span>':'<span class="badge offline">offline</span>';
+    const meta=type==='inkjoy'
+      ? ((d.firmware?'fw '+d.firmware+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.rssi?'📶'+d.rssi+'dBm ':''))
+      : (d.ip?d.ip+' ':'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
+    const refreshBtn=type==='inkjoy'?'<button class="btn btn-sm btn-primary" onclick="refreshDevice(\''+d.id+'\')">Refresh display</button> ':'';
+    return '<div class="card">'+
+      '<span class="badge" style="background:#eee;color:#333;margin-right:.5rem">'+type+'</span>'+
+      '<strong>'+label+'</strong> '+status+' '+
+      '<span style="margin-left:.5rem;color:#666;font-size:.9rem">'+meta+'</span>'+
+      '<div style="margin-top:.5rem">'+refreshBtn+
+      '<button class="btn btn-sm btn-primary" onclick="sendToFrame(\''+d.id+'\')">Send image</button>'+
+      '</div></div>';
+  }).join('');
+}
+
 loadDevices(); loadImages();
 setInterval(loadDevices,5000);
 document.getElementById('samsung-install-url').textContent=location.origin+'/samsung/';
@@ -453,24 +961,61 @@ async function loadSamsungFrame(){
   if(!id)return;
   samsungCurrentId=id;
   document.getElementById('samsung-editor').style.display='';
-  document.getElementById('samsung-frame-title').textContent='Frame: '+id;
   const r=await fetch('/samsung/'+encodeURIComponent(id)+'/status');
   const s=await r.json();
   document.getElementById('samsung-poll').value=s.poll_interval_minutes||60;
   document.getElementById('samsung-inactive-begin').value=s.inactive_begin||'';
   document.getElementById('samsung-inactive-end').value=s.inactive_end||'';
-  document.getElementById('samsung-crop-format').value=s.crop_format||'16:9';
+  document.getElementById('samsung-name-input').value=s.name||'';
+  document.getElementById('samsung-frame-title').textContent=(s.name||id);
+  const fmt=s.crop_format||'16:9';
+  document.getElementById('samsung-portrait').checked=(fmt==='9:16'||fmt==='3:4');
   document.getElementById('samsung-display-width').value=s.display_width||'';
   document.getElementById('samsung-display-height').value=s.display_height||'';
   const st=document.getElementById('samsung-status');
   st.textContent=(s.has_image?'Image etag '+s.etag:'No image yet')+(s.locked?' (locked)':'');
   if(s.crop_format||s.display_width){
-    st.textContent+=' · display '+(s.crop_format||'16:9')+(s.display_width?(' '+s.display_width+'×'+s.display_height):'');
+    const orient=(fmt==='9:16'||fmt==='3:4')?'Portrait':'Landscape';
+    st.textContent+=' · '+orient+(s.display_width?(' '+s.display_width+'×'+s.display_height):'');
   }
   const prev=document.getElementById('samsung-preview');
   if(s.has_image&&!s.locked){prev.style.display='';prev.src='/samsung/'+encodeURIComponent(id)+'.png?t='+Date.now();}
   else{prev.style.display='none';}
   loadSamsungList();
+}
+
+async function saveSamsungName(){
+  if(!samsungCurrentId)return;
+  const name=document.getElementById('samsung-name-input').value.trim();
+  const r=await fetch('/samsung/'+encodeURIComponent(samsungCurrentId)+'/status');
+  const s=await r.json();
+  await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/config',{
+    method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      name,
+      poll_interval_minutes:s.poll_interval_minutes||60,
+      inactive_begin:s.inactive_begin||'',
+      inactive_end:s.inactive_end||'',
+      crop_format:s.crop_format||'16:9',
+      display_width:s.display_width||0,
+      display_height:s.display_height||0
+    })
+  });
+  document.getElementById('samsung-frame-title').textContent=name||samsungCurrentId;
+}
+
+function samsungCropFormat(){
+  const portrait=document.getElementById('samsung-portrait').checked;
+  const w=parseInt(document.getElementById('samsung-display-width').value,10)||0;
+  const h=parseInt(document.getElementById('samsung-display-height').value,10)||0;
+  // Pick the right shorthand key for the aspect ratio so it matches saved crop rectangles.
+  if(w>0&&h>0){
+    const long=Math.max(w,h), short=Math.min(w,h), r=long/short;
+    const is43=(r>=1.3&&r<1.4);
+    if(portrait) return is43?'3:4':'9:16';
+    return is43?'4:3':'16:9';
+  }
+  return portrait?'9:16':'16:9';
 }
 
 async function saveSamsungConfig(){
@@ -483,7 +1028,7 @@ async function saveSamsungConfig(){
       poll_interval_minutes:parseInt(document.getElementById('samsung-poll').value,10)||60,
       inactive_begin:begin?begin.slice(0,5):'',
       inactive_end:end?end.slice(0,5):'',
-      crop_format:document.getElementById('samsung-crop-format').value,
+      crop_format:samsungCropFormat(),
       display_width:parseInt(document.getElementById('samsung-display-width').value,10)||0,
       display_height:parseInt(document.getElementById('samsung-display-height').value,10)||0
     })

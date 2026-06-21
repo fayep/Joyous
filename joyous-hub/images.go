@@ -82,20 +82,28 @@ func (s *ImageStore) Store(r io.Reader, name string) (string, error) {
 // ServeBin returns the .bin bytes for id, converting from the stored raw file if
 // the cache is cold, then writing the result to cache and evicting if over CacheMax.
 func (s *ImageStore) ServeBin(id string) ([]byte, error) {
+	return s.ServeBinOrientation(id, false)
+}
+
+func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, error) {
+	cacheFile := s.cachePath(id)
+	if portrait {
+		cacheFile = s.cachePath(id) + ".portrait"
+	}
 	// Cache hit.
-	if bin, err := os.ReadFile(s.cachePath(id)); err == nil {
+	if bin, err := os.ReadFile(cacheFile); err == nil {
 		return bin, nil
 	}
 
 	// Cache miss — convert.
-	bin, err := s.convertToBin(id)
+	bin, err := s.convertToBinOrientation(id, portrait)
 	if err != nil {
 		return nil, err
 	}
 
 	// Write to cache and enforce size limit.
 	os.MkdirAll(s.cacheDir(), 0755)
-	os.WriteFile(s.cachePath(id), bin, 0644)
+	os.WriteFile(cacheFile, bin, 0644)
 	s.evictCache()
 
 	return bin, nil
@@ -103,12 +111,18 @@ func (s *ImageStore) ServeBin(id string) ([]byte, error) {
 
 // ServeBinHTTP writes the .bin bytes as an HTTP response.
 func (s *ImageStore) ServeBinHTTP(w http.ResponseWriter, r *http.Request, id string) {
-	bin, err := s.ServeBin(id)
+	s.ServeBinOrientationHTTP(w, r, id, false)
+}
+
+// ServeBinOrientationHTTP writes landscape or portrait-rotated .bin as an HTTP response.
+func (s *ImageStore) ServeBinOrientationHTTP(w http.ResponseWriter, r *http.Request, id string, portrait bool) {
+	bin, err := s.ServeBinOrientation(id, portrait)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(bin)))
 	w.Write(bin)
 }
 
@@ -444,7 +458,7 @@ func (s *ImageStore) readMeta(id string) (ImageMeta, error) {
 	return meta, nil
 }
 
-func (s *ImageStore) convertToBin(id string) ([]byte, error) {
+func (s *ImageStore) convertToBinOrientation(id string, portrait bool) ([]byte, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return nil, err
@@ -458,7 +472,11 @@ func (s *ImageStore) convertToBin(id string) ([]byte, error) {
 	if ext == ".bin" {
 		return convertBin(raw)
 	}
-	return convertImageWithCrop(raw, meta.Crops["4:3"])
+	cropKey := "4:3"
+	if portrait {
+		cropKey = "3:4"
+	}
+	return convertImageWithCrop(raw, meta.Crops[cropKey], portrait)
 }
 
 func convertBin(raw []byte) ([]byte, error) {
@@ -468,7 +486,7 @@ func convertBin(raw []byte) ([]byte, error) {
 	return raw, nil
 }
 
-func convertImageWithCrop(raw []byte, crop CropRect) ([]byte, error) {
+func convertImageWithCrop(raw []byte, crop CropRect, portrait bool) ([]byte, error) {
 	img, err := decodeAnyImage(raw)
 	if err != nil {
 		return nil, err
@@ -476,7 +494,14 @@ func convertImageWithCrop(raw []byte, crop CropRect) ([]byte, error) {
 	if crop.W > 0 && crop.H > 0 {
 		img = applyCrop(img, crop)
 	}
-	img = resizeToFrame(img)
+	if portrait {
+		// Rotate the 3:4 cropped content 90° CCW, then resize to 1600×1200.
+		// This matches encode_bin.py --portrait: rotate first, then resize to (tw, th).
+		img = rotate90CCW(img)
+		img = resizeToFrame(img)
+	} else {
+		img = resizeToFrame(img)
+	}
 	n := UniqueColors(img)
 	var hi, lo [][]byte
 	if n <= 6 {

@@ -55,49 +55,64 @@ func TopicDirection(topic string) TopicDir {
 
 // HeartInfo holds telemetry extracted from a heart message.
 type HeartInfo struct {
-	Battery  int
-	RSSI     int
-	Firmware string
+	Battery     int
+	RSSI        int
+	Firmware    string
+	Orientation int // raw accelerometer value from DA215S
 }
 
 // ParseHeartPayload extracts telemetry from a heart MQTT payload.
 func ParseHeartPayload(payload []byte) (HeartInfo, error) {
 	var msg struct {
 		Data struct {
-			Battery  int    `json:"battery"`
-			RSSI     int    `json:"rssi"`
-			Firmware string `json:"firmware"`
+			Battery     int    `json:"battery"`
+			RSSI        int    `json:"wifi_rssi"`
+			Firmware    string `json:"version"`
+			Orientation int    `json:"orientation"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return HeartInfo{}, err
 	}
 	d := msg.Data
-	return HeartInfo{Battery: d.Battery, RSSI: d.RSSI, Firmware: d.Firmware}, nil
+	return HeartInfo{Battery: d.Battery, RSSI: d.RSSI, Firmware: d.Firmware, Orientation: d.Orientation}, nil
 }
 
 // LoginInfo holds data extracted from a login message.
 type LoginInfo struct {
-	ClientID string
-	Firmware string
+	ClientID       string
+	Firmware       string
+	SleepBeginTime string
+	SleepEndTime   string
 }
 
 // ParseLoginPayload extracts login info from a login MQTT payload.
 func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 	var msg struct {
 		Data struct {
-			ClientID string `json:"clientid"`
-			Firmware string `json:"firmware"`
+			ClientID       string `json:"clientid"`
+			Ver            string `json:"ver"`
+			SleepBeginTime string `json:"sleep_begin_time"`
+			SleepEndTime   string `json:"sleep_end_time"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return LoginInfo{}, err
 	}
-	return LoginInfo{ClientID: msg.Data.ClientID, Firmware: msg.Data.Firmware}, nil
+	return LoginInfo{
+		ClientID:       msg.Data.ClientID,
+		Firmware:       msg.Data.Ver,
+		SleepBeginTime: msg.Data.SleepBeginTime,
+		SleepEndTime:   msg.Data.SleepEndTime,
+	}, nil
 }
 
 // ShouldIntercept reports whether an incoming cloud→frame action should be
 // handled locally by the hub rather than forwarded to the frame.
 func ShouldIntercept(action string) bool {
-	return action == "mqtt_config"
+	switch action {
+	case "mqtt_config", "wifi_sleep", "play":
+		return true
+	}
+	return false
 }

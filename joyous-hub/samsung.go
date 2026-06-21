@@ -28,11 +28,12 @@ const widgetFile = "joyous-widget.wgt"
 // SamsungFrameConfig is persisted per frame under {data-dir}/samsung/{frameId}.json.
 type SamsungFrameConfig struct {
 	FrameID             string `json:"frame_id"`
+	Name                string `json:"name,omitempty"`
 	PollIntervalMinutes int    `json:"poll_interval_minutes"`
 	InactiveBegin       string `json:"inactive_begin"` // "HH:MM" or empty
 	InactiveEnd         string `json:"inactive_end"`   // "HH:MM" or empty
-	CropFormat          string `json:"crop_format,omitempty"`   // metadata crop key, e.g. "16:9"
-	DisplayWidth        int    `json:"display_width,omitempty"`   // 0 = default for crop format
+	CropFormat          string `json:"crop_format,omitempty"`
+	DisplayWidth        int    `json:"display_width,omitempty"`
 	DisplayHeight       int    `json:"display_height,omitempty"`
 }
 
@@ -381,6 +382,7 @@ type samsungStatusResponse struct {
 	Locked              bool      `json:"locked"`
 	Modified            time.Time `json:"modified,omitempty"`
 	HasImage            bool      `json:"has_image"`
+	Name                string    `json:"name,omitempty"`
 	PollIntervalMinutes int       `json:"poll_interval_minutes"`
 	InactiveBegin       string    `json:"inactive_begin"`
 	InactiveEnd         string    `json:"inactive_end"`
@@ -405,6 +407,7 @@ func (h *Hub) handleSamsungStatus(w http.ResponseWriter, r *http.Request, frameI
 		Locked:              h.samsung.IsLocked(frameID),
 		HasImage:            hasImage,
 		PollIntervalMinutes: cfg.PollIntervalMinutes,
+		Name:                cfg.Name,
 		InactiveBegin:       cfg.InactiveBegin,
 		InactiveEnd:         cfg.InactiveEnd,
 		CropFormat:          cfg.CropFormat,

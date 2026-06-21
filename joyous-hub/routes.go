@@ -6,7 +6,15 @@ import (
 )
 
 func registerRoutes(mux *http.ServeMux, hub *Hub) {
+	mux.HandleFunc("POST /api/inkjoy/ble/scan", hub.handleBLEScan)
+	mux.HandleFunc("POST /api/inkjoy/ble/adopt", hub.handleBLEAdopt)
 	mux.HandleFunc("GET /api/devices", hub.handleDevices)
+	mux.HandleFunc("PATCH /api/devices/{id}", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleDevicePatch(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("DELETE /api/devices/{id}", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleDeviceDelete(w, r, r.PathValue("id"))
+	})
 	mux.HandleFunc("POST /api/devices/discover", hub.handleDiscover)
 	mux.HandleFunc("GET /api/images", hub.handleImages)
 	mux.HandleFunc("POST /api/images", hub.handleImageUpload)
@@ -14,8 +22,10 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 		hub.handleImageDelete(w, r, r.PathValue("id"))
 	})
 	mux.HandleFunc("GET /images/{file}", func(w http.ResponseWriter, r *http.Request) {
-		id := strings.TrimSuffix(r.PathValue("file"), ".bin")
-		hub.images.ServeBinHTTP(w, r, id)
+		file := r.PathValue("file")
+		portrait := strings.HasSuffix(file, "-p.bin")
+		id := strings.TrimSuffix(strings.TrimSuffix(file, "-p.bin"), ".bin")
+		hub.images.ServeBinOrientationHTTP(w, r, id, portrait)
 	})
 	mux.HandleFunc("GET /images/{id}/thumb", func(w http.ResponseWriter, r *http.Request) {
 		hub.images.ServeThumbHTTP(w, r, r.PathValue("id"))
@@ -34,6 +44,9 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	})
 	mux.HandleFunc("POST /api/devices/{id}/refresh", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleRefresh(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("POST /api/devices/{id}/sleep", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleSleep(w, r, r.PathValue("id"))
 	})
 	mux.HandleFunc("POST /api/devices/{id}/redirect", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleRedirect(w, r, r.PathValue("id"))

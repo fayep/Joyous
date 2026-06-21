@@ -37,6 +37,13 @@ type Device struct {
 	DisplayCropFormat string     `json:"display_crop_format,omitempty"` // e.g. "16:9"
 	DisplayWidth      int        `json:"display_width,omitempty"`
 	DisplayHeight     int        `json:"display_height,omitempty"`
+	// InkJoy-specific
+	SleepBeginTime string `json:"sleep_begin_time,omitempty"`
+	SleepEndTime   string `json:"sleep_end_time,omitempty"`
+	LastImageID    string `json:"last_image_id,omitempty"`
+	HubIP          string `json:"hub_ip,omitempty"`   // hub's LAN IP as seen via this frame's MQTT socket
+	Portrait       bool   `json:"portrait,omitempty"` // user-set: frame is in portrait orientation
+	Orientation    int    `json:"orientation"`        // raw accelerometer value from heart (unreliable)
 }
 
 // DeviceRegistry tracks known frames in memory and persists them to disk.
@@ -76,6 +83,14 @@ func (r *DeviceRegistry) MarkConnected(mac string) {
 	d.LastSeen = time.Now()
 }
 
+// SetHubIP records the hub's LAN IP as observed from this frame's MQTT socket.
+func (r *DeviceRegistry) SetHubIP(mac, ip string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d := r.getOrCreateInkJoy(mac)
+	d.HubIP = ip
+}
+
 // MarkDisconnected marks the device as offline.
 func (r *DeviceRegistry) MarkDisconnected(id string) {
 	r.mu.Lock()
@@ -92,6 +107,7 @@ func (r *DeviceRegistry) UpdateHeart(mac string, info HeartInfo) {
 	d := r.getOrCreateInkJoy(mac)
 	d.Battery = info.Battery
 	d.RSSI = info.RSSI
+	d.Orientation = info.Orientation
 	if info.Firmware != "" {
 		d.Firmware = info.Firmware
 	}
@@ -107,8 +123,54 @@ func (r *DeviceRegistry) UpdateLogin(mac string, info LoginInfo) {
 	if info.Firmware != "" {
 		d.Firmware = info.Firmware
 	}
+	if info.SleepBeginTime != "" {
+		d.SleepBeginTime = info.SleepBeginTime
+	}
+	if info.SleepEndTime != "" {
+		d.SleepEndTime = info.SleepEndTime
+	}
 	d.LastSeen = time.Now()
 	d.LastAction = "login"
+}
+
+// SetLastImage records the most recently sent image for a device.
+func (r *DeviceRegistry) SetLastImage(mac, imageID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d := r.getOrCreateInkJoy(mac)
+	d.LastImageID = imageID
+}
+
+// UpdateSleep stores the sleep schedule on an InkJoy device after hub sends wifi_sleep.
+func (r *DeviceRegistry) UpdateSleep(mac, beginTime, endTime string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d := r.getOrCreateInkJoy(mac)
+	d.SleepBeginTime = beginTime
+	d.SleepEndTime = endTime
+}
+
+// SetName updates the friendly name for any device.
+func (r *DeviceRegistry) SetName(id, name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok {
+		return false
+	}
+	d.Name = name
+	return true
+}
+
+func (r *DeviceRegistry) SetPortrait(id string, portrait bool) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok {
+		return false
+	}
+	d.Portrait = portrait
+	return true
 }
 
 // UpsertSamsung registers or refreshes a Samsung frame from SSDP discovery.
@@ -141,6 +203,16 @@ func (r *DeviceRegistry) UpsertSamsung(found SSDPDevice) *Device {
 }
 
 // List returns a snapshot of all known devices sorted by type then name/id.
+func (r *DeviceRegistry) Delete(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.m[id]; !ok {
+		return false
+	}
+	delete(r.m, id)
+	return true
+}
+
 func (r *DeviceRegistry) List() []Device {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

@@ -68,7 +68,7 @@ func main() {
 	samsungStore := NewSamsungStore(*dataDir)
 
 	// ── local MQTT broker ───────────────────────────────────────────────────
-	broker := mochi.New(&mochi.Options{})
+	broker := mochi.New(&mochi.Options{InlineClient: true})
 	_ = broker.AddHook(new(auth.AllowHook), nil) // accept all connections on LAN
 
 	tcpListener := listeners.NewTCP(listeners.Config{
@@ -97,12 +97,22 @@ func main() {
 	if addr == "" {
 		addr = localAddr(*httpAddr)
 	}
+	mqttPortNum := 1883
+	if _, portStr, err := net.SplitHostPort(*mqttAddr); err == nil {
+		fmt.Sscanf(portStr, "%d", &mqttPortNum)
+	}
+	// Resolve serverAddr to a non-loopback LAN IP at startup.
+	// Used for BLE adoption and as fallback in play URLs before the frame's
+	// first login (after which we use the socket's LocalAddr instead).
+	hubIP := resolvedLANIP(addr)
 	hub := &Hub{
 		devices:    devices,
 		images:     imageStore,
 		samsung:    samsungStore,
 		publisher:  &brokerPublisher{broker: broker},
 		serverAddr: addr,
+		mqttPort:   mqttPortNum,
+		hubIP:      hubIP,
 	}
 
 	mux := http.NewServeMux()
@@ -125,6 +135,7 @@ func main() {
 			log.Printf("HTTP: %v", err)
 		}
 	}()
+
 
 	<-ctx.Done()
 	log.Println("shutting down...")
@@ -221,23 +232,31 @@ func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
 	json.Unmarshal(payload, &env)
 
 	if ShouldIntercept(env.Action) {
-		cfg, err := ParseMQTTConfig(payload)
-		if err != nil {
-			log.Printf("[%s] bad mqtt_config: %v", b.mac, err)
-			return
-		}
-		log.Printf("[%s] mqtt_config: new upstream %s:%d", b.mac, cfg.Host, cfg.Port)
-		oldClient := b.client
-		b.cfg = cfg
-		go func() {
-			if oldClient != nil {
-				oldClient.Disconnect(250)
+		switch env.Action {
+		case "mqtt_config":
+			cfg, err := ParseMQTTConfig(payload)
+			if err != nil {
+				log.Printf("[%s] bad mqtt_config: %v", b.mac, err)
+				return
 			}
-			b.connect()
-		}()
-		// ACK to real broker on frame's behalf.
-		ack := buildActionPayloadFor(b.mac, "mqtt_config_ack", map[string]any{"result": 0})
-		b.client.Publish("/device/report/"+b.mac, 0, false, ack)
+			log.Printf("[%s] mqtt_config: new upstream %s:%d", b.mac, cfg.Host, cfg.Port)
+			oldClient := b.client
+			b.cfg = cfg
+			go func() {
+				if oldClient != nil {
+					oldClient.Disconnect(250)
+				}
+				b.connect()
+			}()
+			ack := buildActionPayloadFor(b.mac, "mqtt_config_ack", map[string]any{"result": 0})
+			b.client.Publish("/device/report/"+b.mac, 0, false, ack)
+		case "wifi_sleep":
+			log.Printf("[%s] wifi_sleep from cloud: suppressed, sending ack", b.mac)
+			ack := buildActionPayloadFor(b.mac, "wifi_sleep_ack", map[string]any{"result": 0})
+			b.client.Publish("/device/report/"+b.mac, 0, false, ack)
+		case "play":
+			log.Printf("[%s] play from cloud: suppressed (hub manages display)", b.mac)
+		}
 		return
 	}
 
@@ -267,7 +286,7 @@ func (h *frameHook) Provides(b byte) bool {
 	return b == mochi.OnPublished
 }
 
-func (h *frameHook) OnPublished(_ *mochi.Client, pk packets.Packet) {
+func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 	topic := pk.TopicName
 	payload := pk.Payload
 
@@ -287,6 +306,7 @@ func (h *frameHook) OnPublished(_ *mochi.Client, pk packets.Packet) {
 	}
 	json.Unmarshal(payload, &env)
 
+	skipUpstream := false
 	switch env.Action {
 	case "login":
 		info, err := ParseLoginPayload(payload)
@@ -294,17 +314,35 @@ func (h *frameHook) OnPublished(_ *mochi.Client, pk packets.Packet) {
 			h.devices.MarkConnected(mac)
 			h.devices.UpdateLogin(mac, info)
 		}
+		if cl != nil && cl.Net.Conn != nil {
+			if localIP, _, err := net.SplitHostPort(cl.Net.Conn.LocalAddr().String()); err == nil && localIP != "" {
+				h.devices.SetHubIP(mac, localIP)
+			}
+		}
 	case "heart":
 		info, err := ParseHeartPayload(payload)
 		if err == nil {
 			h.devices.UpdateHeart(mac, info)
 		}
+	case "play_ack":
+		var ack struct {
+			Data struct {
+				AckMsgid string `json:"ack_msgid"`
+				Result   int    `json:"result"`
+			} `json:"data"`
+		}
+		json.Unmarshal(payload, &ack)
+		if isInjectedPlay(ack.Data.AckMsgid) {
+			log.Printf("[%s] play_ack suppressed (hub-initiated, result=%d)", mac, ack.Data.Result)
+			skipUpstream = true
+		}
+		h.devices.MarkConnected(mac)
 	default:
 		h.devices.MarkConnected(mac) // any publish = still alive
 	}
 
 	// Forward to upstream if allowed.
-	if h.allow.Allows(env.Action) && h.bridges.upstreamHost != "" {
+	if !skipUpstream && h.allow.Allows(env.Action) && h.bridges.upstreamHost != "" {
 		bridge := h.bridges.get(mac)
 		bridge.forward(payload)
 	}

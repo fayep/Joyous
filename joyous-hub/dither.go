@@ -86,6 +86,21 @@ func NativeDecode(img image.Image) (hi, lo [][]byte) {
 }
 
 // ToBin interleaves hi/lo grids into a raw .bin byte slice (bottom-to-top row order).
+// rotate90CCW rotates an image 90° counter-clockwise.
+// Input w×h → output h×w.
+func rotate90CCW(src image.Image) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	dst := image.NewRGBA(image.Rect(0, 0, h, w))
+	for y := range h {
+		for x := range w {
+			// 90° CCW: dst(y, w-1-x) = src(x, y)
+			dst.Set(y, w-1-x, src.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return dst
+}
+
 func ToBin(hi, lo [][]byte) []byte {
 	h := len(hi)
 	if h == 0 {
