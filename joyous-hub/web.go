@@ -329,6 +329,7 @@ func (h *Hub) handleStatic(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── MQTT payload helpers ─────────────────────────────────────────────────────
+// Ack result bitfield: see inkjoy_ack.go
 
 func buildActionPayloadFor(mac, action string, data map[string]any) []byte {
 	msg := map[string]any{
@@ -338,6 +339,29 @@ func buildActionPayloadFor(mac, action string, data map[string]any) []byte {
 	}
 	if data != nil {
 		msg["data"] = data
+	}
+	b, _ := json.Marshal(msg)
+	return b
+}
+
+// buildAckPayloadFor builds a frame→cloud ack matching real frame shape:
+// clientid, stamac, data.ack_msgid, and result (default inkjoyAckAccepted).
+func buildAckPayloadFor(mac, ackAction, ackMsgid string, data map[string]any) []byte {
+	if data == nil {
+		data = map[string]any{}
+	}
+	if ackMsgid != "" {
+		data["ack_msgid"] = ackMsgid
+	}
+	if _, ok := data["result"]; !ok {
+		data["result"] = inkjoyAckAccepted
+	}
+	msg := map[string]any{
+		"action":   ackAction,
+		"clientid": mac,
+		"msgid":    fmt.Sprintf("%d", time.Now().UnixMilli()),
+		"stamac":   mac,
+		"data":     data,
 	}
 	b, _ := json.Marshal(msg)
 	return b
@@ -966,23 +990,74 @@ async function submitAdopt(){
 }
 
 // ── InkJoy tab ───────────────────────────────────────────────────────────────
-let ijDevices=[], ijCurrentId=null;
+let ijDevices=[], ijCurrentId=null, ijPreviewKey=null;
+
+function ijPreviewSpec(d){
+  if(d.last_image_id) return 'album:'+d.last_image_id;
+  if(d.display_preview_at) return 'ext:'+d.display_preview_at;
+  return '';
+}
+
+function ijPreviewURL(d){
+  if(d.last_image_id) return '/images/'+encodeURIComponent(d.last_image_id)+'/thumb';
+  if(d.display_preview_at){
+    return '/api/devices/'+encodeURIComponent(d.id)+'/display-preview?t='+encodeURIComponent(d.display_preview_at);
+  }
+  return '';
+}
+
+function ijFrameListSig(inkjoy){
+  return inkjoy.map(d=>d.id+'\x1f'+(d.name||d.mac||d.id)).join('\n');
+}
+
+function patchIJFrameListItem(d){
+  const li=document.getElementById('ijli-'+d.id);
+  if(!li) return;
+  li.classList.toggle('selected', d.id===ijCurrentId);
+  const dot=li.querySelector('.dot');
+  if(dot) dot.className='dot '+(d.connected?'online':'offline');
+  const label=d.name||d.mac||d.id;
+  const title=li.querySelector('.ij-frame-label');
+  if(title) title.textContent=label;
+  let bat=li.querySelector('.ij-frame-battery');
+  if(d.battery){
+    if(!bat){
+      bat=document.createElement('span');
+      bat.className='ij-frame-battery';
+      bat.style.cssText='margin-left:auto;font-size:.8rem;color:#666';
+      li.appendChild(bat);
+    }
+    bat.textContent='🔋'+d.battery+'%';
+  }else if(bat){
+    bat.remove();
+  }
+}
 
 function loadIJFrames(){
   const inkjoy=devices.filter(d=>d.type==='inkjoy');
   ijDevices=inkjoy;
   const el=document.getElementById('inkjoy-frame-list');
-  if(!inkjoy.length){el.innerHTML='<p style="color:#888;font-size:.9rem">No InkJoy frames yet.</p>';return;}
-  el.innerHTML=inkjoy.map(d=>{
-    const label=d.name||d.mac||d.id;
-    const sel=d.id===ijCurrentId?' selected':'';
-    const online=d.connected;
-    return '<div class="frame-list-item'+sel+'" onclick="openIJFrame(\''+d.id+'\')" id="ijli-'+d.id+'">'+
-      '<div class="dot '+(online?'online':'offline')+'"></div>'+
-      '<span style="font-weight:500">'+label+'</span>'+
-      (d.battery?'<span style="margin-left:auto;font-size:.8rem;color:#666">🔋'+d.battery+'%</span>':'')+
-      '</div>';
-  }).join('');
+  if(!inkjoy.length){
+    el.innerHTML='<p style="color:#888;font-size:.9rem">No InkJoy frames yet.</p>';
+    el.dataset.ijSig='';
+    return;
+  }
+  const sig=ijFrameListSig(inkjoy);
+  if(el.dataset.ijSig!==sig){
+    el.dataset.ijSig=sig;
+    el.innerHTML=inkjoy.map(d=>{
+      const label=d.name||d.mac||d.id;
+      const sel=d.id===ijCurrentId?' selected':'';
+      const online=d.connected;
+      return '<div class="frame-list-item'+sel+'" onclick="openIJFrame(\''+d.id+'\')" id="ijli-'+d.id+'">'+
+        '<div class="dot '+(online?'online':'offline')+'"></div>'+
+        '<span class="ij-frame-label" style="font-weight:500">'+label+'</span>'+
+        (d.battery?'<span class="ij-frame-battery" style="margin-left:auto;font-size:.8rem;color:#666">🔋'+d.battery+'%</span>':'')+
+        '</div>';
+    }).join('');
+  }else{
+    inkjoy.forEach(patchIJFrameListItem);
+  }
   // On periodic refresh, only update status/info — never form inputs.
   if(ijCurrentId){
     const d=ijDevices.find(x=>x.id===ijCurrentId);
@@ -992,6 +1067,7 @@ function loadIJFrames(){
 
 function openIJFrame(id){
   ijCurrentId=id;
+  ijPreviewKey=null;
   document.querySelectorAll('.frame-list-item').forEach(el=>el.classList.remove('selected'));
   const li=document.getElementById('ijli-'+id);
   if(li)li.classList.add('selected');
@@ -1027,12 +1103,22 @@ function updateIJEditorStatus(d){
     '<span class="label">Last seen</span><span>'+ago+'</span>'+
     '<span class="label">Last action</span><span>'+(d.last_action||'—')+'</span>';
   const li=document.getElementById('ij-last-image');
-  if(d.last_image_id){
-    li.innerHTML='<img class="last-image-preview" src="/images/'+d.last_image_id+'/thumb" alt="last sent">';
-  } else if(d.display_preview_at){
-    li.innerHTML='<img class="last-image-preview" src="/api/devices/'+d.id+'/display-preview?t='+encodeURIComponent(d.display_preview_at)+'" alt="currently displayed">';
-  } else {
-    li.innerHTML='<p style="color:#888;font-size:.9rem">Nothing sent yet.</p>';
+  const key=ijPreviewSpec(d);
+  const url=ijPreviewURL(d);
+  if(!key){
+    if(ijPreviewKey!==null){
+      ijPreviewKey=null;
+      li.innerHTML='<p style="color:#888;font-size:.9rem">Nothing sent yet.</p>';
+    }
+    return;
+  }
+  const img=document.getElementById('ij-preview');
+  if(!img||img.parentElement!==li){
+    li.innerHTML='<img class="last-image-preview" id="ij-preview" src="'+url+'" alt="currently displayed">';
+    ijPreviewKey=key;
+  }else if(key!==ijPreviewKey){
+    ijPreviewKey=key;
+    refreshIJPreview(url);
   }
 }
 
@@ -1145,7 +1231,7 @@ setInterval(loadDevices,5000);
 document.getElementById('samsung-install-url').textContent=location.origin+'/samsung/';
 
 // ── Samsung tab ─────────────────────────────────────────────────────────────
-let samsungFrames=[], samsungCurrentId=null, samsungStatusCache=null, samsungPreviewEtag=null;
+let samsungFrames=[], samsungCurrentId=null, samsungStatusCache=null, samsungPreviewKey=null;
 
 function samsungFrameRecord(frameId){
   return samsungFrames.find(x=>x.id===frameId);
@@ -1164,6 +1250,43 @@ function samsungFrameIDFromDevice(d){
   return id.replace(/\./g,'-');
 }
 
+function samsungFrameListSig(frames){
+  return frames.map(f=>f.id+'\x1f'+(f.name||f.ip||f.id)).join('\n');
+}
+
+function patchSamsungFrameListItem(f){
+  const li=document.getElementById('samli-'+f.id);
+  if(!li) return;
+  li.classList.toggle('selected', f.id===samsungCurrentId);
+  const dot=li.querySelector('.dot');
+  if(dot) dot.className='dot '+(f.connected?'online':'offline');
+  const label=f.name||f.ip||f.id;
+  const title=li.querySelector('.sam-frame-label');
+  if(title) title.textContent=label;
+  let bat=li.querySelector('.sam-frame-battery');
+  if(f.battery){
+    if(!bat){
+      bat=document.createElement('span');
+      bat.className='sam-frame-battery';
+      bat.style.cssText='margin-left:auto;font-size:.8rem;color:#666';
+      li.appendChild(bat);
+    }
+    bat.textContent='🔋'+f.battery+'%';
+  }else if(bat){
+    bat.remove();
+  }
+}
+
+function samsungPreviewSpec(s){
+  if(s&&s.has_image&&!s.locked) return 'img:'+(s.etag||'');
+  if(s&&s.locked) return 'locked';
+  return 'empty';
+}
+
+function samsungPreviewEmptyHTML(s){
+  return '<p style="color:#888;font-size:.9rem">'+(s&&s.locked?'Image locked.':'No image uploaded yet.')+'</p>';
+}
+
 async function loadSamsungFrames(){
   try{
     const r=await fetch('/api/samsung');
@@ -1174,17 +1297,25 @@ async function loadSamsungFrames(){
   const el=document.getElementById('samsung-frame-list');
   if(!samsungFrames.length){
     el.innerHTML='<p style="color:#888;font-size:.9rem">No Samsung frames yet.</p>';
+    el.dataset.samsungSig='';
     return;
   }
-  el.innerHTML=samsungFrames.map(f=>{
-    const label=f.name||f.ip||f.id;
-    const sel=f.id===samsungCurrentId?' selected':'';
-    const bat=f.battery?('<span style="margin-left:auto;font-size:.8rem;color:#666">🔋'+f.battery+'%</span>'):'';
-    return '<div class="frame-list-item'+sel+'" onclick="openSamsungFrame(\''+f.id+'\')" id="samli-'+f.id+'">'+
-      '<div class="dot '+(f.connected?'online':'offline')+'"></div>'+
-      '<span style="font-weight:500">'+label+'</span>'+bat+
-      '</div>';
-  }).join('');
+  const sig=samsungFrameListSig(samsungFrames);
+  if(el.dataset.samsungSig!==sig){
+    el.dataset.samsungSig=sig;
+    el.innerHTML=samsungFrames.map(f=>{
+      const label=f.name||f.ip||f.id;
+      const sel=f.id===samsungCurrentId?' selected':'';
+      const online=f.connected;
+      return '<div class="frame-list-item'+sel+'" onclick="openSamsungFrame(\''+f.id+'\')" id="samli-'+f.id+'">'+
+        '<div class="dot '+(online?'online':'offline')+'"></div>'+
+        '<span class="sam-frame-label" style="font-weight:500">'+label+'</span>'+
+        (f.battery?'<span class="sam-frame-battery" style="margin-left:auto;font-size:.8rem;color:#666">🔋'+f.battery+'%</span>':'')+
+        '</div>';
+    }).join('');
+  }else{
+    samsungFrames.forEach(patchSamsungFrameListItem);
+  }
   if(samsungCurrentId){
     const rec=samsungFrameRecord(samsungCurrentId);
     const d=samsungDeviceForFrame(samsungCurrentId);
@@ -1213,7 +1344,7 @@ async function discoverSamsungFrames(){
 
 async function openSamsungFrame(frameId){
   samsungCurrentId=frameId;
-  samsungPreviewEtag=null;
+  samsungPreviewKey=null;
   document.querySelectorAll('#samsung-frame-list .frame-list-item').forEach(el=>el.classList.remove('selected'));
   const li=document.getElementById('samli-'+frameId);
   if(li) li.classList.add('selected');
@@ -1265,20 +1396,20 @@ function updateSamsungEditorStatus(d,rec,s){
     '<span class="label">Last seen</span><span>'+ago+'</span>'+
     '<span class="label">Last action</span><span>'+lastAction+'</span>';
   const wrap=document.getElementById('samsung-preview-wrap');
-  if(s&&s.has_image&&!s.locked){
+  const key=samsungPreviewSpec(s);
+  if(key.startsWith('img:')){
     const url='/samsung/'+encodeURIComponent(samsungCurrentId)+'.png';
-    const etag=s.etag||'';
     const img=document.getElementById('samsung-preview');
     if(!img||img.parentElement!==wrap){
       wrap.innerHTML='<img class="last-image-preview" id="samsung-preview" src="'+url+'" alt="current image">';
-      samsungPreviewEtag=etag;
-    }else if(etag!==samsungPreviewEtag){
-      samsungPreviewEtag=etag;
+      samsungPreviewKey=key;
+    }else if(key!==samsungPreviewKey){
+      samsungPreviewKey=key;
       refreshSamsungPreview();
     }
-  }else{
-    samsungPreviewEtag=null;
-    wrap.innerHTML='<p style="color:#888;font-size:.9rem">'+(s&&s.locked?'Image locked.':'No image uploaded yet.')+'</p>';
+  }else if(key!==samsungPreviewKey){
+    samsungPreviewKey=key;
+    wrap.innerHTML=samsungPreviewEmptyHTML(s);
   }
   const st=document.getElementById('samsung-status');
   if(s){
@@ -1390,7 +1521,7 @@ async function samsungDeleteDevice(){
   await fetch('/api/devices/'+encodeURIComponent(deviceId),{method:'DELETE'});
   samsungCurrentId=null;
   samsungStatusCache=null;
-  samsungPreviewEtag=null;
+  samsungPreviewKey=null;
   document.getElementById('samsung-editor').style.display='none';
   await loadDevicesInner();
   loadSamsungFrames();
@@ -1589,6 +1720,13 @@ function refreshSamsungPreview(){
   const t=document.getElementById('samsung-preview');
   if(!t||!samsungCurrentId) return;
   const url='/samsung/'+encodeURIComponent(samsungCurrentId)+'.png';
+  t.src='';
+  t.src=url;
+}
+
+function refreshIJPreview(url){
+  const t=document.getElementById('ij-preview');
+  if(!t) return;
   t.src='';
   t.src=url;
 }

@@ -56,8 +56,8 @@ func TestParseMQTTConfigMissingFields(t *testing.T) {
 func TestUpstreamAllowDefault(t *testing.T) {
 	allow := DefaultUpstreamAllow()
 
-	mustPass := []string{"login", "heart", "play_ack", "fpga_ota_ack", "shutdown", "image_refresh_ack", "ota_ack"}
-	mustBlock := []string{"image_refresh", "play", "ota", "mqtt_config", "shutdown_ack", "fpga", "wifi_sleep_ack"}
+	mustPass := []string{"login", "heart", "play_ack", "fpga_ota_ack", "shutdown", "image_refresh_ack", "ota_ack", "wifi_sleep_ack", "mqtt_config_ack"}
+	mustBlock := []string{"image_refresh", "play", "ota", "mqtt_config", "shutdown_ack", "fpga"}
 
 	for _, action := range mustPass {
 		if !allow.Allows(action) {
@@ -105,5 +105,42 @@ func TestBuildMQTTConfigPayload(t *testing.T) {
 	}
 	if data["port"] != float64(1883) {
 		t.Errorf("data.port: got %v", data["port"])
+	}
+}
+
+func TestBuildAckPayloadFor(t *testing.T) {
+	payload := buildAckPayloadFor("AABBCCDDEEFF", "wifi_sleep_ack", "1781902333622", nil)
+	var msg struct {
+		Action   string `json:"action"`
+		Clientid string `json:"clientid"`
+		Stamac   string `json:"stamac"`
+		Data     struct {
+			AckMsgid string `json:"ack_msgid"`
+			Result   int    `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if msg.Action != "wifi_sleep_ack" {
+		t.Errorf("action: got %q", msg.Action)
+	}
+	if msg.Clientid != "AABBCCDDEEFF" || msg.Stamac != "AABBCCDDEEFF" {
+		t.Errorf("clientid/stamac: got %q / %q", msg.Clientid, msg.Stamac)
+	}
+	if msg.Data.AckMsgid != "1781902333622" {
+		t.Errorf("ack_msgid: got %q", msg.Data.AckMsgid)
+	}
+	if msg.Data.Result != 106 {
+		t.Errorf("result: got %d want 106", msg.Data.Result)
+	}
+}
+
+func TestMQTTMsgid(t *testing.T) {
+	if got := mqttMsgid([]byte(`{"action":"wifi_sleep","msgid":"1781902333622"}`)); got != "1781902333622" {
+		t.Errorf("string msgid: got %q", got)
+	}
+	if got := mqttMsgid([]byte(`{"action":"wifi_sleep","msgid":1781902333622}`)); got != "1781902333622" {
+		t.Errorf("numeric msgid: got %q", got)
 	}
 }

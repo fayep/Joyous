@@ -18,7 +18,7 @@ const (
 	mdcCmdBattery        = 0x1B
 	mdcSubCmdBattery     = 0x73
 	mdcConnectTimeout    = 10 * time.Second
-	mdcCommandReadTimeout = 5 * time.Second
+	mdcCommandReadTimeout = 10 * time.Second
 )
 
 // buildContentJSON returns the manifest Samsung mobile deploy expects.

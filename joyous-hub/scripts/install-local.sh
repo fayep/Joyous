@@ -11,7 +11,7 @@ HTTP_PORT="${HTTP_PORT:-18080}"
 MQTT_PORT="${MQTT_PORT:-11883}"
 SERVER_ADDR="${SERVER_ADDR:-$(hostname -s | tr '[:upper:]' '[:lower:]').local:${HTTP_PORT}}"
 DISCOVER_SUBNETS="${DISCOVER_SUBNETS:-192.168.50}"
-JOYOUS_VERSION="${JOYOUS_VERSION:-1.0}"
+JOYOUS_VERSION="${JOYOUS_VERSION:-0.9.0}"
 LABEL="com.joyous.hub"
 APP_BUNDLE="JoyousHub.app"
 APP_DISPLAY_NAME="Joyous Hub"
@@ -117,21 +117,7 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
 		exit 1
 	fi
 	echo "==> building $STAGING_BIN (CGO + libheif)..."
-	(
-		cd "$SRC_DIR"
-		export CGO_ENABLED=1
-		if prefix="$(brew --prefix libheif 2>/dev/null)"; then
-			export CGO_CFLAGS="${CGO_CFLAGS:-} -I${prefix}/include"
-			export CGO_LDFLAGS="${CGO_LDFLAGS:-} -L${prefix}/lib -lheif"
-		fi
-		if [[ -n "${JOYOUS_SEAL:-${INKJOY_SIGN_KEY:-}}" ]]; then
-			SEAL="${JOYOUS_SEAL:-$INKJOY_SIGN_KEY}"
-			LDFLAGS="$(VERSION="$JOYOUS_VERSION" JOYOUS_SEAL="$SEAL" go run ./cmd/embed-linkmeta)"
-		else
-			LDFLAGS="-X joyous-hub/internal/linkmeta.Version=${JOYOUS_VERSION}"
-		fi
-		go build -ldflags "$LDFLAGS" -o "$STAGING_BIN" .
-	)
+	bash "$SCRIPT_DIR/build-binary.sh" "$STAGING_BIN"
 elif [[ ! -x "$STAGING_BIN" ]]; then
 	echo "missing executable: $STAGING_BIN (set SKIP_BUILD=0 to compile on host)" >&2
 	exit 1
@@ -215,7 +201,7 @@ listen_http: ":${HTTP_PORT}"
 upstream: "13.39.148.101:1883"
 upstream_usr: ""
 upstream_pwd: ""
-upstream_allow: "login,heart,play_ack,fpga_ota_ack,shutdown,image_refresh_ack,ota_ack"
+upstream_allow: "login,heart,play_ack,fpga_ota_ack,shutdown,image_refresh_ack,ota_ack,wifi_sleep_ack,mqtt_config_ack"
 downstream_allow: "login_ack,heart_ack,play,device_config,shutdown_ack,image_refresh_ack,wifi_sleep"
 intercept: "mqtt_config,wifi_sleep,ota,fpga"
 data_dir: "${DATA_DIR}"

@@ -315,18 +315,19 @@ func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
 				}
 				b.connect()
 			}()
-			ack := buildActionPayloadFor(b.mac, "mqtt_config_ack", map[string]any{"result": 0})
+			ack := buildAckPayloadFor(b.mac, "mqtt_config_ack", mqttMsgid(payload), nil)
 			b.set.logCloudOut(b.mac, ack, "synthetic ack")
 			b.client.Publish("/device/report/"+b.mac, 0, false, ack)
 		case "wifi_sleep":
 			log.Printf("[%s] wifi_sleep from cloud: suppressed, sending ack", b.mac)
-			ack := buildActionPayloadFor(b.mac, "wifi_sleep_ack", map[string]any{"result": 0})
+			ack := buildAckPayloadFor(b.mac, "wifi_sleep_ack", mqttMsgid(payload), nil)
 			b.set.logCloudOut(b.mac, ack, "synthetic ack")
 			b.client.Publish("/device/report/"+b.mac, 0, false, ack)
 		case "ota", "fpga":
 			if b.set.ota != nil {
 				b.set.ota.Handle(b.mac, action, payload)
 			}
+			b.sendBlockedOTAAcks(action, payload)
 			log.Printf("[%s] %s blocked (artifact capture)", b.mac, action)
 		default:
 			log.Printf("[%s] cloud→frame %q intercepted (not forwarded)", b.mac, action)
@@ -359,6 +360,21 @@ func (b *upstreamBridge) forward(payload []byte) {
 	}
 	b.set.logCloudOut(b.mac, payload, "")
 	b.client.Publish("/device/report/"+b.mac, 0, false, payload)
+}
+
+func (b *upstreamBridge) sendBlockedOTAAcks(interceptedAction string, requestPayload []byte) {
+	if b.client == nil || !b.client.IsConnected() {
+		return
+	}
+	ackMsgid := mqttMsgid(requestPayload)
+	for i, ack := range buildBlockedOTAAcks(b.mac, interceptedAction, ackMsgid) {
+		note := "synthetic ota interrupted"
+		if i == 0 {
+			note = "synthetic ota started"
+		}
+		b.set.logCloudOut(b.mac, ack, note)
+		b.client.Publish("/device/report/"+b.mac, 0, false, ack)
+	}
 }
 
 func (bs *bridgeSet) logCloudIn(mac string, payload []byte, note string) {

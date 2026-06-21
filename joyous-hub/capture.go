@@ -149,6 +149,24 @@ func mqttAction(payload []byte) string {
 	return env.Action
 }
 
+func mqttMsgid(payload []byte) string {
+	var env struct {
+		Msgid json.RawMessage `json:"msgid"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil || len(env.Msgid) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(env.Msgid, &s); err == nil {
+		return s
+	}
+	var n json.Number
+	if err := json.Unmarshal(env.Msgid, &n); err == nil {
+		return n.String()
+	}
+	return strings.Trim(string(env.Msgid), `"`)
+}
+
 func captureWriteErr(where string, err error) {
 	if err != nil {
 		log.Printf("capture %s: %v", where, err)
