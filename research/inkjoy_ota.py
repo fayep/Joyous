@@ -6,8 +6,9 @@
 """
 InkJoy frame OTA checker/trigger with MQTT observation.
 
-Credentials are read from the macOS Keychain (service "InkJoy", account
-user@example.com). Password can also be passed via --password or prompted.
+Credentials are read from the macOS Keychain (service "InkJoy") when available.
+Password can also be passed via --password or prompted. Set INKJOY_SIGN_KEY for API
+request signing.
 
 After triggering OTA, connects to the MQTT broker (credentials from
 GET /version/serverInfo) and listens on /device/report/{clientId} to capture
@@ -23,6 +24,7 @@ import argparse
 import hashlib
 import hmac
 import json
+import os
 import subprocess
 import sys
 import time
@@ -31,10 +33,15 @@ import uuid
 import requests
 
 BASE_URL = "https://app.inkjoyframe.com"
-SIGN_KEY = b"REDACTED_SIGN_KEY"
-DEFAULT_EMAIL = "user@example.com"
 KEYCHAIN_SERVICE = "InkJoy"
 MQTT_LISTEN_SECONDS = 60
+
+
+def sign_key() -> bytes:
+    val = os.environ.get("INKJOY_SIGN_KEY")
+    if not val:
+        raise SystemExit("Set INKJOY_SIGN_KEY environment variable")
+    return val.encode()
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +70,7 @@ def _sha256_hex(text: str) -> str:
 
 
 def _hmac_sha256_hex(data: str) -> str:
-    return hmac.new(SIGN_KEY, data.encode(), hashlib.sha256).hexdigest()
+    return hmac.new(sign_key(), data.encode(), hashlib.sha256).hexdigest()
 
 
 def _sign_headers(method: str, path: str, body: str = "") -> dict:
@@ -228,7 +235,7 @@ def main() -> None:
                         help="Trigger OTA and listen for firmware URL via MQTT")
     parser.add_argument("--device", metavar="DEVICE_ID",
                         help="Only act on this specific deviceId")
-    parser.add_argument("--email", default=DEFAULT_EMAIL, help="Account email")
+    parser.add_argument("--email", default=os.environ.get("INKJOY_EMAIL", ""), help="Account email")
     parser.add_argument("--password", help="Account password (falls back to Keychain)")
     parser.add_argument("--mqtt-timeout", type=int, default=MQTT_LISTEN_SECONDS,
                         metavar="SECS", help="How long to listen on MQTT after trigger")

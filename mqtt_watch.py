@@ -6,22 +6,35 @@
 """
 Watch all InkJoy MQTT traffic we can see.
 Subscribe to every topic the broker ACL permits and print everything.
-Run this before scanning NFC / doing a push to catch the reflections frame.
+
+Requires INKJOY_MQTT_USER and INKJOY_MQTT_PASSWORD environment variables.
 """
 
-import json, time, uuid
+import json
+import os
+import time
+import uuid
+
 import paho.mqtt.client as mqtt
 
-MQTT_HOST = "13.39.148.101"
-MQTT_PORT = 1883
-MQTT_USER = "REDACTED_MQTT_USER"
-MQTT_PASS = "REDACTED_MQTT_PASSWORD"
+
+def env(name: str) -> str:
+    val = os.environ.get(name)
+    if not val:
+        raise SystemExit(f"Set {name} environment variable")
+    return val
+
+
+MQTT_HOST = os.environ.get("INKJOY_MQTT_HOST", "13.39.148.101")
+MQTT_PORT = int(os.environ.get("INKJOY_MQTT_PORT", "1883"))
+MQTT_USER = env("INKJOY_MQTT_USER")
+MQTT_PASS = env("INKJOY_MQTT_PASSWORD")
 
 TOPICS = [
-    ("#", 1),                    # everything (will likely be ACL-denied but worth trying)
-    ("/device/report/+", 1),     # all frame→server reports
-    ("/device/report/#", 1),     # same with multi-level wildcard
-    ("/inkjoyap/+", 1),          # all server→frame (likely denied)
+    ("#", 1),
+    ("/device/report/+", 1),
+    ("/device/report/#", 1),
+    ("/inkjoyap/+", 1),
 ]
 
 def on_connect(client, userdata, flags, rc):
@@ -32,7 +45,6 @@ def on_connect(client, userdata, flags, rc):
         print(f"  subscribe {topic!r}: {status}")
 
 def on_subscribe(client, userdata, mid, granted_qos):
-    # QoS 128 = denied by broker ACL
     for i, q in enumerate(granted_qos):
         if q == 128:
             print(f"  [ACL DENIED] mid={mid} index={i}")
@@ -60,7 +72,7 @@ client.on_disconnect = on_disconnect
 
 print(f"Connecting as {spy_id}…")
 client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
-print("Watching — scan NFC / do a push now. Ctrl-C to stop.\n")
+print("Watching — Ctrl-C to stop.\n")
 try:
     client.loop_forever()
 except KeyboardInterrupt:

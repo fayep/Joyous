@@ -27,6 +27,7 @@ import argparse
 import hashlib
 import hmac
 import json
+import os
 import subprocess
 import sys
 import time
@@ -36,18 +37,32 @@ import requests
 import paho.mqtt.client as mqtt
 
 BASE_URL = "https://app.inkjoyframe.com"
-SIGN_KEY = b"REDACTED_SIGN_KEY"
-DEFAULT_EMAIL = "user@example.com"
 KEYCHAIN_SERVICE = "InkJoy"
 
-CLIENT_ID = "AABBCCDDEEFF"   # frame MAC / stamac / clientid
-DEVICE_ID = "00000000-0000-0000-0000-000000000002"
+CLIENT_ID = os.environ.get("INKJOY_CLIENT_ID", "AABBCCDDEEFF")
 
-# Broker creds (from pcap / serverInfo — shared, not per-device)
-MQTT_HOST = "13.39.148.101"
-MQTT_PORT = 1883
-MQTT_USER = "REDACTED_MQTT_USER"
-MQTT_PASS = "REDACTED_MQTT_PASSWORD"
+# Broker host is public; credentials come from serverInfo or env.
+MQTT_HOST = os.environ.get("INKJOY_MQTT_HOST", "13.39.148.101")
+MQTT_PORT = int(os.environ.get("INKJOY_MQTT_PORT", "1883"))
+
+
+def env(name: str, default: str = "") -> str:
+    val = os.environ.get(name, default)
+    if not val:
+        raise SystemExit(f"Set {name} environment variable")
+    return val
+
+
+def sign_key() -> bytes:
+    return env("INKJOY_SIGN_KEY").encode()
+
+
+def mqtt_user() -> str:
+    return env("INKJOY_MQTT_USER")
+
+
+def mqtt_pass() -> str:
+    return env("INKJOY_MQTT_PASSWORD")
 
 TOPIC_REPORT  = f"/device/report/{CLIENT_ID}"   # frame → server
 TOPIC_INKJOY  = f"/inkjoyap/{CLIENT_ID}"         # server → frame (discovered via pcap)
@@ -63,7 +78,7 @@ def sign(method, path, body=""):
     ts = str(int(time.time() * 1000))
     nonce = uuid.uuid4().hex
     bh = hashlib.sha256(body.encode()).hexdigest() if body else ""
-    sig = hmac.new(SIGN_KEY, (method + path + ts + nonce + bh).encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(sign_key(), (method + path + ts + nonce + bh).encode(), hashlib.sha256).hexdigest()
     return {"X-Timestamp": ts, "X-Nonce": nonce, "X-Signature": sig}
 
 
@@ -79,8 +94,12 @@ def api_login(email, password):
     return resp["data"]["token"], resp["data"]["uid"]
 
 
+def device_id() -> str:
+    return os.environ.get("INKJOY_DEVICE_ID", CLIENT_ID)
+
+
 def api_trigger_ota(token, uid):
-    path = f"/inkjoy/api/v1/device/ota/{DEVICE_ID}"
+    path = f"/inkjoy/api/v1/device/ota/{device_id()}"
     headers = sign("POST", path)
     headers.update({"Authorization": f"Bearer {token}", "uid": uid,
                     "Content-Type": "application/json"})
@@ -166,10 +185,10 @@ def make_heart(fake_version=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--email", default=DEFAULT_EMAIL)
+    parser.add_argument("--email", default=os.environ.get("INKJOY_EMAIL", ""))
     parser.add_argument("--password")
     parser.add_argument("--no-auth", action="store_true",
-                        help="Skip API login; use hardcoded broker creds")
+                        help="Skip API login; use INKJOY_MQTT_USER/PASSWORD env vars")
     parser.add_argument("--spoof", action="store_true",
                         help="Send login+heart messages as the frame")
     parser.add_argument("--fake-version", default=None, metavar="VER",
@@ -182,12 +201,14 @@ def main():
 
     token = uid = None
     if args.no_auth:
-        host, port, username, password_mqtt = MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS
-        print("Using hardcoded broker creds (no API login).")
+        host, port, username, password_mqtt = MQTT_HOST, MQTT_PORT, mqtt_user(), mqtt_pass()
+        print("Using MQTT credentials from environment (no API login).")
         if args.trigger:
             print("ERROR: --trigger requires auth; remove --no-auth")
             sys.exit(1)
     else:
+        if not args.email:
+            raise SystemExit("Set --email or INKJOY_EMAIL for API login")
         password = args.password or keychain_password()
         if not password:
             import getpass
@@ -268,7 +289,7 @@ def main():
     if args.trigger:
         print(f"\nWaiting {args.trigger_delay}s before triggering OTA...")
         time.sleep(args.trigger_delay)
-        print(f"Triggering OTA via REST for device {DEVICE_ID}...")
+        print(f"Triggering OTA via REST for device {device_id()}...")
         resp = api_trigger_ota(token, uid)
         print(f"  response: {resp}")
 

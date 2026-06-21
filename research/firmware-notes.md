@@ -214,18 +214,16 @@ Credentials come from the REST API (`GET /inkjoy/api/v1/version/serverInfo`), wh
 returns an AES-GCM encrypted blob. The decryption key is `uid[:16]` (first 16 chars
 of the user's uid, which is returned by the login API).
 
-The shared broker credentials observed are:
+Observed pattern (values are account-specific — do not commit real credentials):
 
 ```
 host:     13.39.148.101
 port:     1883
-username: REDACTED_MQTT_USER
-password: REDACTED_MQTT_PASSWORD   # = username + uid[:6]
+username: <from serverInfo>
+password: <username + uid[:6]>
 ```
 
-The password suffix (`REDACTED`) matches the first 6 characters of the account uid
-(`00000000-0000-0000-0000-000000000001`), confirming the pattern. Credentials are
-per-account, not per-device.
+Credentials are per-account, not per-device.
 
 The broker ACL restricts subscriptions to devices registered under the authenticated
 account. Subscribing to an unregistered device's topic returns QoS 128 (denied).
@@ -446,7 +444,7 @@ Base URL: `https://app.inkjoyframe.com`
 
 All requests require HMAC-SHA256 signing:
 ```
-sig = HMAC-SHA256(key="REDACTED_SIGN_KEY",
+sig = HMAC-SHA256(key=<sign-key-from-app-binary>,
                   msg=method+path+timestamp+nonce+sha256(body))
 headers: X-Timestamp, X-Nonce, X-Signature
 ```

@@ -21,6 +21,7 @@ Usage:
 
 import argparse
 import json
+import os
 import random
 import sys
 import threading
@@ -30,8 +31,21 @@ import paho.mqtt.client as mqtt
 
 MQTT_HOST = "13.39.148.101"
 MQTT_PORT = 1883
-MQTT_USER = "REDACTED_MQTT_USER"
-MQTT_PASS = "REDACTED_MQTT_PASSWORD"
+
+
+def env(name: str, default: str = "") -> str:
+    val = os.environ.get(name, default)
+    if not val:
+        raise SystemExit(f"Set {name} environment variable")
+    return val
+
+
+def mqtt_user() -> str:
+    return env("INKJOY_MQTT_USER")
+
+
+def mqtt_pass() -> str:
+    return env("INKJOY_MQTT_PASSWORD")
 
 DEFAULT_VER = "M H:2 F:0.5.6"   # login ver  ("M H:<fpga_ver> F:<esp32_fw>")
 DEFAULT_FW  = "0.5.6"            # heart version (fw only)
@@ -204,7 +218,7 @@ def main():
     # ── Connect and run ──────────────────────────────────────────────────────
 
     client = mqtt.Client(client_id=mac_plain, protocol=mqtt.MQTTv311)
-    client.username_pw_set(MQTT_USER, MQTT_PASS)
+    client.username_pw_set(mqtt_user(), mqtt_pass())
     client.on_connect    = on_connect
     client.on_subscribe  = on_subscribe
     client.on_message    = on_message

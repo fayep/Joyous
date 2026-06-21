@@ -8,6 +8,10 @@ InkJoy/inkjoy-proxy/inkjoy-proxy
 InkJoy/inkjoy-proxy/inkjoy-proxy-mipsle
 InkJoy/InkJoyOfflineTool/
 images/
+.env
+.env.*
+!.env.example
+joyous-hub/data/
 # APK files and decompiled output
 *.apk
 *.xapk

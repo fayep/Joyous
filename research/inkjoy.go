@@ -35,17 +35,31 @@ import (
 const (
 	mqttHost = "13.39.148.101"
 	mqttPort = 1883
-	mqttUser = "REDACTED_MQTT_USER"
-	mqttPass = "REDACTED_MQTT_PASSWORD"
-
-	clientID    = "AABBCCDDEEFF"
-	deviceID    = "00000000-0000-0000-0000-000000000002"
-	topicReport = "/device/report/" + clientID
-	topicInkjoy = "/inkjoyap/" + clientID
-
-	baseURL = "https://app.inkjoyframe.com"
-	signKey = "REDACTED_SIGN_KEY"
+	baseURL  = "https://app.inkjoyframe.com"
 )
+
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envRequired(name string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	log.Fatalf("Set %s environment variable", name)
+	return ""
+}
+
+func mqttUser() string     { return envRequired("INKJOY_MQTT_USER") }
+func mqttPass() string     { return envRequired("INKJOY_MQTT_PASSWORD") }
+func signKey() string      { return envRequired("INKJOY_SIGN_KEY") }
+func clientID() string     { return envOr("INKJOY_CLIENT_ID", "AABBCCDDEEFF") }
+func deviceID() string     { return envOr("INKJOY_DEVICE_ID", clientID()) }
+func topicReport() string  { return "/device/report/" + clientID() }
+func topicInkjoy() string  { return "/inkjoyap/" + clientID() }
 
 // ── REST signing ───────────────────────────────────────────────────────────
 
@@ -58,7 +72,7 @@ func apiSign(method, path, body string) map[string]string {
 		bh = fmt.Sprintf("%x", h)
 	}
 	msg := method + path + ts + nonce + bh
-	mac := hmac.New(sha256.New, []byte(signKey))
+	mac := hmac.New(sha256.New, []byte(signKey()))
 	mac.Write([]byte(msg))
 	return map[string]string{
 		"X-Timestamp": ts,
@@ -191,7 +205,7 @@ type playResp struct {
 func apiPlay(imgURI, token, uid string) error {
 	path := "/inkjoy/api/v1/device/play"
 	body := fmt.Sprintf(`{"deviceId":%q,"imgUri":%q,"binUri":%q,"orientation":0}`,
-		deviceID, imgURI, imgURI)
+		deviceID(), imgURI, imgURI)
 	raw, err := apiDo("POST", path, body, token, uid)
 	if err != nil {
 		return err
@@ -257,7 +271,7 @@ func msgid() string { return strconv.FormatInt(time.Now().UnixMilli(), 10) }
 
 func makeLogin(fw string) []byte {
 	b, _ := json.Marshal(loginMsg{
-		Action: "login", Clientid: clientID, Msgid: msgid(), Stamac: clientID,
+		Action: "login", Clientid: clientID(), Msgid: msgid(), Stamac: clientID(),
 		Data: loginData{Ver: fmt.Sprintf("M H:2 F:%s", fw), Statype: 3,
 			SleepMode: 2, SleepBegin: "07:00", SleepEnd: "13:00", Inkjoy: true},
 	})
@@ -266,7 +280,7 @@ func makeLogin(fw string) []byte {
 
 func makeHeart(fw string) []byte {
 	b, _ := json.Marshal(heartMsg{
-		Action: "heart", Clientid: clientID, Msgid: msgid(), Stamac: clientID,
+		Action: "heart", Clientid: clientID(), Msgid: msgid(), Stamac: clientID(),
 		Data: heartData{Type: 3, Ack: 1, Wifi: "on", WifiName: "ExampleWiFi",
 			Ble: "off", Tf: "absent", Battery: 73, WifiListenIv: 50,
 			WifiRssi: -45, WifiCh: 1, Version: fw},
@@ -275,7 +289,7 @@ func makeHeart(fw string) []byte {
 }
 
 func makeShutdown() []byte {
-	b, _ := json.Marshal(shutdownMsg{Action: "shutdown", Msgid: msgid(), Stamac: clientID})
+	b, _ := json.Marshal(shutdownMsg{Action: "shutdown", Msgid: msgid(), Stamac: clientID()})
 	return b
 }
 
@@ -285,7 +299,7 @@ func main() {
 	fw         := flag.String("fw", "0.5.6", "firmware version to report")
 	spoof      := flag.Bool("spoof", false, "publish login+heart as the frame")
 	pushFile   := flag.String("push", "", "image file to push to the frame (requires -email/-password)")
-	email      := flag.String("email", "user@example.com", "account email")
+	email      := flag.String("email", os.Getenv("INKJOY_EMAIL"), "account email")
 	password   := flag.String("password", "", "account password")
 	listenSecs := flag.Int("listen", 120, "seconds to listen for server responses")
 	flag.Parse()
@@ -319,7 +333,7 @@ func main() {
 		}
 		log.Printf("Uploaded → uri=%s", uri)
 
-		log.Printf("Triggering play on device %s ...", deviceID)
+		log.Printf("Triggering play on device %s ...", deviceID())
 		if err := apiPlay(uri, token, uid); err != nil {
 			log.Fatalf("Play: %v", err)
 		}
@@ -333,13 +347,13 @@ func main() {
 	opts := mqtt.NewClientOptions().
 		AddBroker(broker).
 		SetClientID(spyID).
-		SetUsername(mqttUser).
-		SetPassword(mqttPass).
+		SetUsername(mqttUser()).
+		SetPassword(mqttPass()).
 		SetCleanSession(true).
 		SetAutoReconnect(true).
 		SetOnConnectHandler(func(c mqtt.Client) {
 			log.Printf("MQTT connected as %s", spyID)
-			for _, topic := range []string{topicInkjoy, topicReport} {
+			for _, topic := range []string{topicInkjoy(), topicReport()} {
 				tok := c.Subscribe(topic, 1, onMessage)
 				tok.Wait()
 				if tok.Error() != nil {
@@ -362,11 +376,11 @@ func main() {
 		time.Sleep(500 * time.Millisecond)
 		login := makeLogin(*fw)
 		log.Printf("→ login [fw=%s]: %s", *fw, login)
-		client.Publish(topicReport, 1, false, login).Wait()
+		client.Publish(topicReport(), 1, false, login).Wait()
 		time.Sleep(500 * time.Millisecond)
 		heart := makeHeart(*fw)
 		log.Printf("→ heart [fw=%s]: %s", *fw, heart)
-		client.Publish(topicReport, 1, false, heart).Wait()
+		client.Publish(topicReport(), 1, false, heart).Wait()
 
 		go func() {
 			ticker := time.NewTicker(60 * time.Second)
@@ -375,7 +389,7 @@ func main() {
 				if !client.IsConnected() {
 					return
 				}
-				client.Publish(topicReport, 1, false, makeHeart(*fw))
+				client.Publish(topicReport(), 1, false, makeHeart(*fw))
 			}
 		}()
 	}
@@ -391,7 +405,7 @@ func main() {
 	if *spoof {
 		sd := makeShutdown()
 		log.Printf("→ shutdown: %s", sd)
-		client.Publish(topicReport, 1, false, sd).Wait()
+		client.Publish(topicReport(), 1, false, sd).Wait()
 		time.Sleep(200 * time.Millisecond)
 	}
 	client.Disconnect(500)

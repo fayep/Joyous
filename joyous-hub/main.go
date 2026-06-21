@@ -25,8 +25,8 @@ func main() {
 	mqttAddr := flag.String("listen-mqtt", ":1883", "local MQTT broker address")
 	httpAddr := flag.String("listen-http", ":8080", "HTTP server address")
 	upstream := flag.String("upstream", "13.39.148.101:1883", "upstream broker (empty = local-only)")
-	upstreamUsr := flag.String("upstream-usr", "REDACTED_MQTT_USER", "upstream broker username")
-	upstreamPwd := flag.String("upstream-pwd", "REDACTED_MQTT_PASSWORD", "upstream broker password")
+	upstreamUsr := flag.String("upstream-usr", "", "upstream broker username (or INKJOY_MQTT_USER env)")
+	upstreamPwd := flag.String("upstream-pwd", "", "upstream broker password (or INKJOY_MQTT_PASSWORD env)")
 	upstreamAllow := flag.String("upstream-allow", "login,heart,play_ack,fpga_ota_ack",
 		"comma-separated frame→cloud action whitelist")
 	dataDir := flag.String("data-dir", "./data", "data directory for devices.json and images/")
@@ -35,6 +35,13 @@ func main() {
 	probeNetworkFlag := flag.String("probe-network", "", "test TCP connectivity to IP:1515 and exit (triggers Local Network permission)")
 	logDirFlag := flag.String("log-dir", "", "append hub logs to stdout.log and stderr.log in this directory")
 	flag.Parse()
+
+	if *upstreamUsr == "" {
+		*upstreamUsr = os.Getenv("INKJOY_MQTT_USER")
+	}
+	if *upstreamPwd == "" {
+		*upstreamPwd = os.Getenv("INKJOY_MQTT_PASSWORD")
+	}
 
 	if dir := strings.TrimSpace(*logDirFlag); dir != "" {
 		if err := setupFileLogging(dir); err != nil {

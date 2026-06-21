@@ -30,12 +30,17 @@ import uuid
 
 import paho.mqtt.client as mqtt
 
-CLIENT_ID   = "AABBCCDDEEFF"
-DEVICE_ID   = "00000000-0000-0000-0000-000000000002"
-MQTT_HOST   = "13.39.148.101"
-MQTT_PORT   = 1883
-MQTT_USER   = "REDACTED_MQTT_USER"
-MQTT_PASS   = "REDACTED_MQTT_PASSWORD"
+def env(name: str, default: str = "") -> str:
+    val = os.environ.get(name, default)
+    if not val:
+        raise SystemExit(f"Set {name} environment variable")
+    return val
+
+CLIENT_ID = os.environ.get("INKJOY_CLIENT_ID", "AABBCCDDEEFF")
+MQTT_HOST = os.environ.get("INKJOY_MQTT_HOST", "13.39.148.101")
+MQTT_PORT = int(os.environ.get("INKJOY_MQTT_PORT", "1883"))
+MQTT_USER = env("INKJOY_MQTT_USER")
+MQTT_PASS = env("INKJOY_MQTT_PASSWORD")
 TOPIC_FRAME = f"/inkjoyap/{CLIENT_ID}"     # server → frame
 TOPIC_RPT   = f"/device/report/{CLIENT_ID}" # frame → server
 
