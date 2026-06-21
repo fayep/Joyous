@@ -76,7 +76,7 @@ func TestUpsertSamsungDevice(t *testing.T) {
 	if d.Name != "Samsung · 192.168.1.101" {
 		t.Fatalf("name %q", d.Name)
 	}
-	if SamsungFrameID(d) != "192-168-50-111" {
+	if SamsungFrameID(d) != "192-168-1-101" {
 		t.Fatalf("frame id %q", SamsungFrameID(d))
 	}
 	reg.SetName(d.ID, "Living Room")

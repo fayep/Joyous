@@ -219,3 +219,32 @@ func TestApplySamsungConnectedStale(t *testing.T) {
 		t.Fatal("stale frame should not be active")
 	}
 }
+
+func TestDiscoverDoesNotMarkActive(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	d := reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	if d.LastAction != "discover" {
+		t.Fatalf("LastAction: got %q", d.LastAction)
+	}
+	ApplySamsungConnected(d)
+	if d.Connected {
+		t.Fatal("SSDP discover alone should not mark frame active")
+	}
+}
+
+func TestNoteSamsungSleptNotActive(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	reg.TouchSamsung("192.168.1.108", "mdc_push")
+	d, _ := reg.Get("samsung:192.168.1.108")
+	ApplySamsungConnected(d)
+	if !d.Connected {
+		t.Fatal("frame should be active after push touch")
+	}
+	reg.NoteSamsungSlept("192.168.1.108")
+	d, _ = reg.Get("samsung:192.168.1.108")
+	ApplySamsungConnected(d)
+	if d.Connected {
+		t.Fatal("frame should be asleep after sleep command")
+	}
+}

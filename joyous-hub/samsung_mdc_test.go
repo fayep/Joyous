@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"testing"
+)
 
 func TestMDCBatteryQueryPacket(t *testing.T) {
 	pkt := mdcSubCommandQueryPacket(mdcCmdBattery, mdcSubCmdBattery)
@@ -44,4 +48,30 @@ func buildMDCTestResponse(rCmd, subCmd byte, payload []byte) []byte {
 		sum += int(pkt[i])
 	}
 	return append(pkt, byte(sum&0xFF))
+}
+
+func TestMDCSleepNowPacket(t *testing.T) {
+	pkt := mdcSleepNowPacket(true)
+	want := []byte{0xAA, 0x11, 0x00, 0x01, 0x00, 0x12}
+	if len(pkt) != len(want) {
+		t.Fatalf("len %d, want %d: % x", len(pkt), len(want), pkt)
+	}
+	for i := range want {
+		if pkt[i] != want[i] {
+			t.Fatalf("byte %d: got 0x%02x want 0x%02x (full % x)", i, pkt[i], want[i], pkt)
+		}
+	}
+}
+
+func TestSamsungWakeMagicKey(t *testing.T) {
+	got := samsungWakeMagicKey("aa:bb:cc:dd:ee:ff")
+	want := sha256Hex("AA:BB:CC:DD:EE:FF:E-Paper")
+	if got != want {
+		t.Fatalf("magic key: got %q want %q", got, want)
+	}
+}
+
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }

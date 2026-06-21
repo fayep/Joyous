@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
@@ -13,12 +14,18 @@ import (
 )
 
 const (
-	mdcPort              = 1515
-	defaultMDCPin        = "250126"
-	mdcCmdBattery        = 0x1B
-	mdcSubCmdBattery     = 0x73
-	mdcConnectTimeout    = 10 * time.Second
-	mdcCommandReadTimeout = 10 * time.Second
+	mdcPort                 = 1515
+	defaultMDCPin           = "250126"
+	mdcCmdBattery           = 0x1B
+	mdcSubCmdBattery        = 0x73
+	mdcCmdSleepNow          = 0x11 // MDC_COMMAND_SLEEP (Samsung E-Paper app)
+	samsungWakeUDPPort      = 10194
+	defaultSleepAfterPushSec = 15
+	mdcConnectTimeout       = 10 * time.Second
+	mdcCommandReadTimeout   = 10 * time.Second
+	mdcWakeTimeout          = 15 * time.Second
+	mdcSleepConnectAttempts = 3
+	mdcSleepRetryDelay      = 2 * time.Second
 )
 
 // buildContentJSON returns the manifest Samsung mobile deploy expects.
@@ -102,50 +109,260 @@ func mdcContentDownloadPacket(url string) ([]byte, error) {
 	return pkt, nil
 }
 
-// SendMDCContentDownload optionally WoL-wakes the display, then sends content.json URL via MDC.
-func SendMDCContentDownload(ip, contentJSONURL, pin, wolMAC string) error {
+// SendMDCContentDownload wakes the display if needed, then sends content.json URL via MDC.
+func SendMDCContentDownload(ip, contentJSONURL, pin, wifiMAC string) error {
+	return pushSamsungContent(ip, contentJSONURL, pin, wifiMAC, false, 0, nil)
+}
+
+// SamsungSleepFunc runs a battery check and sends MDCSleepNow (see Hub.sleepSamsungDisplay).
+type SamsungSleepFunc func(ip, pin string) error
+
+// PushSamsungContent wakes if needed, pushes content, and optionally sleeps after a delay.
+func PushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc) error {
+	return pushSamsungContent(ip, contentJSONURL, pin, wifiMAC, autoSleep, sleepAfterSec, sleepFn)
+}
+
+func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc) error {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
-	logOutbound("mdc push start ip=%s url=%s wol=%t", ip, contentJSONURL, wolMAC != "")
-	if wolMAC != "" {
-		sendWoL(wolMAC)
-		time.Sleep(2 * time.Second)
+	logOutbound("mdc push start ip=%s url=%s wake_mac=%t auto_sleep=%t", ip, contentJSONURL, wifiMAC != "", autoSleep)
+	if !mdcSessionOK(ip, pin) {
+		if err := WakeSamsungDisplay(ip, pin, wifiMAC); err != nil {
+			logOutbound("mdc push wake fail ip=%s err=%v", ip, err)
+			return err
+		}
 	}
-	err := sendMDC(ip, pin, contentJSONURL)
+	err := sendMDCContentURL(ip, pin, contentJSONURL)
 	if err != nil {
 		logOutbound("mdc push fail ip=%s url=%s err=%v", ip, contentJSONURL, err)
 		return err
 	}
 	logOutbound("mdc push ok ip=%s url=%s", ip, contentJSONURL)
+	if !autoSleep {
+		return nil
+	}
+	if sleepAfterSec <= 0 {
+		sleepAfterSec = defaultSleepAfterPushSec
+	}
+	delay := time.Duration(sleepAfterSec) * time.Second
+	pinCopy := pin
+	fn := sleepFn
+	go func() {
+		time.Sleep(delay)
+		if fn == nil {
+			fn = func(ip, pin string) error { return SendMDCSleepNow(ip, pin) }
+		}
+		if sleepErr := fn(ip, pinCopy); sleepErr != nil {
+			logOutbound("mdc sleep after push fail ip=%s err=%v", ip, sleepErr)
+		} else {
+			logOutbound("mdc sleep after push ok ip=%s", ip)
+		}
+	}()
 	return nil
 }
 
-func sendMDC(ip, pin, url string) error {
+func sendMDCContentURL(ip, pin, url string) error {
 	pkt, err := mdcContentDownloadPacket(url)
 	if err != nil {
 		return err
 	}
+	return transactMDCCommand(ip, pin, pkt, "content_download", url)
+}
+
+// SendMDCSleepNow sends MDCSleepNow.Set(true) on a fresh MDC session.
+func SendMDCSleepNow(ip, pin string) error {
+	_, err := SendMDCSleepWithBatteryCheck(ip, pin)
+	return err
+}
+
+// SendMDCSleepWithBatteryCheck opens one MDC session (with retries), reads battery, then sleep-now.
+// Battery read is best-effort; sleep still runs when the session is up even if telemetry fails.
+func SendMDCSleepWithBatteryCheck(ip, pin string) (MDCBatteryResult, error) {
+	result := MDCBatteryResult{}
+	if pin == "" {
+		pin = defaultMDCPin
+	}
+	s, err := openMDCSessionRetry(ip, pin, mdcSleepConnectAttempts, mdcSleepRetryDelay)
+	if err != nil {
+		return result, err
+	}
+	defer s.Close()
+	result.SessionOK = true
+
+	if pct, src, batErr := readMDCBatteryOnSession(s, ip); batErr == nil {
+		result.BatteryOK = true
+		result.Percent = pct
+		result.PowerSource = src
+		logOutbound("mdc pre-sleep battery ip=%s pct=%d src=%s", ip, pct, src)
+	} else {
+		logOutbound("mdc pre-sleep battery ip=%s err=%v", ip, batErr)
+	}
+
+	sleepPkt := mdcSleepNowPacket(true)
+	logOutbound("mdc sleep now ip=%s pkt=% x", ip, sleepPkt)
+	if err := s.transact(sleepPkt); err != nil {
+		return result, fmt.Errorf("mdc sleep write: %w", err)
+	}
+	s.setDeadline(mdcCommandReadTimeout)
+	resp, err := s.readMDCPacket()
+	if err != nil {
+		logOutbound("mdc sleep_now ip=%s (no response: %v)", ip, err)
+		return result, nil
+	}
+	if err := parseMDCResponse(resp); err != nil {
+		logOutbound("mdc sleep_now fail ip=%s resp=%q err=%v", ip, resp, err)
+		return result, err
+	}
+	logOutbound("mdc sleep_now ok ip=%s resp=%q", ip, resp)
+	return result, nil
+}
+
+func openMDCSessionRetry(ip, pin string, attempts int, delay time.Duration) (*mdcSession, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			time.Sleep(delay)
+		}
+		s, err := openMDCSession(ip, pin, mdcConnectTimeout)
+		if err == nil {
+			return s, nil
+		}
+		lastErr = err
+		logOutbound("mdc session dial attempt %d/%d ip=%s err=%v", i+1, attempts, ip, err)
+	}
+	return nil, lastErr
+}
+
+func readMDCBatteryOnSession(s *mdcSession, ip string) (int, string, error) {
+	pkt := mdcSubCommandQueryPacket(mdcCmdBattery, mdcSubCmdBattery)
+	logOutbound("mdc battery query ip=%s pkt=% x", ip, pkt)
+	if err := s.transact(pkt); err != nil {
+		return 0, "", err
+	}
+	s.setDeadline(mdcCommandReadTimeout)
+	resp, err := s.readMDCPacket()
+	if err != nil {
+		logOutbound("mdc battery read fail ip=%s err=%v", ip, err)
+		return 0, "", fmt.Errorf("mdc battery read: %w", err)
+	}
+	pct, src, err := parseMDCBatteryResponse(resp)
+	if err != nil {
+		logOutbound("mdc battery parse fail ip=%s resp=% x err=%v", ip, resp, err)
+		return 0, "", err
+	}
+	return pct, src, nil
+}
+
+// WakeSamsungDisplay uses standard WoL plus Samsung's magic UDP wake (SHA256 MAC + ":E-Paper" → port 10194).
+func WakeSamsungDisplay(ip, pin, wifiMAC string) error {
+	if pin == "" {
+		pin = defaultMDCPin
+	}
+	if wifiMAC == "" {
+		return fmt.Errorf("wifi MAC required for remote wake")
+	}
+	sendWoL(wifiMAC)
+	if err := sendSamsungMagicWake(ip, wifiMAC); err != nil {
+		logOutbound("mdc magic wake fail ip=%s err=%v", ip, err)
+	}
+	time.Sleep(2 * time.Second)
+	if waitMDCAwake(ip, pin, mdcWakeTimeout) {
+		logOutbound("mdc wake ok ip=%s", ip)
+		return nil
+	}
+	return fmt.Errorf("frame did not wake within %s", mdcWakeTimeout)
+}
+
+func mdcSessionOK(ip, pin string) bool {
+	s, err := openMDCSession(ip, pin, mdcConnectTimeout)
+	if err != nil {
+		return false
+	}
+	s.Close()
+	return true
+}
+
+func waitMDCAwake(ip, pin string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if mdcSessionOK(ip, pin) {
+			return true
+		}
+		time.Sleep(time.Second)
+	}
+	return false
+}
+
+func samsungWakeMagicKey(wifiMAC string) string {
+	mac := strings.ToUpper(strings.TrimSpace(wifiMAC))
+	sum := sha256.Sum256([]byte(mac + ":E-Paper"))
+	return hex.EncodeToString(sum[:])
+}
+
+func sendSamsungMagicWake(ip, wifiMAC string) error {
+	key := samsungWakeMagicKey(wifiMAC)
+	addr, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(ip, fmt.Sprintf("%d", samsungWakeUDPPort)))
+	if err != nil {
+		return err
+	}
+	conn, err := net.DialUDP("udp4", nil, addr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_, err = conn.Write([]byte(key))
+	if err != nil {
+		return err
+	}
+	logOutbound("mdc magic wake sent ip=%s port=%d", ip, samsungWakeUDPPort)
+	return nil
+}
+
+func mdcCommandPacket(cmdID byte, data []byte) []byte {
+	dataLen := len(data)
+	pkt := make([]byte, 0, 5+dataLen)
+	pkt = append(pkt, 0xAA, cmdID, 0x00, byte(dataLen))
+	pkt = append(pkt, data...)
+	sum := 0
+	for i := 1; i < len(pkt); i++ {
+		sum += int(pkt[i])
+	}
+	return append(pkt, byte(sum&0xFF))
+}
+
+func mdcSleepNowPacket(sleep bool) []byte {
+	payload := byte(0)
+	if !sleep {
+		payload = 1
+	}
+	return mdcCommandPacket(mdcCmdSleepNow, []byte{payload})
+}
+
+func transactMDCCommand(ip, pin string, pkt []byte, label, detail string) error {
 	s, err := openMDCSession(ip, pin, mdcConnectTimeout)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
 	if err := s.transact(pkt); err != nil {
-		logOutbound("mdc command sent ip=%s url=%s (no response: %v)", ip, url, err)
+		logOutbound("mdc %s sent ip=%s %s (no write: %v)", label, ip, detail, err)
 		return nil
 	}
 	s.setDeadline(mdcCommandReadTimeout)
 	resp, err := s.readMDCPacket()
 	if err != nil {
-		logOutbound("mdc command sent ip=%s url=%s (no response: %v)", ip, url, err)
+		logOutbound("mdc %s sent ip=%s %s (no response: %v)", label, ip, detail, err)
 		return nil
 	}
 	if err := parseMDCResponse(resp); err != nil {
-		logOutbound("mdc command fail ip=%s url=%s resp=%q err=%v", ip, url, resp, err)
+		logOutbound("mdc %s fail ip=%s %s resp=%q err=%v", label, ip, detail, resp, err)
 		return err
 	}
-	logOutbound("mdc command ok ip=%s url=%s resp=%q", ip, url, resp)
+	logOutbound("mdc %s ok ip=%s %s resp=%q", label, ip, detail, resp)
 	return nil
 }
 
@@ -168,6 +385,7 @@ type mdcSession struct {
 // MDCBatteryResult holds MDC session and optional battery telemetry.
 type MDCBatteryResult struct {
 	SessionOK   bool
+	BatteryOK   bool
 	Percent     int
 	PowerSource string
 }
@@ -307,6 +525,7 @@ func QueryMDCBatteryLevel(ip, pin string) (MDCBatteryResult, error) {
 		logOutbound("mdc battery parse fail ip=%s resp=% x err=%v", ip, resp, err)
 		return result, err
 	}
+	result.BatteryOK = true
 	result.Percent = pct
 	result.PowerSource = src
 	logOutbound("mdc battery ok ip=%s pct=%d src=%s", ip, pct, src)

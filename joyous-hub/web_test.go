@@ -129,6 +129,7 @@ func TestSamsungListAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.109", Server: "Samsung MDC"})
+	h.devices.TouchSamsung("192.168.1.108", "mdc_session")
 
 	rec := httptest.NewRecorder()
 	h.handleSamsungList(rec, httptest.NewRequest("GET", "/api/samsung", nil))
@@ -154,9 +155,12 @@ func TestSamsungListAPI(t *testing.T) {
 	if kitchen["connected"] != true {
 		t.Fatalf("connected: got %v", kitchen["connected"])
 	}
-	other := byID["192-168-50-109"]
+	other := byID["192-168-1-109"]
 	if other["device_id"] != "samsung:192.168.1.109" {
 		t.Fatalf("discovered-only device_id: got %v", other["device_id"])
+	}
+	if other["connected"] == true {
+		t.Fatalf("discover alone should not mark connected: got %v", other["connected"])
 	}
 }
 

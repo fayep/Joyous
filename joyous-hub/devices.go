@@ -73,11 +73,26 @@ func SamsungRecentlySeen(lastSeen time.Time) bool {
 	return !lastSeen.IsZero() && time.Since(lastSeen) < SamsungRecentWindow
 }
 
-// ApplySamsungConnected sets Connected from LastSeen for Samsung devices (InkJoy unchanged).
-func ApplySamsungConnected(d *Device) {
-	if d != nil && d.Type == DeviceTypeSamsung {
-		d.Connected = SamsungRecentlySeen(d.LastSeen)
+// samsungActionProvesAwake reports whether LastAction indicates the frame was reachable while awake.
+func samsungActionProvesAwake(action string) bool {
+	switch action {
+	case "mdc_session", "mdc_push", "mdc_wake", "mdc_battery", "content.json", "png":
+		return true
+	default:
+		return false
 	}
+}
+
+// ApplySamsungConnected sets Connected for Samsung devices from recent awake proof (InkJoy unchanged).
+func ApplySamsungConnected(d *Device) {
+	if d == nil || d.Type != DeviceTypeSamsung {
+		return
+	}
+	if d.LastAction == "mdc_sleep" {
+		d.Connected = false
+		return
+	}
+	d.Connected = SamsungRecentlySeen(d.LastSeen) && samsungActionProvesAwake(d.LastAction)
 }
 
 // Get returns a device by ID, or nil.
@@ -230,9 +245,36 @@ func (r *DeviceRegistry) UpsertSamsung(found SSDPDevice) *Device {
 	d.USN = found.USN
 	d.Location = found.Location
 	applySamsungDisplayProfile(d, found.DisplayProfile())
-	d.LastSeen = time.Now()
 	d.LastAction = "discover"
 	return d
+}
+
+// SetMDCMAC stores the WiFi MAC used for Samsung WoL / magic wake.
+func (r *DeviceRegistry) SetMDCMAC(id, mac string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok {
+		return false
+	}
+	d.MDCMAC = strings.TrimSpace(mac)
+	return true
+}
+
+// NoteSamsungSlept records a successful sleep command without marking the frame awake.
+func (r *DeviceRegistry) NoteSamsungSlept(ip string) bool {
+	if ip == "" {
+		return false
+	}
+	id := samsungID(ip)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok {
+		return false
+	}
+	d.LastAction = "mdc_sleep"
+	return true
 }
 
 // TouchSamsung records hub contact from a Samsung frame (HTTP poll, PNG fetch, MDC probe, etc.).

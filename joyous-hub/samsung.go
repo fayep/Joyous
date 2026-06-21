@@ -28,14 +28,17 @@ const widgetFile = "joyous-widget.wgt"
 
 // SamsungFrameConfig is persisted per frame under {data-dir}/samsung/{frameId}.json.
 type SamsungFrameConfig struct {
-	FrameID             string `json:"frame_id"`
-	Name                string `json:"name,omitempty"`
-	PollIntervalMinutes int    `json:"poll_interval_minutes"`
-	InactiveBegin       string `json:"inactive_begin"` // "HH:MM" or empty
-	InactiveEnd         string `json:"inactive_end"`   // "HH:MM" or empty
-	CropFormat          string `json:"crop_format,omitempty"`
-	DisplayWidth        int    `json:"display_width,omitempty"`
-	DisplayHeight       int    `json:"display_height,omitempty"`
+	FrameID               string `json:"frame_id"`
+	Name                  string `json:"name,omitempty"`
+	WifiMAC               string `json:"wifi_mac,omitempty"` // WiFi MAC for Samsung magic wake (AA:BB:…)
+	PollIntervalMinutes   int    `json:"poll_interval_minutes"`
+	InactiveBegin         string `json:"inactive_begin"` // "HH:MM" or empty
+	InactiveEnd           string `json:"inactive_end"`     // "HH:MM" or empty
+	CropFormat            string `json:"crop_format,omitempty"`
+	DisplayWidth          int    `json:"display_width,omitempty"`
+	DisplayHeight         int    `json:"display_height,omitempty"`
+	AutoSleepAfterPush    *bool  `json:"auto_sleep_after_push,omitempty"`
+	SleepAfterPushSeconds int    `json:"sleep_after_push_seconds,omitempty"`
 }
 
 // SamsungStore manages Samsung EM32DX frame images and config on disk.
@@ -77,13 +80,30 @@ func validFrameID(id string) bool {
 
 func defaultSamsungConfig(frameID string) SamsungFrameConfig {
 	def := defaultSamsungDisplayProfile()
+	autoSleep := true
 	return SamsungFrameConfig{
-		FrameID:             frameID,
-		PollIntervalMinutes: defaultPollInterval,
-		CropFormat:          def.CropFormat,
-		DisplayWidth:        def.Width,
-		DisplayHeight:       def.Height,
+		FrameID:               frameID,
+		PollIntervalMinutes:   defaultPollInterval,
+		CropFormat:            def.CropFormat,
+		DisplayWidth:          def.Width,
+		DisplayHeight:         def.Height,
+		AutoSleepAfterPush:    &autoSleep,
+		SleepAfterPushSeconds: defaultSleepAfterPushSec,
 	}
+}
+
+func samsungAutoSleepAfterPush(cfg SamsungFrameConfig) bool {
+	if cfg.AutoSleepAfterPush == nil {
+		return true
+	}
+	return *cfg.AutoSleepAfterPush
+}
+
+func samsungSleepAfterPushSec(cfg SamsungFrameConfig) int {
+	if cfg.SleepAfterPushSeconds <= 0 {
+		return defaultSleepAfterPushSec
+	}
+	return cfg.SleepAfterPushSeconds
 }
 
 // LoadConfig reads per-frame config, returning defaults if missing.
@@ -379,23 +399,31 @@ func NextWakeTime(now time.Time, pollMinutes int, inactiveBegin, inactiveEnd str
 // ── HTTP handlers ────────────────────────────────────────────────────────────
 
 type samsungStatusResponse struct {
-	ETag                string    `json:"etag"`
-	Locked              bool      `json:"locked"`
-	Modified            time.Time `json:"modified,omitempty"`
-	HasImage            bool      `json:"has_image"`
-	Name                string    `json:"name,omitempty"`
-	PollIntervalMinutes int       `json:"poll_interval_minutes"`
-	InactiveBegin       string    `json:"inactive_begin"`
-	InactiveEnd         string    `json:"inactive_end"`
-	CropFormat          string    `json:"crop_format"`
-	DisplayWidth        int       `json:"display_width"`
-	DisplayHeight       int       `json:"display_height"`
+	ETag                  string    `json:"etag"`
+	Locked                bool      `json:"locked"`
+	Modified              time.Time `json:"modified,omitempty"`
+	HasImage              bool      `json:"has_image"`
+	Name                  string    `json:"name,omitempty"`
+	WifiMAC               string    `json:"wifi_mac,omitempty"`
+	PollIntervalMinutes   int       `json:"poll_interval_minutes"`
+	InactiveBegin         string    `json:"inactive_begin"`
+	InactiveEnd           string    `json:"inactive_end"`
+	CropFormat            string    `json:"crop_format"`
+	DisplayWidth          int       `json:"display_width"`
+	DisplayHeight         int       `json:"display_height"`
+	AutoSleepAfterPush    bool      `json:"auto_sleep_after_push"`
+	SleepAfterPushSeconds int       `json:"sleep_after_push_seconds"`
 }
 
-func (h *Hub) noteSamsungFrameSeen(frameID, action string) {
-	if ip := frameIDToIP(frameID); ip != "" {
-		h.devices.TouchSamsung(ip, action)
+func (h *Hub) noteSamsungFrameSeen(r *http.Request, frameID, action string) {
+	frameIP := frameIDToIP(frameID)
+	if frameIP == "" {
+		return
 	}
+	if requestClientIP(r) != frameIP {
+		return
+	}
+	h.devices.TouchSamsung(frameIP, action)
 }
 
 func (h *Hub) handleSamsungStatus(w http.ResponseWriter, r *http.Request, frameID string) {
@@ -410,16 +438,19 @@ func (h *Hub) handleSamsungStatus(w http.ResponseWriter, r *http.Request, frameI
 	}
 	etag, mod, hasImage := h.samsung.PNGInfo(frameID)
 	resp := samsungStatusResponse{
-		ETag:                etag,
-		Locked:              h.samsung.IsLocked(frameID),
-		HasImage:            hasImage,
-		PollIntervalMinutes: cfg.PollIntervalMinutes,
-		Name:                cfg.Name,
-		InactiveBegin:       cfg.InactiveBegin,
-		InactiveEnd:         cfg.InactiveEnd,
-		CropFormat:          cfg.CropFormat,
-		DisplayWidth:        cfg.DisplayWidth,
-		DisplayHeight:       cfg.DisplayHeight,
+		ETag:                  etag,
+		Locked:                h.samsung.IsLocked(frameID),
+		HasImage:              hasImage,
+		PollIntervalMinutes:   cfg.PollIntervalMinutes,
+		Name:                  cfg.Name,
+		WifiMAC:               cfg.WifiMAC,
+		InactiveBegin:         cfg.InactiveBegin,
+		InactiveEnd:           cfg.InactiveEnd,
+		CropFormat:            cfg.CropFormat,
+		DisplayWidth:          cfg.DisplayWidth,
+		DisplayHeight:         cfg.DisplayHeight,
+		AutoSleepAfterPush:    samsungAutoSleepAfterPush(cfg),
+		SleepAfterPushSeconds: samsungSleepAfterPushSec(cfg),
 	}
 	if hasImage {
 		resp.Modified = mod
@@ -443,7 +474,7 @@ func (h *Hub) handleSamsungPNG(w http.ResponseWriter, r *http.Request, frameID s
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	h.noteSamsungFrameSeen(frameID, "png")
+	h.noteSamsungFrameSeen(r, frameID, "png")
 	etag, _, _ := h.samsung.PNGInfo(frameID)
 	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == `"`+etag+`"` {
 		w.WriteHeader(http.StatusNotModified)
@@ -470,7 +501,7 @@ func (h *Hub) handleSamsungContentJSON(w http.ResponseWriter, r *http.Request, f
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	h.noteSamsungFrameSeen(frameID, "content.json")
+	h.noteSamsungFrameSeen(r, frameID, "content.json")
 	addr := h.serverAddr
 	if addr == "" {
 		addr = r.Host
@@ -527,6 +558,15 @@ func (h *Hub) handleSamsungConfigPut(w http.ResponseWriter, r *http.Request, fra
 	if _, hasName := raw["name"]; !hasName {
 		body.Name = existing.Name
 	}
+	if _, has := raw["wifi_mac"]; !has {
+		body.WifiMAC = existing.WifiMAC
+	}
+	if _, has := raw["auto_sleep_after_push"]; !has {
+		body.AutoSleepAfterPush = existing.AutoSleepAfterPush
+	}
+	if _, has := raw["sleep_after_push_seconds"]; !has && body.SleepAfterPushSeconds <= 0 {
+		body.SleepAfterPushSeconds = existing.SleepAfterPushSeconds
+	}
 	body.FrameID = frameID
 	if body.PollIntervalMinutes <= 0 {
 		body.PollIntervalMinutes = defaultPollInterval
@@ -537,6 +577,100 @@ func (h *Hub) handleSamsungConfigPut(w http.ResponseWriter, r *http.Request, fra
 		return
 	}
 	h.syncSamsungDeviceName(frameID, body.Name)
+	h.syncSamsungWakeMAC(frameID, body.WifiMAC)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+func (h *Hub) samsungDeviceByFrameID(frameID string) *Device {
+	ip := frameIDToIP(frameID)
+	if ip == "" {
+		return nil
+	}
+	d, ok := h.devices.Get(samsungID(ip))
+	if !ok {
+		return nil
+	}
+	return d
+}
+
+func (h *Hub) samsungWakeMAC(frameID string, dev *Device) string {
+	if dev != nil && dev.MDCMAC != "" {
+		return dev.MDCMAC
+	}
+	cfg, err := h.samsung.LoadConfig(frameID)
+	if err == nil && cfg.WifiMAC != "" {
+		return cfg.WifiMAC
+	}
+	return ""
+}
+
+func (h *Hub) syncSamsungWakeMAC(frameID, mac string) {
+	ip := frameIDToIP(frameID)
+	if ip == "" {
+		return
+	}
+	if h.devices.SetMDCMAC(samsungID(ip), strings.TrimSpace(mac)) {
+		_ = h.devices.Save()
+	}
+}
+
+// sleepSamsungDisplay reads battery and sends sleep-now on a single MDC session (with connect retries).
+func (h *Hub) sleepSamsungDisplay(ip, pin string) error {
+	res, err := SendMDCSleepWithBatteryCheck(ip, pin)
+	if res.SessionOK {
+		if res.BatteryOK {
+			h.devices.UpdateSamsungBattery(ip, res.Percent, res.PowerSource)
+		} else {
+			h.devices.TouchSamsung(ip, "mdc_session")
+		}
+	}
+	if err != nil {
+		return err
+	}
+	h.devices.NoteSamsungSlept(ip)
+	return nil
+}
+
+func (h *Hub) handleSamsungSleep(w http.ResponseWriter, r *http.Request, frameID string) {
+	if !validFrameID(frameID) {
+		http.Error(w, "invalid frame id", http.StatusBadRequest)
+		return
+	}
+	dev := h.samsungDeviceByFrameID(frameID)
+	if dev == nil || dev.IP == "" {
+		http.Error(w, "frame not registered on hub", http.StatusNotFound)
+		return
+	}
+	if err := h.sleepSamsungDisplay(dev.IP, dev.MDCPin); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+func (h *Hub) handleSamsungWake(w http.ResponseWriter, r *http.Request, frameID string) {
+	if !validFrameID(frameID) {
+		http.Error(w, "invalid frame id", http.StatusBadRequest)
+		return
+	}
+	dev := h.samsungDeviceByFrameID(frameID)
+	if dev == nil || dev.IP == "" {
+		http.Error(w, "frame not registered on hub", http.StatusNotFound)
+		return
+	}
+	mac := h.samsungWakeMAC(frameID, dev)
+	if mac == "" {
+		http.Error(w, "wifi MAC required for wake — set it in Display settings", http.StatusBadRequest)
+		return
+	}
+	err := WakeSamsungDisplay(dev.IP, dev.MDCPin, mac)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	h.devices.TouchSamsung(dev.IP, "mdc_wake")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -611,24 +745,27 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type frameInfo struct {
-		ID                  string    `json:"id"`
-		Name                string    `json:"name,omitempty"`
-		DeviceID            string    `json:"device_id,omitempty"`
-		IP                  string    `json:"ip,omitempty"`
-		Connected           bool      `json:"connected"`
-		Battery             int       `json:"battery,omitempty"`
-		PowerSource         string    `json:"power_source,omitempty"`
-		LastSeen            time.Time `json:"last_seen,omitempty"`
-		LastAction          string    `json:"last_action,omitempty"`
-		HasImage            bool      `json:"has_image"`
-		Locked              bool      `json:"locked"`
-		ETag                string    `json:"etag,omitempty"`
-		PollIntervalMinutes int       `json:"poll_interval_minutes"`
-		InactiveBegin       string    `json:"inactive_begin"`
+		ID                    string    `json:"id"`
+		Name                  string    `json:"name,omitempty"`
+		DeviceID              string    `json:"device_id,omitempty"`
+		IP                    string    `json:"ip,omitempty"`
+		Connected             bool      `json:"connected"`
+		Battery               int       `json:"battery,omitempty"`
+		PowerSource           string    `json:"power_source,omitempty"`
+		LastSeen              time.Time `json:"last_seen,omitempty"`
+		LastAction            string    `json:"last_action,omitempty"`
+		HasImage              bool      `json:"has_image"`
+		Locked                bool      `json:"locked"`
+		ETag                  string    `json:"etag,omitempty"`
+		WifiMAC               string    `json:"wifi_mac,omitempty"`
+		PollIntervalMinutes   int       `json:"poll_interval_minutes"`
+		InactiveBegin         string    `json:"inactive_begin"`
 		InactiveEnd           string    `json:"inactive_end"`
-		CropFormat          string    `json:"crop_format"`
-		DisplayWidth        int       `json:"display_width"`
-		DisplayHeight       int       `json:"display_height"`
+		CropFormat            string    `json:"crop_format"`
+		DisplayWidth          int       `json:"display_width"`
+		DisplayHeight         int       `json:"display_height"`
+		AutoSleepAfterPush    bool      `json:"auto_sleep_after_push"`
+		SleepAfterPushSeconds int       `json:"sleep_after_push_seconds"`
 	}
 	devByFrame := make(map[string]Device)
 	for _, d := range h.devices.List() {
@@ -658,17 +795,20 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 		etag, _, hasImage := h.samsung.PNGInfo(id)
 		name := strings.TrimSpace(cfg.Name)
 		info := frameInfo{
-			ID:                  id,
-			Name:                name,
-			HasImage:            hasImage,
-			Locked:              h.samsung.IsLocked(id),
-			ETag:                etag,
-			PollIntervalMinutes: cfg.PollIntervalMinutes,
-			InactiveBegin:       cfg.InactiveBegin,
-			InactiveEnd:         cfg.InactiveEnd,
-			CropFormat:          cfg.CropFormat,
-			DisplayWidth:        cfg.DisplayWidth,
-			DisplayHeight:       cfg.DisplayHeight,
+			ID:                    id,
+			Name:                  name,
+			HasImage:              hasImage,
+			Locked:                h.samsung.IsLocked(id),
+			ETag:                  etag,
+			WifiMAC:               cfg.WifiMAC,
+			PollIntervalMinutes:   cfg.PollIntervalMinutes,
+			InactiveBegin:         cfg.InactiveBegin,
+			InactiveEnd:           cfg.InactiveEnd,
+			CropFormat:            cfg.CropFormat,
+			DisplayWidth:          cfg.DisplayWidth,
+			DisplayHeight:         cfg.DisplayHeight,
+			AutoSleepAfterPush:    samsungAutoSleepAfterPush(cfg),
+			SleepAfterPushSeconds: samsungSleepAfterPushSec(cfg),
 		}
 		if dev, ok := devByFrame[id]; ok {
 			info.DeviceID = dev.ID
@@ -677,7 +817,9 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 			info.LastAction = dev.LastAction
 			info.Battery = dev.Battery
 			info.PowerSource = dev.PowerSource
-			info.Connected = SamsungRecentlySeen(dev.LastSeen)
+			cp := dev
+			ApplySamsungConnected(&cp)
+			info.Connected = cp.Connected
 			if info.Name == "" && dev.Name != "" {
 				info.Name = dev.Name
 			}
