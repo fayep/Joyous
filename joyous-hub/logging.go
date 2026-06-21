@@ -65,9 +65,14 @@ func (q *quietAccessLogger) shouldLog() bool {
 }
 
 var devicesListAccessLog = newQuietAccessLogger(devicesListPollLogQuiet)
+var samsungListAccessLog = newQuietAccessLogger(devicesListPollLogQuiet)
 
 func isDevicesListPoll(r *http.Request) bool {
 	return r.Method == http.MethodGet && r.URL.Path == "/api/devices"
+}
+
+func isSamsungListPoll(r *http.Request) bool {
+	return r.Method == http.MethodGet && r.URL.Path == "/api/samsung"
 }
 
 func isImageThumbOrPreview(r *http.Request) bool {
@@ -79,12 +84,24 @@ func isImageThumbOrPreview(r *http.Request) bool {
 		(strings.HasSuffix(p, "/thumb") || strings.HasSuffix(p, "/preview"))
 }
 
+func isSamsungFramePNG(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	p := r.URL.Path
+	return strings.HasPrefix(p, "/samsung/") && strings.HasSuffix(p, ".png")
+}
+
 func shouldSkipAccessLog(r *http.Request, status int) bool {
 	if isDevicesListPoll(r) && !devicesListAccessLog.shouldLog() {
 		return true
 	}
-	// UI reloads revalidate every cached thumb; 304 means nothing changed.
-	if isImageThumbOrPreview(r) && status == http.StatusNotModified {
+	if isSamsungListPoll(r) && !samsungListAccessLog.shouldLog() {
+		return true
+	}
+	// UI reloads revalidate every cached thumb/png; 304 means nothing changed.
+	if status == http.StatusNotModified &&
+		(isImageThumbOrPreview(r) || isSamsungFramePNG(r)) {
 		return true
 	}
 	return false

@@ -113,6 +113,9 @@ func (h *Hub) sendSamsungImage(dev *Device, imageID string) error {
 	contentURL := samsungMDCContentURL(addr, dev.IP, frameID)
 	logOutbound("samsung prepare frame=%s ip=%s file_id=%s content=%s png=%dB", frameID, dev.IP, fileID, contentURL, len(pngData))
 	err = SendMDCContentDownload(dev.IP, contentURL, dev.MDCPin, dev.MDCMAC)
+	if err == nil {
+		h.devices.TouchSamsung(dev.IP, "mdc_push")
+	}
 	logFrameSend(dev.ID, imageID, "samsung", err)
 	return err
 }

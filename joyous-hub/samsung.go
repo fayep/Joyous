@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -391,6 +392,12 @@ type samsungStatusResponse struct {
 	DisplayHeight       int       `json:"display_height"`
 }
 
+func (h *Hub) noteSamsungFrameSeen(frameID, action string) {
+	if ip := frameIDToIP(frameID); ip != "" {
+		h.devices.TouchSamsung(ip, action)
+	}
+}
+
 func (h *Hub) handleSamsungStatus(w http.ResponseWriter, r *http.Request, frameID string) {
 	if !validFrameID(frameID) {
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
@@ -436,6 +443,7 @@ func (h *Hub) handleSamsungPNG(w http.ResponseWriter, r *http.Request, frameID s
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	h.noteSamsungFrameSeen(frameID, "png")
 	etag, _, _ := h.samsung.PNGInfo(frameID)
 	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == `"`+etag+`"` {
 		w.WriteHeader(http.StatusNotModified)
@@ -462,6 +470,7 @@ func (h *Hub) handleSamsungContentJSON(w http.ResponseWriter, r *http.Request, f
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	h.noteSamsungFrameSeen(frameID, "content.json")
 	addr := h.serverAddr
 	if addr == "" {
 		addr = r.Host
@@ -601,27 +610,55 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if frames == nil {
-		frames = []string{}
-	}
 	type frameInfo struct {
-		ID                  string `json:"id"`
-		HasImage            bool   `json:"has_image"`
-		Locked              bool   `json:"locked"`
-		ETag                string `json:"etag,omitempty"`
-		PollIntervalMinutes int    `json:"poll_interval_minutes"`
-		InactiveBegin       string `json:"inactive_begin"`
-		InactiveEnd         string `json:"inactive_end"`
-		CropFormat          string `json:"crop_format"`
-		DisplayWidth        int    `json:"display_width"`
-		DisplayHeight       int    `json:"display_height"`
+		ID                  string    `json:"id"`
+		Name                string    `json:"name,omitempty"`
+		DeviceID            string    `json:"device_id,omitempty"`
+		IP                  string    `json:"ip,omitempty"`
+		Connected           bool      `json:"connected"`
+		LastSeen            time.Time `json:"last_seen,omitempty"`
+		LastAction          string    `json:"last_action,omitempty"`
+		HasImage            bool      `json:"has_image"`
+		Locked              bool      `json:"locked"`
+		ETag                string    `json:"etag,omitempty"`
+		PollIntervalMinutes int       `json:"poll_interval_minutes"`
+		InactiveBegin       string    `json:"inactive_begin"`
+		InactiveEnd           string    `json:"inactive_end"`
+		CropFormat          string    `json:"crop_format"`
+		DisplayWidth        int       `json:"display_width"`
+		DisplayHeight       int       `json:"display_height"`
 	}
-	out := make([]frameInfo, 0, len(frames))
+	devByFrame := make(map[string]Device)
+	for _, d := range h.devices.List() {
+		if d.Type != DeviceTypeSamsung {
+			continue
+		}
+		frameID := SamsungFrameID(&d)
+		if frameID == "" {
+			continue
+		}
+		devByFrame[frameID] = d
+	}
+	seen := make(map[string]struct{}, len(frames)+len(devByFrame))
 	for _, id := range frames {
+		seen[id] = struct{}{}
+	}
+	for id := range devByFrame {
+		seen[id] = struct{}{}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]frameInfo, 0, len(ids))
+	for _, id := range ids {
 		cfg, _ := h.samsung.LoadConfig(id)
 		etag, _, hasImage := h.samsung.PNGInfo(id)
-		out = append(out, frameInfo{
+		name := strings.TrimSpace(cfg.Name)
+		info := frameInfo{
 			ID:                  id,
+			Name:                name,
 			HasImage:            hasImage,
 			Locked:              h.samsung.IsLocked(id),
 			ETag:                etag,
@@ -631,7 +668,18 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 			CropFormat:          cfg.CropFormat,
 			DisplayWidth:        cfg.DisplayWidth,
 			DisplayHeight:       cfg.DisplayHeight,
-		})
+		}
+		if dev, ok := devByFrame[id]; ok {
+			info.DeviceID = dev.ID
+			info.IP = dev.IP
+			info.LastSeen = dev.LastSeen
+			info.LastAction = dev.LastAction
+			info.Connected = SamsungRecentlySeen(dev.LastSeen)
+			if info.Name == "" && dev.Name != "" {
+				info.Name = dev.Name
+			}
+		}
+		out = append(out, info)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
@@ -691,6 +739,38 @@ func (h *Hub) handleSamsungWGT(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/widget")
 	w.Header().Set("Content-Length", strconv.FormatInt(int64(len(data)), 10))
 	w.Write(data)
+}
+
+func (h *Hub) handleSamsungPoll(w http.ResponseWriter, r *http.Request) {
+	devs := h.devices.List()
+	probed := 0
+	awake := 0
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, d := range devs {
+		if d.Type != DeviceTypeSamsung || d.IP == "" {
+			continue
+		}
+		probed++
+		ip := d.IP
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if !probeMDCBanner(ip) {
+				return
+			}
+			h.devices.TouchSamsung(ip, "mdc_probe")
+			mu.Lock()
+			awake++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"probed": probed,
+		"awake":  awake,
+	})
 }
 
 func (h *Hub) handleSamsungIndex(w http.ResponseWriter, r *http.Request) {

@@ -233,3 +233,65 @@ func TestConvertToSamsungPNG(t *testing.T) {
 		t.Errorf("size %dx%d, want %dx%d", b.Dx(), b.Dy(), samsungW, samsungH)
 	}
 }
+
+func TestSamsungFrameSeenFromContentJSON(t *testing.T) {
+	h := buildTestHub(t)
+	frameID := "192-168-1-108"
+	h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	h.devices.mu.Lock()
+	h.devices.m["samsung:192.168.1.108"].LastSeen = time.Now().Add(-time.Hour)
+	h.devices.mu.Unlock()
+	if err := h.samsung.writePNGLocked(frameID, testPNG()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.handleSamsungContentJSON(rec, httptest.NewRequest("GET", "/samsung/"+frameID+"/content.json", nil), frameID)
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	d, ok := h.devices.Get("samsung:192.168.1.108")
+	if !ok || d.LastAction != "content.json" {
+		t.Fatalf("last action: ok=%v action=%q", ok, d.LastAction)
+	}
+	ApplySamsungConnected(d)
+	if !d.Connected {
+		t.Fatal("frame should be active after content.json fetch")
+	}
+}
+
+func TestSamsungFrameSeenFromPNG304(t *testing.T) {
+	h := buildTestHub(t)
+	frameID := "192-168-1-108"
+	h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	h.devices.mu.Lock()
+	h.devices.m["samsung:192.168.1.108"].LastSeen = time.Now().Add(-time.Hour)
+	h.devices.mu.Unlock()
+	if err := h.samsung.writePNGLocked(frameID, testPNG()); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/samsung/"+frameID+".png", nil)
+	rec := httptest.NewRecorder()
+	h.handleSamsungPNG(rec, req, frameID)
+	if rec.Code != 200 {
+		t.Fatalf("first fetch %d", rec.Code)
+	}
+	etag := rec.Header().Get("ETag")
+
+	req2 := httptest.NewRequest("GET", "/samsung/"+frameID+".png", nil)
+	req2.Header.Set("If-None-Match", etag)
+	rec2 := httptest.NewRecorder()
+	h.handleSamsungPNG(rec2, req2, frameID)
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("expected 304, got %d", rec2.Code)
+	}
+	d, ok := h.devices.Get("samsung:192.168.1.108")
+	if !ok || d.LastAction != "png" {
+		t.Fatalf("last action: ok=%v action=%q", ok, d.LastAction)
+	}
+	ApplySamsungConnected(d)
+	if !d.Connected {
+		t.Fatal("304 revalidation should count as frame contact")
+	}
+}

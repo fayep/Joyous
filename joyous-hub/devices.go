@@ -17,6 +17,9 @@ const (
 	DeviceTypeSamsung DeviceType = "samsung"
 )
 
+// SamsungRecentWindow is how long after hub contact a Samsung frame counts as active.
+const SamsungRecentWindow = 5 * time.Minute
+
 // Device holds runtime state for a connected or discovered frame.
 type Device struct {
 	ID         string     `json:"id"`
@@ -61,6 +64,18 @@ func NewDeviceRegistry(dir string) *DeviceRegistry {
 func inkjoyID(mac string) string { return mac }
 
 func samsungID(ip string) string { return "samsung:" + ip }
+
+// SamsungRecentlySeen reports whether the frame contacted the hub within SamsungRecentWindow.
+func SamsungRecentlySeen(lastSeen time.Time) bool {
+	return !lastSeen.IsZero() && time.Since(lastSeen) < SamsungRecentWindow
+}
+
+// ApplySamsungConnected sets Connected from LastSeen for Samsung devices (InkJoy unchanged).
+func ApplySamsungConnected(d *Device) {
+	if d != nil && d.Type == DeviceTypeSamsung {
+		d.Connected = SamsungRecentlySeen(d.LastSeen)
+	}
+}
 
 // Get returns a device by ID, or nil.
 func (r *DeviceRegistry) Get(id string) (*Device, bool) {
@@ -194,9 +209,24 @@ func (r *DeviceRegistry) UpsertSamsung(found SSDPDevice) *Device {
 	applySamsungDisplayProfile(d, found.DisplayProfile())
 	d.LastSeen = time.Now()
 	d.LastAction = "discover"
-	// Samsung frames are reachable when discovered; not the same as MQTT connected.
-	d.Connected = true
 	return d
+}
+
+// TouchSamsung records hub contact from a Samsung frame (HTTP poll, PNG fetch, MDC probe, etc.).
+func (r *DeviceRegistry) TouchSamsung(ip, action string) bool {
+	if ip == "" {
+		return false
+	}
+	id := samsungID(ip)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok {
+		return false
+	}
+	d.LastSeen = time.Now()
+	d.LastAction = action
+	return true
 }
 
 // List returns a snapshot of all known devices sorted by type then name/id.

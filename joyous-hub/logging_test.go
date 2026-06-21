@@ -50,8 +50,13 @@ func TestQuietAccessLogger(t *testing.T) {
 
 func TestDevicesListPollAccessLogSuppressed(t *testing.T) {
 	orig := devicesListAccessLog
-	t.Cleanup(func() { devicesListAccessLog = orig })
+	origSamsung := samsungListAccessLog
+	t.Cleanup(func() {
+		devicesListAccessLog = orig
+		samsungListAccessLog = origSamsung
+	})
 	devicesListAccessLog = newQuietAccessLogger(30 * time.Second)
+	samsungListAccessLog = newQuietAccessLogger(30 * time.Second)
 
 	var buf bytes.Buffer
 	origLog := log.Writer()
@@ -76,10 +81,13 @@ func TestDevicesListPollAccessLogSuppressed(t *testing.T) {
 	}
 
 	buf.Reset()
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/devices/discover", nil))
-	if buf.Len() == 0 {
-		t.Fatal("non-poll routes should still log")
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/samsung", nil))
+	}
+	lines = strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 samsung access log line, got %d:\n%s", len(lines), buf.String())
 	}
 }
 
@@ -107,5 +115,32 @@ func TestImageThumb304AccessLogSuppressed(t *testing.T) {
 	okHandler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/images/abc123/thumb", nil))
 	if buf.Len() == 0 {
 		t.Fatal("thumb 200 should still log")
+	}
+}
+
+func TestSamsungPNG304AccessLogSuppressed(t *testing.T) {
+	var buf bytes.Buffer
+	origLog := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(origLog) })
+
+	notModified := accessLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		notModified.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/samsung/192-168-1-108.png", nil))
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected no access logs for samsung png 304, got:\n%s", buf.String())
+	}
+
+	okHandler := accessLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("png"))
+	}))
+	rec := httptest.NewRecorder()
+	okHandler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/samsung/192-168-1-108.png", nil))
+	if buf.Len() == 0 {
+		t.Fatal("samsung png 200 should still log")
 	}
 }

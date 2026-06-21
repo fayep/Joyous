@@ -118,3 +118,55 @@ func TestMultipleDevices(t *testing.T) {
 		t.Error("wrong battery for second device")
 	}
 }
+
+func TestSamsungRecentlySeen(t *testing.T) {
+	if !SamsungRecentlySeen(time.Now()) {
+		t.Fatal("recent contact should count as seen")
+	}
+	if SamsungRecentlySeen(time.Now().Add(-SamsungRecentWindow)) {
+		t.Fatal("contact at window boundary should not count")
+	}
+	if SamsungRecentlySeen(time.Time{}) {
+		t.Fatal("zero time should not count")
+	}
+}
+
+func TestTouchSamsungUpdatesLastSeen(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	before := time.Now().Add(-time.Hour)
+	reg.mu.Lock()
+	reg.m["samsung:192.168.1.108"].LastSeen = before
+	reg.mu.Unlock()
+
+	if !reg.TouchSamsung("192.168.1.108", "content.json") {
+		t.Fatal("TouchSamsung should succeed for registered frame")
+	}
+	d, ok := reg.Get("samsung:192.168.1.108")
+	if !ok {
+		t.Fatal("device missing")
+	}
+	if !d.LastSeen.After(before) {
+		t.Fatalf("LastSeen not updated: %v", d.LastSeen)
+	}
+	if d.LastAction != "content.json" {
+		t.Fatalf("LastAction: got %q", d.LastAction)
+	}
+	ApplySamsungConnected(d)
+	if !d.Connected {
+		t.Fatal("frame should be active after touch")
+	}
+}
+
+func TestApplySamsungConnectedStale(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	reg.mu.Lock()
+	reg.m["samsung:192.168.1.108"].LastSeen = time.Now().Add(-SamsungRecentWindow - time.Second)
+	reg.mu.Unlock()
+	d, _ := reg.Get("samsung:192.168.1.108")
+	ApplySamsungConnected(d)
+	if d.Connected {
+		t.Fatal("stale frame should not be active")
+	}
+}

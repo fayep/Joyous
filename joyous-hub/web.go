@@ -37,6 +37,9 @@ func (h *Hub) handleDevices(w http.ResponseWriter, r *http.Request) {
 		devs[i].SleepEndTime = utcHHMMToLocal(devs[i].SleepEndTime)
 	}
 	h.applySamsungFriendlyNames(devs)
+	for i := range devs {
+		ApplySamsungConnected(&devs[i])
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(devs)
 }
@@ -533,41 +536,69 @@ const indexHTML = `<!DOCTYPE html>
     </div>
   </div>
   <div id="tab-samsung" style="display:none">
-    <div class="card">
-      <p>Install URL for Samsung E-Paper app (Custom App player):</p>
-      <code id="samsung-install-url">loading…</code>
-      <p style="color:#666;font-size:.9rem;margin-top:.75rem">Place signed <code>joyous-widget.wgt</code> in <code>data/samsung/</code> on the hub.</p>
-    </div>
-    <div class="card">
-      <label>Frame ID <input id="samsung-frame-id" placeholder="living-room" style="margin-left:.5rem;padding:.3rem"></label>
-      <button class="btn btn-sm btn-primary" style="margin-left:.5rem" onclick="loadSamsungFrame()">Load</button>
-    </div>
-    <div id="samsung-editor" class="card" style="display:none">
-      <h3 style="margin-top:0" id="samsung-frame-title"></h3>
-      <div style="display:flex;gap:.5rem;margin-bottom:.75rem">
-        <input id="samsung-name-input" placeholder="Friendly name" style="padding:.3rem .5rem;border:1px solid #ccc;border-radius:4px;flex:1">
-        <button class="btn btn-sm btn-primary" onclick="saveSamsungName()">Rename</button>
+    <div style="display:flex;gap:1.5rem;align-items:flex-start">
+      <div style="min-width:220px">
+        <div class="section-label">Frames</div>
+        <div id="samsung-frame-list"><p style="color:#888;font-size:.9rem">No Samsung frames yet.</p></div>
+        <div style="margin-top:.75rem">
+          <button class="btn btn-sm btn-primary" id="samsung-discover-btn" onclick="discoverSamsungFrames()">Discover displays</button>
+          <span id="samsung-discover-status" style="display:block;font-size:.8rem;color:#666;margin-top:.4rem"></span>
+        </div>
       </div>
-      <div style="display:flex;flex-wrap:wrap;gap:1rem;align-items:end;margin-bottom:1rem">
-        <label>Poll interval (min)<br><input type="number" id="samsung-poll" min="1" value="60" style="width:5rem;padding:.3rem"></label>
-        <label>Inactive begin<br><input type="time" id="samsung-inactive-begin" style="padding:.3rem"></label>
-        <label>Inactive end<br><input type="time" id="samsung-inactive-end" style="padding:.3rem"></label>
-        <label style="display:flex;align-items:center;gap:.4rem">
-          <input type="checkbox" id="samsung-portrait">
-          Portrait
-        </label>
-        <label>Width<br><input type="number" id="samsung-display-width" min="0" placeholder="2560" style="width:6rem;padding:.3rem"></label>
-        <label>Height<br><input type="number" id="samsung-display-height" min="0" placeholder="1440" style="width:6rem;padding:.3rem"></label>
-        <button class="btn btn-sm btn-primary" onclick="saveSamsungConfig()">Save config</button>
+      <div id="samsung-editor" style="flex:1;display:none">
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem">
+            <div class="dot" id="samsung-dot"></div>
+            <h3 style="margin:0" id="samsung-frame-title"></h3>
+            <span id="samsung-status-badge" class="badge"></span>
+          </div>
+          <div style="display:flex;gap:.5rem;margin-bottom:.75rem">
+            <input id="samsung-name-input" placeholder="Friendly name" style="padding:.3rem .5rem;border:1px solid #ccc;border-radius:4px;flex:1">
+            <button class="btn btn-sm btn-primary" onclick="saveSamsungName()">Rename</button>
+          </div>
+          <div class="info-grid" id="samsung-info"></div>
+        </div>
+        <div class="card">
+          <div class="section-label" style="margin-top:0">Currently displayed</div>
+          <div id="samsung-preview-wrap"><p style="color:#888;font-size:.9rem">No image uploaded yet.</p></div>
+          <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" onclick="samsungSendImage()">Send image from album</button>
+          </div>
+          <div id="samsung-upload-zone" style="border:2px dashed #ccc;border-radius:8px;padding:1.5rem;text-align:center;cursor:pointer;margin-top:1rem" onclick="document.getElementById('samsung-file-input').click()">
+            Drop image to upload for this frame
+          </div>
+          <input type="file" id="samsung-file-input" accept=".png,.jpg,.jpeg,.heic" style="display:none">
+          <div id="samsung-status" style="font-size:.85rem;color:#666;margin-top:.75rem"></div>
+        </div>
+        <div class="card">
+          <div class="section-label" style="margin-top:0">Display settings</div>
+          <div style="display:flex;flex-wrap:wrap;gap:1rem;align-items:end">
+            <label style="font-size:.9rem">Poll interval (min)<br><input type="number" id="samsung-poll" min="1" value="60" style="width:5rem;padding:.3rem;margin-top:.25rem"></label>
+            <label style="font-size:.9rem">Inactive begin<br><input type="time" id="samsung-inactive-begin" style="padding:.3rem;margin-top:.25rem"></label>
+            <label style="font-size:.9rem">Inactive end<br><input type="time" id="samsung-inactive-end" style="padding:.3rem;margin-top:.25rem"></label>
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.9rem;cursor:pointer;padding-bottom:.3rem">
+              <input type="checkbox" id="samsung-portrait">
+              Portrait orientation
+            </label>
+            <label style="font-size:.9rem">Width<br><input type="number" id="samsung-display-width" min="0" placeholder="2560" style="width:6rem;padding:.3rem;margin-top:.25rem"></label>
+            <label style="font-size:.9rem">Height<br><input type="number" id="samsung-display-height" min="0" placeholder="1440" style="width:6rem;padding:.3rem;margin-top:.25rem"></label>
+            <button class="btn btn-sm btn-primary" onclick="saveSamsungConfig()">Save settings</button>
+          </div>
+          <p style="font-size:.8rem;color:#888;margin:.75rem 0 0">Frame skips polling during the inactive window.</p>
+        </div>
+        <div class="card">
+          <div class="section-label" style="margin-top:0">Tizen widget (optional)</div>
+          <p style="font-size:.9rem;margin:.25rem 0">Install URL for Samsung E-Paper Custom App player:</p>
+          <code id="samsung-install-url">loading…</code>
+          <p style="color:#666;font-size:.85rem;margin-top:.75rem;margin-bottom:0">Place signed <code>joyous-widget.wgt</code> in <code>data/samsung/</code> on the hub.</p>
+        </div>
+        <div class="card" style="border:1px solid #f5c6cb">
+          <div class="section-label" style="margin-top:0;color:#dc3545">Danger zone</div>
+          <button class="btn btn-sm" style="background:#dc3545;color:#fff" onclick="samsungDeleteDevice()">Remove frame from hub</button>
+          <span style="margin-left:.75rem;font-size:.85rem;color:#888">Does not affect the display itself.</span>
+        </div>
       </div>
-      <div id="samsung-upload-zone" style="border:2px dashed #ccc;border-radius:8px;padding:1.5rem;text-align:center;cursor:pointer;margin-bottom:1rem" onclick="document.getElementById('samsung-file-input').click()">
-        Drop image to upload for this frame
-      </div>
-      <input type="file" id="samsung-file-input" accept=".png,.jpg,.jpeg,.heic" style="display:none">
-      <div id="samsung-status" style="font-size:.9rem;color:#666"></div>
-      <img id="samsung-preview" style="max-width:100%;margin-top:1rem;display:none;border-radius:6px">
     </div>
-    <div id="samsung-list"></div>
   </div>
 </main>
 <script>
@@ -578,11 +609,31 @@ function showTab(name,btn){
   document.getElementById('tab-'+name).style.display='';
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
+  if(name==='devices'||name==='samsung') startSamsungReachabilityPoll();
+  else stopSamsungReachabilityPoll();
+}
+
+let samsungReachabilityTimer=null;
+function startSamsungReachabilityPoll(){
+  if(samsungReachabilityTimer) return;
+  pollSamsungReachability();
+  samsungReachabilityTimer=setInterval(pollSamsungReachability, 5*60*1000);
+}
+function stopSamsungReachabilityPoll(){
+  if(samsungReachabilityTimer){ clearInterval(samsungReachabilityTimer); samsungReachabilityTimer=null; }
+}
+async function pollSamsungReachability(){
+  try{
+    await fetch('/api/samsung/poll',{method:'POST'});
+    await loadDevicesInner();
+    loadSamsungFrames();
+  }catch(_){}
 }
 
 async function loadDevices(){
   await loadDevicesInner();
   loadIJFrames();
+  loadSamsungFrames();
 }
 
 async function discoverFrames(){
@@ -961,7 +1012,9 @@ async function loadDevicesInner(){
   el.innerHTML=devices.map(d=>{
     const label=d.name||d.mac||d.ip||d.id;
     const type=d.type||'inkjoy';
-    const status=d.connected?'<span class="badge online">online</span>':'<span class="badge offline">offline</span>';
+    const status=type==='samsung'
+      ? (d.connected?'<span class="badge online">active</span>':'<span class="badge offline">asleep</span>')
+      : (d.connected?'<span class="badge online">online</span>':'<span class="badge offline">offline</span>');
     const meta=type==='inkjoy'
       ? ((d.firmware?'fw '+d.firmware+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.rssi?'📶'+d.rssi+'dBm ':''))
       : (d.ip?d.ip+' ':'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
@@ -977,48 +1030,162 @@ async function loadDevicesInner(){
 }
 
 loadDevices(); loadImages();
+startSamsungReachabilityPoll();
 setInterval(loadDevices,5000);
 document.getElementById('samsung-install-url').textContent=location.origin+'/samsung/';
-loadSamsungList();
 
-async function loadSamsungList(){
-  const r=await fetch('/api/samsung'); const frames=await r.json();
-  const el=document.getElementById('samsung-list');
-  if(!frames.length){el.innerHTML='<p style="color:#666">No Samsung frames yet — enter a frame ID above.</p>';return;}
-  el.innerHTML='<div class="card"><strong>Known frames</strong><ul>'+
-    frames.map(f=>'<li><a href="#" onclick="document.getElementById(\'samsung-frame-id\').value=\''+f.id+'\';loadSamsungFrame();return false">'+f.id+'</a> '+
-    (f.has_image?'🖼':'no image')+' '+(f.locked?'🔒':'')+' poll '+f.poll_interval_minutes+'m'+
-    (f.inactive_begin?' sleep '+f.inactive_begin+'-'+f.inactive_end:'')+'</li>').join('')+
-    '</ul></div>';
+// ── Samsung tab ─────────────────────────────────────────────────────────────
+let samsungFrames=[], samsungCurrentId=null, samsungStatusCache=null, samsungPreviewEtag=null;
+
+function samsungFrameRecord(frameId){
+  return samsungFrames.find(x=>x.id===frameId);
 }
 
-let samsungCurrentId=null;
-async function loadSamsungFrame(){
-  const id=document.getElementById('samsung-frame-id').value.trim();
-  if(!id)return;
-  samsungCurrentId=id;
-  document.getElementById('samsung-editor').style.display='';
-  const r=await fetch('/samsung/'+encodeURIComponent(id)+'/status');
-  const s=await r.json();
-  document.getElementById('samsung-poll').value=s.poll_interval_minutes||60;
-  document.getElementById('samsung-inactive-begin').value=s.inactive_begin||'';
-  document.getElementById('samsung-inactive-end').value=s.inactive_end||'';
-  document.getElementById('samsung-name-input').value=s.name||'';
-  document.getElementById('samsung-frame-title').textContent=(s.name||id);
-  const fmt=s.crop_format||'16:9';
-  document.getElementById('samsung-portrait').checked=(fmt==='9:16'||fmt==='3:4');
-  document.getElementById('samsung-display-width').value=s.display_width||'';
-  document.getElementById('samsung-display-height').value=s.display_height||'';
-  const st=document.getElementById('samsung-status');
-  st.textContent=(s.has_image?'Image etag '+s.etag:'No image yet')+(s.locked?' (locked)':'');
-  if(s.crop_format||s.display_width){
-    const orient=(fmt==='9:16'||fmt==='3:4')?'Portrait':'Landscape';
-    st.textContent+=' · '+orient+(s.display_width?(' '+s.display_width+'×'+s.display_height):'');
+function samsungDeviceForFrame(frameId){
+  const rec=samsungFrameRecord(frameId);
+  if(rec&&rec.device_id) return devices.find(d=>d.id===rec.device_id);
+  return devices.find(d=>d.type==='samsung'&&samsungFrameIDFromDevice(d)===frameId);
+}
+
+function samsungFrameIDFromDevice(d){
+  if(d.ip) return d.ip.replace(/\./g,'-');
+  const id=d.id||'';
+  if(id.startsWith('samsung:')) return id.slice(8).replace(/\./g,'-');
+  return id.replace(/\./g,'-');
+}
+
+async function loadSamsungFrames(){
+  try{
+    const r=await fetch('/api/samsung');
+    samsungFrames=await r.json()||[];
+  }catch(_){
+    samsungFrames=[];
   }
-  const prev=document.getElementById('samsung-preview');
-  if(s.has_image&&!s.locked){prev.style.display='';prev.src='/samsung/'+encodeURIComponent(id)+'.png?t='+Date.now();}
-  else{prev.style.display='none';}
-  loadSamsungList();
+  const el=document.getElementById('samsung-frame-list');
+  if(!samsungFrames.length){
+    el.innerHTML='<p style="color:#888;font-size:.9rem">No Samsung frames yet.</p>';
+    return;
+  }
+  el.innerHTML=samsungFrames.map(f=>{
+    const label=f.name||f.ip||f.id;
+    const sel=f.id===samsungCurrentId?' selected':'';
+    return '<div class="frame-list-item'+sel+'" onclick="openSamsungFrame(\''+f.id+'\')" id="samli-'+f.id+'">'+
+      '<div class="dot '+(f.connected?'online':'offline')+'"></div>'+
+      '<span style="font-weight:500">'+label+'</span>'+
+      '</div>';
+  }).join('');
+  if(samsungCurrentId){
+    const rec=samsungFrameRecord(samsungCurrentId);
+    const d=samsungDeviceForFrame(samsungCurrentId);
+    if(rec||d) updateSamsungEditorStatus(d,rec,samsungStatusCache);
+    else if(samsungStatusCache) updateSamsungEditorStatus(null,null,samsungStatusCache);
+  }
+}
+
+async function discoverSamsungFrames(){
+  const btn=document.getElementById('samsung-discover-btn');
+  const st=document.getElementById('samsung-discover-status');
+  btn.disabled=true; st.textContent='Scanning network…';
+  try{
+    const r=await fetch('/api/devices/discover',{method:'POST'});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||r.statusText);
+    st.textContent=data.found?'Found '+data.found+' frame(s)':'No frames matched';
+    await loadDevicesInner();
+    loadSamsungFrames();
+  }catch(e){
+    st.textContent='Discovery failed: '+e.message;
+  }finally{
+    btn.disabled=false;
+  }
+}
+
+async function openSamsungFrame(frameId){
+  samsungCurrentId=frameId;
+  samsungPreviewEtag=null;
+  document.querySelectorAll('#samsung-frame-list .frame-list-item').forEach(el=>el.classList.remove('selected'));
+  const li=document.getElementById('samli-'+frameId);
+  if(li) li.classList.add('selected');
+  document.getElementById('samsung-editor').style.display='';
+  const d=samsungDeviceForFrame(frameId);
+  try{
+    const r=await fetch('/samsung/'+encodeURIComponent(frameId)+'/status');
+    if(!r.ok) throw new Error(await r.text());
+    samsungStatusCache=await r.json();
+  }catch(e){
+    alert('Load failed: '+e.message);
+    return;
+  }
+  renderSamsungEditor(d,samsungStatusCache,samsungFrameRecord(frameId));
+}
+
+function renderSamsungEditor(d,s,rec){
+  updateSamsungEditorStatus(d,rec,s);
+  document.getElementById('samsung-name-input').value=(s&&s.name)||(rec&&rec.name)||(d&&d.name)||'';
+  document.getElementById('samsung-poll').value=(s&&s.poll_interval_minutes)||60;
+  document.getElementById('samsung-inactive-begin').value=(s&&s.inactive_begin)||'';
+  document.getElementById('samsung-inactive-end').value=(s&&s.inactive_end)||'';
+  const fmt=(s&&s.crop_format)||'16:9';
+  document.getElementById('samsung-portrait').checked=(fmt==='9:16'||fmt==='3:4');
+  document.getElementById('samsung-display-width').value=(s&&s.display_width)||'';
+  document.getElementById('samsung-display-height').value=(s&&s.display_height)||'';
+}
+
+function updateSamsungEditorStatus(d,rec,s){
+  const label=(s&&s.name)||(rec&&rec.name)||(d&&d.name)||(rec&&rec.ip)||(d&&d.ip)||samsungCurrentId||'';
+  document.getElementById('samsung-frame-title').textContent=label;
+  const online=!!((d&&d.connected)||(rec&&rec.connected));
+  document.getElementById('samsung-dot').className='dot '+(online?'online':'offline');
+  const badge=document.getElementById('samsung-status-badge');
+  badge.className='badge '+(online?'online':'offline');
+  badge.textContent=online?'active':'asleep';
+  const lastSeen=(d&&d.last_seen)||(rec&&rec.last_seen);
+  const ago=lastSeen?timeAgo(lastSeen):'—';
+  const ip=(d&&d.ip)||(rec&&rec.ip)||'—';
+  const lastAction=(d&&d.last_action)||(rec&&rec.last_action)||'—';
+  document.getElementById('samsung-info').innerHTML=
+    '<span class="label">Frame ID</span><span style="font-family:monospace">'+samsungCurrentId+'</span>'+
+    '<span class="label">IP</span><span>'+ip+'</span>'+
+    '<span class="label">Crop</span><span>'+((s&&s.crop_format)||(rec&&rec.crop_format)||'—')+((s&&s.display_width)?(' · '+s.display_width+'×'+s.display_height):'')+'</span>'+
+    '<span class="label">Poll</span><span>'+((s&&s.poll_interval_minutes)?(s.poll_interval_minutes+' min'):((rec&&rec.poll_interval_minutes)?(rec.poll_interval_minutes+' min'):'—'))+'</span>'+
+    '<span class="label">Last seen</span><span>'+ago+'</span>'+
+    '<span class="label">Last action</span><span>'+lastAction+'</span>';
+  const wrap=document.getElementById('samsung-preview-wrap');
+  if(s&&s.has_image&&!s.locked){
+    const url='/samsung/'+encodeURIComponent(samsungCurrentId)+'.png';
+    const etag=s.etag||'';
+    const img=document.getElementById('samsung-preview');
+    if(!img||img.parentElement!==wrap){
+      wrap.innerHTML='<img class="last-image-preview" id="samsung-preview" src="'+url+'" alt="current image">';
+      samsungPreviewEtag=etag;
+    }else if(etag!==samsungPreviewEtag){
+      samsungPreviewEtag=etag;
+      refreshSamsungPreview();
+    }
+  }else{
+    samsungPreviewEtag=null;
+    wrap.innerHTML='<p style="color:#888;font-size:.9rem">'+(s&&s.locked?'Image locked.':'No image uploaded yet.')+'</p>';
+  }
+  const st=document.getElementById('samsung-status');
+  if(s){
+    st.textContent=(s.has_image?'Image etag '+s.etag:'No image yet')+(s.locked?' (locked)':'');
+    if(s.inactive_begin&&s.inactive_end) st.textContent+=' · inactive '+s.inactive_begin+'–'+s.inactive_end;
+  }else{
+    st.textContent='';
+  }
+}
+
+async function reloadSamsungFrame(){
+  if(!samsungCurrentId) return;
+  const d=samsungDeviceForFrame(samsungCurrentId);
+  const rec=samsungFrameRecord(samsungCurrentId);
+  try{
+    const r=await fetch('/samsung/'+encodeURIComponent(samsungCurrentId)+'/status');
+    if(!r.ok) throw new Error(await r.text());
+    samsungStatusCache=await r.json();
+    updateSamsungEditorStatus(d,rec,samsungStatusCache);
+  }catch(_){}
+  loadSamsungFrames();
 }
 
 async function saveSamsungName(){
@@ -1040,6 +1207,7 @@ async function saveSamsungName(){
   });
   document.getElementById('samsung-frame-title').textContent=name||samsungCurrentId;
   await loadDevicesInner();
+  loadSamsungFrames();
 }
 
 function samsungCropFormat(){
@@ -1073,8 +1241,45 @@ async function saveSamsungConfig(){
     })
   });
   if(!r.ok){alert('Save failed: '+(await r.text()));return;}
-  loadSamsungFrame();
+  await reloadSamsungFrame();
   await loadDevicesInner();
+}
+
+async function samsungSendImage(){
+  if(!samsungCurrentId)return;
+  const rec=samsungFrameRecord(samsungCurrentId);
+  const dev=samsungDeviceForFrame(samsungCurrentId);
+  const deviceId=(rec&&rec.device_id)||(dev&&dev.id);
+  if(!deviceId){alert('Frame is not registered on the hub — click Discover displays first.');return;}
+  let imageId=prompt('Image ID from album:\n'+(images.length?images.map(i=>i.id+' '+i.name).join('\n'):'(upload images first)'));
+  if(!imageId)return;
+  imageId=imageId.trim().split(/\s+/)[0];
+  const match=images.find(i=>i.id.startsWith(imageId))||images.find(i=>i.name.includes(imageId));
+  if(!match){alert('Image not found');return;}
+  const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/display',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({image_id:match.id})
+  });
+  if(!r.ok){alert('Send failed: '+(await r.text()));return;}
+  await loadDevicesInner();
+  loadSamsungFrames();
+  await reloadSamsungFrame();
+}
+
+async function samsungDeleteDevice(){
+  if(!samsungCurrentId)return;
+  const rec=samsungFrameRecord(samsungCurrentId);
+  const dev=samsungDeviceForFrame(samsungCurrentId);
+  const deviceId=(rec&&rec.device_id)||(dev&&dev.id);
+  if(!deviceId){alert('This frame is not in the device registry.');return;}
+  if(!confirm('Remove this frame from the hub? (The display itself is unaffected.)'))return;
+  await fetch('/api/devices/'+encodeURIComponent(deviceId),{method:'DELETE'});
+  samsungCurrentId=null;
+  samsungStatusCache=null;
+  samsungPreviewEtag=null;
+  document.getElementById('samsung-editor').style.display='none';
+  await loadDevicesInner();
+  loadSamsungFrames();
 }
 
 document.getElementById('samsung-file-input').addEventListener('change',async e=>{
@@ -1082,7 +1287,7 @@ document.getElementById('samsung-file-input').addEventListener('change',async e=
   const fd=new FormData(); fd.append('file',e.target.files[0]);
   const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/image',{method:'POST',body:fd});
   if(!r.ok){alert('Upload failed: '+(await r.text()));return;}
-  loadSamsungFrame();
+  await reloadSamsungFrame();
 });
 const sz=document.getElementById('samsung-upload-zone');
 sz.addEventListener('dragover',e=>{e.preventDefault();sz.style.borderColor='#1a1a2e'});
@@ -1091,8 +1296,9 @@ sz.addEventListener('drop',async e=>{
   e.preventDefault();sz.style.borderColor='#ccc';
   if(!samsungCurrentId||!e.dataTransfer.files.length)return;
   const fd=new FormData(); fd.append('file',e.dataTransfer.files[0]);
-  await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/image',{method:'POST',body:fd});
-  loadSamsungFrame();
+  const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/image',{method:'POST',body:fd});
+  if(!r.ok){alert('Upload failed: '+(await r.text()));return;}
+  await reloadSamsungFrame();
 });
 </script>
 
@@ -1261,6 +1467,14 @@ function refreshThumb(id){
   if(!t) return;
   const url='/images/'+encodeURIComponent(id)+'/thumb';
   // Etag changes when crop is saved; reassign src to force revalidation (no ?t= bust).
+  t.src='';
+  t.src=url;
+}
+
+function refreshSamsungPreview(){
+  const t=document.getElementById('samsung-preview');
+  if(!t||!samsungCurrentId) return;
+  const url='/samsung/'+encodeURIComponent(samsungCurrentId)+'.png';
   t.src='';
   t.src=url;
 }

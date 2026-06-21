@@ -111,6 +111,53 @@ func TestSamsungFriendlyNameInDevices(t *testing.T) {
 	}
 }
 
+func TestSamsungListAPI(t *testing.T) {
+	h := buildTestHub(t)
+	frameID := "192-168-1-108"
+	h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	h.devices.SetName("samsung:192.168.1.108", "Kitchen Frame")
+	if err := h.samsung.SaveConfig(SamsungFrameConfig{
+		FrameID:             frameID,
+		Name:                "Kitchen Frame",
+		PollIntervalMinutes: 60,
+		CropFormat:          "16:9",
+		DisplayWidth:        2560,
+		DisplayHeight:       1440,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.109", Server: "Samsung MDC"})
+
+	rec := httptest.NewRecorder()
+	h.handleSamsungList(rec, httptest.NewRequest("GET", "/api/samsung", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var out []map[string]any
+	json.NewDecoder(rec.Body).Decode(&out)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 frames, got %d", len(out))
+	}
+	byID := map[string]map[string]any{}
+	for _, f := range out {
+		byID[f["id"].(string)] = f
+	}
+	kitchen := byID[frameID]
+	if kitchen["name"] != "Kitchen Frame" {
+		t.Fatalf("name: got %v", kitchen["name"])
+	}
+	if kitchen["device_id"] != "samsung:192.168.1.108" {
+		t.Fatalf("device_id: got %v", kitchen["device_id"])
+	}
+	if kitchen["connected"] != true {
+		t.Fatalf("connected: got %v", kitchen["connected"])
+	}
+	other := byID["192-168-50-109"]
+	if other["device_id"] != "samsung:192.168.1.109" {
+		t.Fatalf("discovered-only device_id: got %v", other["device_id"])
+	}
+}
+
 // TestGetImagesEmpty: GET /api/images with no images returns empty array.
 func TestGetImagesEmpty(t *testing.T) {
 	h := buildTestHub(t)
@@ -245,6 +292,9 @@ func TestWebBranding(t *testing.T) {
 	}
 	if strings.Contains(indexHTML, "/thumb?t=") {
 		t.Fatal("indexHTML should not cache-bust album thumbs with ?t=")
+	}
+	if strings.Contains(indexHTML, ".png?t=") {
+		t.Fatal("indexHTML should not cache-bust Samsung preview PNGs with ?t=")
 	}
 }
 
