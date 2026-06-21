@@ -21,3 +21,5 @@ Reflection/ReflectionFrame_*
 *.log
 proxy.log
 **/screenlog.0
+*.png
+!joyous-hub/wipes/*.png
