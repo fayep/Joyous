@@ -36,10 +36,6 @@ stop_service() {
 		pkill -f "${INSTALL_ROOT}.*joyous-hub" 2>/dev/null || true
 		sleep 1
 	fi
-	if pgrep -f "/usr/bin/open -W -a ${APP}" >/dev/null 2>&1; then
-		pkill -f "/usr/bin/open -W -a ${APP}" 2>/dev/null || true
-		sleep 1
-	fi
 }
 
 load_service() {
@@ -200,6 +196,8 @@ else
 fi
 
 echo "==> writing launchd plist..."
+# Run the signed app binary directly — not `open -W`, which cannot block on LSUIElement
+# apps and spams stderr with GetProcessPID errors while KeepAlive restart-loops.
 cat >"$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -213,25 +211,27 @@ cat >"$PLIST" <<EOF
 	</array>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/bin/open</string>
-		<string>-W</string>
-		<string>-a</string>
-		<string>${APP}</string>
-		<string>--args</string>
+		<string>${BIN}</string>
 		<string>--data-dir=${DATA_DIR}</string>
 		<string>--listen-mqtt=:${MQTT_PORT}</string>
 		<string>--listen-http=:${HTTP_PORT}</string>
-<string>--server-addr=${SERVER_ADDR}</string>
+		<string>--server-addr=${SERVER_ADDR}</string>
 		<string>--discover-subnets</string>
 		<string>${DISCOVER_SUBNETS}</string>
-		<string>--log-dir=${LOG_DIR}</string>
 	</array>
 	<key>WorkingDirectory</key>
 	<string>${INSTALL_ROOT}</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
 	<key>StandardOutPath</key>
 	<string>${LOG_DIR}/stdout.log</string>
 	<key>StandardErrorPath</key>
