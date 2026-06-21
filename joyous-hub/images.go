@@ -98,6 +98,7 @@ func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, erro
 	}
 	// Cache hit.
 	if bin, err := os.ReadFile(cacheFile); err == nil {
+		s.applyRandomWipeIfConverted(id, bin)
 		return bin, nil
 	}
 
@@ -112,7 +113,20 @@ func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, erro
 	os.WriteFile(cacheFile, bin, 0644)
 	s.evictCache()
 
+	s.applyRandomWipeIfConverted(id, bin)
 	return bin, nil
+}
+
+func (s *ImageStore) applyRandomWipeIfConverted(id string, bin []byte) {
+	meta, err := s.readMeta(id)
+	if err != nil || isStoredBin(meta.Name) {
+		return
+	}
+	applyRandomWipe(bin)
+}
+
+func isStoredBin(name string) bool {
+	return strings.ToLower(filepath.Ext(name)) == ".bin"
 }
 
 // ServeBinHTTP writes the .bin bytes as an HTTP response.
@@ -570,7 +584,7 @@ func convertImageWithCrop(raw []byte, crop CropRect, portrait bool) ([]byte, err
 		enhanced := LABEnhance(img, 1.0)
 		indices := StuckiDither(enhanced, PaletteInkJoy)
 		hi = indicesToHi(indices)
-		lo = MakeClockWipe(frameW, frameH)
+		lo = randomWipeGrid()
 	}
 	return ToBin(hi, lo), nil
 }
@@ -665,7 +679,7 @@ func snapToPalette(img image.Image) (hi, lo [][]byte) {
 	h, w := b.Dy(), b.Dx()
 	hi = make([][]byte, h)
 	lo = make([][]byte, h)
-	wipe := MakeClockWipe(w, h)
+	wipe := randomWipeGrid()
 	for y := range h {
 		hi[y] = make([]byte, w)
 		for x := range w {
