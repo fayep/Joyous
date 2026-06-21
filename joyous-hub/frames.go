@@ -76,6 +76,7 @@ func (h *Hub) sendInkJoyImage(dev *Device, imageID string) error {
 	err := h.publisher.Publish(topic, payload)
 	logFrameSend(dev.ID, imageID, "inkjoy", err)
 	if err == nil {
+		h.displayPreview.Clear(dev.MAC)
 		h.devices.SetLastImage(dev.MAC, imageID)
 	}
 	return err

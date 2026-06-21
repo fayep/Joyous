@@ -119,6 +119,30 @@ func TestMultipleDevices(t *testing.T) {
 	}
 }
 
+func TestDeviceListSortedByName(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.MarkConnected("AABBCCDDEEFF")
+	reg.MarkConnected("30EDA0E3FBE8")
+	reg.MarkConnected("CCDDEEFF0011")
+	reg.SetName("AABBCCDDEEFF", "Zebra")
+	reg.SetName("30EDA0E3FBE8", "Alpha")
+	// CCDDEEFF0011 keeps MAC as label
+
+	devs := reg.List()
+	if len(devs) != 3 {
+		t.Fatalf("expected 3 devices, got %d", len(devs))
+	}
+	if deviceDisplayLabel(devs[0]) != "Alpha" {
+		t.Fatalf("first: got %q", deviceDisplayLabel(devs[0]))
+	}
+	if deviceDisplayLabel(devs[1]) != "CCDDEEFF0011" {
+		t.Fatalf("second: got %q", deviceDisplayLabel(devs[1]))
+	}
+	if deviceDisplayLabel(devs[2]) != "Zebra" {
+		t.Fatalf("third: got %q", deviceDisplayLabel(devs[2]))
+	}
+}
+
 func TestSamsungRecentlySeen(t *testing.T) {
 	if !SamsungRecentlySeen(time.Now()) {
 		t.Fatal("recent contact should count as seen")

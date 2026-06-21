@@ -652,7 +652,6 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 	for id := range seen {
 		ids = append(ids, id)
 	}
-	sort.Strings(ids)
 	out := make([]frameInfo, 0, len(ids))
 	for _, id := range ids {
 		cfg, _ := h.samsung.LoadConfig(id)
@@ -685,8 +684,26 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, info)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		la := strings.ToLower(samsungListLabel(out[i].Name, out[i].IP, out[i].ID))
+		lb := strings.ToLower(samsungListLabel(out[j].Name, out[j].IP, out[j].ID))
+		if la != lb {
+			return la < lb
+		}
+		return out[i].ID < out[j].ID
+	})
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
+}
+
+func samsungListLabel(name, ip, id string) string {
+	if s := strings.TrimSpace(name); s != "" {
+		return s
+	}
+	if ip != "" {
+		return ip
+	}
+	return id
 }
 
 type ssspConfig struct {

@@ -37,6 +37,7 @@ discover_subnets: ""
 log_dir: ""
 
 # Unknown MQTT actions saved here (outside disposable logs).
+# Intercepted cloud→frame payloads → {capture_dir}/intercept/{action}.jsonl
 # empty or "auto" → {data_dir}/capture; "off" to disable
 capture_dir: ""
 

@@ -16,11 +16,12 @@ func buildTestHub(t *testing.T) *Hub {
 	t.Helper()
 	dir := t.TempDir()
 	return &Hub{
-		devices:   NewDeviceRegistry(dir),
-		images:    NewImageStore(dir),
-		samsung:   NewSamsungStore(dir),
-		publisher: &noopPublisher{},
-		mqttLog:   NewMQTTLogBuffer(20),
+		devices:        NewDeviceRegistry(dir),
+		images:         NewImageStore(dir),
+		displayPreview: NewDisplayPreviewStore(dir),
+		samsung:        NewSamsungStore(dir),
+		publisher:      &noopPublisher{},
+		mqttLog:        NewMQTTLogBuffer(20),
 	}
 }
 

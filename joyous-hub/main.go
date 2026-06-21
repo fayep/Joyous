@@ -19,6 +19,8 @@ import (
 	"github.com/mochi-mqtt/server/v2/hooks/auth"
 	"github.com/mochi-mqtt/server/v2/listeners"
 	"github.com/mochi-mqtt/server/v2/packets"
+
+	"joyous-hub/internal/linkmeta"
 )
 
 func main() {
@@ -84,6 +86,7 @@ func main() {
 	if len(discoverSubnets) > 0 {
 		log.Printf("discovery subnets: %v", discoverSubnets)
 	}
+	log.Printf("joyous-hub version %s", linkmeta.Version)
 
 	if err := os.MkdirAll(*dataDir, 0755); err != nil {
 		log.Fatalf("data-dir: %v", err)
@@ -108,6 +111,8 @@ func main() {
 		log.Printf("warn: load devices: %v", err)
 	}
 	imageStore := NewImageStore(*dataDir)
+	displayPreview := NewDisplayPreviewStore(*dataDir)
+	displayPreview.RestoreFromDisk(devices)
 	samsungStore := NewSamsungStore(*dataDir)
 
 	// ── local MQTT broker ───────────────────────────────────────────────────
@@ -154,15 +159,17 @@ func main() {
 	// first login (after which we use the socket's LocalAddr instead).
 	hubIP := resolvedLANIP(addr)
 	hub := &Hub{
-		devices:    devices,
-		images:     imageStore,
-		samsung:    samsungStore,
-		publisher:  &brokerPublisher{broker: broker, mqttLog: mqttLog},
-		serverAddr: addr,
-		mqttPort:   mqttPortNum,
-		hubIP:      hubIP,
-		mqttLog:    mqttLog,
+		devices:        devices,
+		images:         imageStore,
+		displayPreview: displayPreview,
+		samsung:        samsungStore,
+		publisher:      &brokerPublisher{broker: broker, mqttLog: mqttLog},
+		serverAddr:     addr,
+		mqttPort:       mqttPortNum,
+		hubIP:          hubIP,
+		mqttLog:        mqttLog,
 	}
+	bridges.onExternalPlay = hub.handleExternalPlay
 
 	mux := http.NewServeMux()
 	registerRoutes(mux, hub)
@@ -224,6 +231,7 @@ type bridgeSet struct {
 	mqttLog         *MQTTLogBuffer
 	broker          *mochi.Server
 	devices         *DeviceRegistry
+	onExternalPlay  func(mac string, payload []byte)
 	m               map[string]*upstreamBridge
 }
 
@@ -290,6 +298,7 @@ func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
 
 	if ShouldIntercept(action, b.set.intercept) {
 		b.set.logCloudIn(b.mac, payload, "intercepted")
+		captureWriteErr("intercept", b.set.capture.RecordIntercepted(b.mac, action, payload))
 		switch action {
 		case "mqtt_config":
 			cfg, err := ParseMQTTConfig(payload)
@@ -317,8 +326,6 @@ func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
 		case "ota", "fpga":
 			if b.set.ota != nil {
 				b.set.ota.Handle(b.mac, action, payload)
-			} else {
-				captureWriteErr("ota", b.set.capture.RecordDownstream(b.mac, action, payload))
 			}
 			log.Printf("[%s] %s blocked (artifact capture)", b.mac, action)
 		default:
@@ -341,6 +348,9 @@ func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
 		b.set.mqttLog.AddLocal("hub→frame", topic, payload, "")
 	}
 	b.set.broker.Publish(topic, payload, false, 0)
+	if action == "play" && b.set.onExternalPlay != nil {
+		b.set.onExternalPlay(b.mac, payload)
+	}
 }
 
 func (b *upstreamBridge) forward(payload []byte) {

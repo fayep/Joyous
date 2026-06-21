@@ -68,6 +68,27 @@ func TestMessageCaptureRecord(t *testing.T) {
 	}
 }
 
+func TestMessageCaptureRecordIntercepted(t *testing.T) {
+	dir := t.TempDir()
+	c := NewMessageCapture(dir, ParseAllowList(""), ParseAllowList(""), ParseAllowList(""))
+	payload := []byte(`{"action":"mqtt_config","data":{"host":"x"}}`)
+	if err := c.RecordIntercepted("AABBCCDDEEFF", "mqtt_config", payload); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, captureDirIntercept, "mqtt_config.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal(data[:len(data)-1], &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec["mac"] != "AABBCCDDEEFF" || rec["direction"] != captureDirIntercept {
+		t.Fatalf("record: %+v", rec)
+	}
+}
+
 func TestSanitizeCaptureName(t *testing.T) {
 	if sanitizeCaptureName("") != "_empty" {
 		t.Fatal()

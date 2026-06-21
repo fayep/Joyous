@@ -16,9 +16,10 @@ type MQTTPublisher interface {
 
 // Hub wires together the broker, bridges, device registry, image store, and HTTP server.
 type Hub struct {
-	devices    *DeviceRegistry
-	images     *ImageStore
-	samsung    *SamsungStore
+	devices        *DeviceRegistry
+	images         *ImageStore
+	displayPreview *DisplayPreviewStore
+	samsung        *SamsungStore
 	hubIP      string // resolved non-loopback LAN IP, used for play URLs and BLE adoption
 	publisher  MQTTPublisher
 	serverAddr string // e.g. "192.168.1.5:8080" — used in play URLs
@@ -1028,6 +1029,8 @@ function updateIJEditorStatus(d){
   const li=document.getElementById('ij-last-image');
   if(d.last_image_id){
     li.innerHTML='<img class="last-image-preview" src="/images/'+d.last_image_id+'/thumb" alt="last sent">';
+  } else if(d.display_preview_at){
+    li.innerHTML='<img class="last-image-preview" src="/api/devices/'+d.id+'/display-preview?t='+encodeURIComponent(d.display_preview_at)+'" alt="currently displayed">';
   } else {
     li.innerHTML='<p style="color:#888;font-size:.9rem">Nothing sent yet.</p>';
   }

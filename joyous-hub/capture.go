@@ -13,6 +13,7 @@ import (
 const (
 	captureDirFrameToBroker = "frame-to-broker"
 	captureDirBrokerToFrame = "broker-to-frame"
+	captureDirIntercept     = "intercept"
 )
 
 // MessageCapture appends unrecognized MQTT payloads to per-action JSONL files.
@@ -78,6 +79,14 @@ func (c *MessageCapture) RecordDownstream(mac, action string, payload []byte) er
 		return nil
 	}
 	return c.record(captureDirBrokerToFrame, mac, action, payload)
+}
+
+// RecordIntercepted captures a cloud→frame message handled by the intercept list.
+func (c *MessageCapture) RecordIntercepted(mac, action string, payload []byte) error {
+	if c == nil {
+		return nil
+	}
+	return c.record(captureDirIntercept, mac, action, payload)
 }
 
 func (c *MessageCapture) record(direction, mac, action string, payload []byte) error {
@@ -147,5 +156,5 @@ func captureWriteErr(where string, err error) {
 }
 
 func logCaptureReady(dir string) {
-	log.Printf("capture: unknown MQTT messages → %s/{frame-to-broker,broker-to-frame}/", dir)
+	log.Printf("capture: MQTT messages → %s/{frame-to-broker,broker-to-frame,intercept}/", dir)
 }

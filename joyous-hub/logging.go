@@ -31,8 +31,8 @@ func (w *statusResponseWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// devicesListPollLogQuiet is how long GET /api/devices must be idle before the next
-// poll request is logged again (UI refreshes every 5s).
+// devicesListPollLogQuiet is how long noisy UI poll endpoints must be idle before the
+// next request is logged again (/api/devices every 5s, /api/mqtt/logs every 1s).
 const devicesListPollLogQuiet = 30 * time.Second
 
 type quietAccessLogger struct {
@@ -65,10 +65,15 @@ func (q *quietAccessLogger) shouldLog() bool {
 }
 
 var devicesListAccessLog = newQuietAccessLogger(devicesListPollLogQuiet)
+var mqttLogsAccessLog = newQuietAccessLogger(devicesListPollLogQuiet)
 var samsungListAccessLog = newQuietAccessLogger(devicesListPollLogQuiet)
 
 func isDevicesListPoll(r *http.Request) bool {
 	return r.Method == http.MethodGet && r.URL.Path == "/api/devices"
+}
+
+func isMQTTLogsPoll(r *http.Request) bool {
+	return r.Method == http.MethodGet && r.URL.Path == "/api/mqtt/logs"
 }
 
 func isSamsungListPoll(r *http.Request) bool {
@@ -94,6 +99,9 @@ func isSamsungFramePNG(r *http.Request) bool {
 
 func shouldSkipAccessLog(r *http.Request, status int) bool {
 	if isDevicesListPoll(r) && !devicesListAccessLog.shouldLog() {
+		return true
+	}
+	if isMQTTLogsPoll(r) && !mqttLogsAccessLog.shouldLog() {
 		return true
 	}
 	if isSamsungListPoll(r) && !samsungListAccessLog.shouldLog() {

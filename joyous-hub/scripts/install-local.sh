@@ -11,6 +11,7 @@ HTTP_PORT="${HTTP_PORT:-18080}"
 MQTT_PORT="${MQTT_PORT:-11883}"
 SERVER_ADDR="${SERVER_ADDR:-$(hostname -s | tr '[:upper:]' '[:lower:]').local:${HTTP_PORT}}"
 DISCOVER_SUBNETS="${DISCOVER_SUBNETS:-192.168.50}"
+JOYOUS_VERSION="${JOYOUS_VERSION:-1.0}"
 LABEL="com.joyous.hub"
 APP_BUNDLE="JoyousHub.app"
 APP_DISPLAY_NAME="Joyous Hub"
@@ -123,7 +124,13 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
 			export CGO_CFLAGS="${CGO_CFLAGS:-} -I${prefix}/include"
 			export CGO_LDFLAGS="${CGO_LDFLAGS:-} -L${prefix}/lib -lheif"
 		fi
-		go build -o "$STAGING_BIN" .
+		if [[ -n "${JOYOUS_SEAL:-${INKJOY_SIGN_KEY:-}}" ]]; then
+			SEAL="${JOYOUS_SEAL:-$INKJOY_SIGN_KEY}"
+			LDFLAGS="$(VERSION="$JOYOUS_VERSION" JOYOUS_SEAL="$SEAL" go run ./cmd/embed-linkmeta)"
+		else
+			LDFLAGS="-X joyous-hub/internal/linkmeta.Version=${JOYOUS_VERSION}"
+		fi
+		go build -ldflags "$LDFLAGS" -o "$STAGING_BIN" .
 	)
 elif [[ ! -x "$STAGING_BIN" ]]; then
 	echo "missing executable: $STAGING_BIN (set SKIP_BUILD=0 to compile on host)" >&2
@@ -160,9 +167,9 @@ cat >"$APP/Contents/Info.plist" <<EOF
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>${JOYOUS_VERSION}</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>${JOYOUS_VERSION}</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>

@@ -1,11 +1,22 @@
-.PHONY: build test darwin-arm64 linux-arm linux-mips clean install
+.PHONY: build test darwin-arm64 linux-arm linux-mips clean install build-release ldflags-linkmeta
+
+VERSION ?= dev
 
 build:
-	CGO_ENABLED=1 go build -o joyous-hub .
+	CGO_ENABLED=1 go build -ldflags "-X joyous-hub/internal/linkmeta.Version=$(VERSION)" -o joyous-hub .
+
+# Release build with version-linked metadata (JOYOUS_SEAL must be set).
+build-release:
+	@test -n "$$JOYOUS_SEAL" || (echo "JOYOUS_SEAL required" >&2; exit 1)
+	CGO_ENABLED=1 go build -ldflags "$$(VERSION=$(VERSION) JOYOUS_SEAL=$$JOYOUS_SEAL go run ./cmd/embed-linkmeta)" -o joyous-hub .
+
+ldflags-linkmeta:
+	@test -n "$$JOYOUS_SEAL" || (echo "JOYOUS_SEAL required" >&2; exit 1)
+	@VERSION=$(VERSION) JOYOUS_SEAL=$$JOYOUS_SEAL go run ./cmd/embed-linkmeta
 
 # Native macOS build (requires: brew install libheif)
 darwin-arm64:
-	CGO_ENABLED=1 go build -o joyous-hub .
+	CGO_ENABLED=1 go build -ldflags "-X joyous-hub/internal/linkmeta.Version=$(VERSION)" -o joyous-hub .
 
 install:
 	./install.sh
