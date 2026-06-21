@@ -13,6 +13,7 @@ import (
 const (
 	captureDirFrameToBroker = "frame-to-broker"
 	captureDirBrokerToFrame = "broker-to-frame"
+	captureDirIntercept     = "intercept"
 )
 
 // MessageCapture appends unrecognized MQTT payloads to per-action JSONL files.
@@ -80,6 +81,14 @@ func (c *MessageCapture) RecordDownstream(mac, action string, payload []byte) er
 	return c.record(captureDirBrokerToFrame, mac, action, payload)
 }
 
+// RecordIntercepted captures a cloud→frame message handled by the intercept list.
+func (c *MessageCapture) RecordIntercepted(mac, action string, payload []byte) error {
+	if c == nil {
+		return nil
+	}
+	return c.record(captureDirIntercept, mac, action, payload)
+}
+
 func (c *MessageCapture) record(direction, mac, action string, payload []byte) error {
 	rec := map[string]any{
 		"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
@@ -140,6 +149,24 @@ func mqttAction(payload []byte) string {
 	return env.Action
 }
 
+func mqttMsgid(payload []byte) string {
+	var env struct {
+		Msgid json.RawMessage `json:"msgid"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil || len(env.Msgid) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(env.Msgid, &s); err == nil {
+		return s
+	}
+	var n json.Number
+	if err := json.Unmarshal(env.Msgid, &n); err == nil {
+		return n.String()
+	}
+	return strings.Trim(string(env.Msgid), `"`)
+}
+
 func captureWriteErr(where string, err error) {
 	if err != nil {
 		log.Printf("capture %s: %v", where, err)
@@ -147,5 +174,5 @@ func captureWriteErr(where string, err error) {
 }
 
 func logCaptureReady(dir string) {
-	log.Printf("capture: unknown MQTT messages → %s/{frame-to-broker,broker-to-frame}/", dir)
+	log.Printf("capture: MQTT messages → %s/{frame-to-broker,broker-to-frame,intercept}/", dir)
 }

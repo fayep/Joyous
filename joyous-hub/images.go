@@ -478,6 +478,33 @@ func resizeToFit(img image.Image, maxW, maxH int) image.Image {
 	return resizeTo(img, w, h)
 }
 
+// decodeBinToImage renders a frame .bin to an image. When portrait is true,
+// rotates 90° CW so preview matches upright content (inverse of encode --portrait).
+func decodeBinToImage(bin []byte, portrait bool) (image.Image, error) {
+	if len(bin) != frameW*frameH*2 {
+		return nil, fmt.Errorf("bin size %d != %d (expected %dx%dx2)", len(bin), frameW*frameH*2, frameW, frameH)
+	}
+	hi, _ := FromBin(bin, frameW, frameH)
+	img := renderHiToImage(hi)
+	if portrait {
+		img = rotate90(img)
+	}
+	return img, nil
+}
+
+func binToDisplayPreviewJPEG(bin []byte, portrait bool) ([]byte, error) {
+	img, err := decodeBinToImage(bin, portrait)
+	if err != nil {
+		return nil, err
+	}
+	thumb := resizeToFit(img, thumbW, thumbH)
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, thumb, &jpeg.Options{Quality: 82}); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // renderHiToImage converts hi-byte grid to an RGBA image using the InkJoy palette.
 func renderHiToImage(hi [][]byte) image.Image {
 	h := len(hi)

@@ -16,9 +16,10 @@ type MQTTPublisher interface {
 
 // Hub wires together the broker, bridges, device registry, image store, and HTTP server.
 type Hub struct {
-	devices    *DeviceRegistry
-	images     *ImageStore
-	samsung    *SamsungStore
+	devices        *DeviceRegistry
+	images         *ImageStore
+	displayPreview *DisplayPreviewStore
+	samsung        *SamsungStore
 	hubIP      string // resolved non-loopback LAN IP, used for play URLs and BLE adoption
 	publisher  MQTTPublisher
 	serverAddr string // e.g. "192.168.1.5:8080" — used in play URLs
@@ -328,6 +329,7 @@ func (h *Hub) handleStatic(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── MQTT payload helpers ─────────────────────────────────────────────────────
+// Ack result bitfield: see inkjoy_ack.go
 
 func buildActionPayloadFor(mac, action string, data map[string]any) []byte {
 	msg := map[string]any{
@@ -337,6 +339,29 @@ func buildActionPayloadFor(mac, action string, data map[string]any) []byte {
 	}
 	if data != nil {
 		msg["data"] = data
+	}
+	b, _ := json.Marshal(msg)
+	return b
+}
+
+// buildAckPayloadFor builds a frame→cloud ack matching real frame shape:
+// clientid, stamac, data.ack_msgid, and result (default inkjoyAckAccepted).
+func buildAckPayloadFor(mac, ackAction, ackMsgid string, data map[string]any) []byte {
+	if data == nil {
+		data = map[string]any{}
+	}
+	if ackMsgid != "" {
+		data["ack_msgid"] = ackMsgid
+	}
+	if _, ok := data["result"]; !ok {
+		data["result"] = inkjoyAckAccepted
+	}
+	msg := map[string]any{
+		"action":   ackAction,
+		"clientid": mac,
+		"msgid":    fmt.Sprintf("%d", time.Now().UnixMilli()),
+		"stamac":   mac,
+		"data":     data,
 	}
 	b, _ := json.Marshal(msg)
 	return b
@@ -412,6 +437,11 @@ const indexHTML = `<!DOCTYPE html>
   .btn{padding:.4rem .9rem;border:none;border-radius:4px;cursor:pointer;font-size:.9rem}
   .btn-primary{background:#1a1a2e;color:#fff}
   .btn-sm{padding:.25rem .6rem;font-size:.8rem}
+  .samsung-icon-btn{padding:.35rem .45rem;line-height:0;display:inline-flex;align-items:center;justify-content:center;background:#fff;border:1px solid #ccc;color:#333}
+  .samsung-icon-btn:hover{background:#f5f5f5}
+  .samsung-icon-btn svg{width:18px;height:18px}
+  .samsung-icon-btn.wake{color:#5a67d8}
+  .samsung-icon-btn.sleep{color:#555}
   .img-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem}
   .img-card{background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px #0002;text-align:center}
   .img-card img{width:100%;aspect-ratio:4/3;object-fit:contain;display:block;background:#eee}
@@ -599,6 +629,14 @@ const indexHTML = `<!DOCTYPE html>
             <div class="dot" id="samsung-dot"></div>
             <h3 style="margin:0" id="samsung-frame-title"></h3>
             <span id="samsung-status-badge" class="badge"></span>
+            <span style="margin-left:auto;display:flex;gap:.35rem">
+              <button type="button" class="btn btn-sm samsung-icon-btn wake" id="samsung-wake-btn" onclick="samsungWake()" title="Wake display" style="display:none" aria-label="Wake display">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              </button>
+              <button type="button" class="btn btn-sm samsung-icon-btn sleep" id="samsung-sleep-btn" onclick="samsungSleep()" title="Sleep display" style="display:none" aria-label="Sleep display">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2v10"/><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/></svg>
+              </button>
+            </span>
           </div>
           <div style="display:flex;gap:.5rem;margin-bottom:.75rem">
             <input id="samsung-name-input" placeholder="Friendly name" style="padding:.3rem .5rem;border:1px solid #ccc;border-radius:4px;flex:1">
@@ -621,6 +659,7 @@ const indexHTML = `<!DOCTYPE html>
         <div class="card">
           <div class="section-label" style="margin-top:0">Display settings</div>
           <div style="display:flex;flex-wrap:wrap;gap:1rem;align-items:end">
+            <label style="font-size:.9rem">WiFi MAC (wake)<br><input type="text" id="samsung-wifi-mac" placeholder="AA:BB:CC:DD:EE:FF" style="width:11rem;padding:.3rem;margin-top:.25rem;font-family:monospace"></label>
             <label style="font-size:.9rem">Poll interval (min)<br><input type="number" id="samsung-poll" min="1" value="60" style="width:5rem;padding:.3rem;margin-top:.25rem"></label>
             <label style="font-size:.9rem">Inactive begin<br><input type="time" id="samsung-inactive-begin" style="padding:.3rem;margin-top:.25rem"></label>
             <label style="font-size:.9rem">Inactive end<br><input type="time" id="samsung-inactive-end" style="padding:.3rem;margin-top:.25rem"></label>
@@ -630,8 +669,14 @@ const indexHTML = `<!DOCTYPE html>
             </label>
             <label style="font-size:.9rem">Width<br><input type="number" id="samsung-display-width" min="0" placeholder="2560" style="width:6rem;padding:.3rem;margin-top:.25rem"></label>
             <label style="font-size:.9rem">Height<br><input type="number" id="samsung-display-height" min="0" placeholder="1440" style="width:6rem;padding:.3rem;margin-top:.25rem"></label>
+            <label style="font-size:.9rem;display:flex;align-items:center;gap:.35rem;margin-top:1.1rem">
+              <input type="checkbox" id="samsung-auto-sleep" checked>
+              Sleep after send
+            </label>
+            <label style="font-size:.9rem">Sleep delay (sec)<br><input type="number" id="samsung-sleep-delay" min="5" value="15" style="width:5rem;padding:.3rem;margin-top:.25rem"></label>
             <button class="btn btn-sm btn-primary" onclick="saveSamsungConfig()">Save settings</button>
           </div>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">Wake uses WoL + Samsung magic UDP (needs WiFi MAC from the E-Paper app device info). Sends wake → push → sleep when enabled.</p>
           <p style="font-size:.8rem;color:#888;margin:.75rem 0 0">Frame skips polling during the inactive window.</p>
         </div>
         <div class="card">
@@ -965,23 +1010,74 @@ async function submitAdopt(){
 }
 
 // ── InkJoy tab ───────────────────────────────────────────────────────────────
-let ijDevices=[], ijCurrentId=null;
+let ijDevices=[], ijCurrentId=null, ijPreviewKey=null;
+
+function ijPreviewSpec(d){
+  if(d.last_image_id) return 'album:'+d.last_image_id;
+  if(d.display_preview_at) return 'ext:'+d.display_preview_at;
+  return '';
+}
+
+function ijPreviewURL(d){
+  if(d.last_image_id) return '/images/'+encodeURIComponent(d.last_image_id)+'/thumb';
+  if(d.display_preview_at){
+    return '/api/devices/'+encodeURIComponent(d.id)+'/display-preview?t='+encodeURIComponent(d.display_preview_at);
+  }
+  return '';
+}
+
+function ijFrameListSig(inkjoy){
+  return inkjoy.map(d=>d.id+'\x1f'+(d.name||d.mac||d.id)).join('\n');
+}
+
+function patchIJFrameListItem(d){
+  const li=document.getElementById('ijli-'+d.id);
+  if(!li) return;
+  li.classList.toggle('selected', d.id===ijCurrentId);
+  const dot=li.querySelector('.dot');
+  if(dot) dot.className='dot '+(d.connected?'online':'offline');
+  const label=d.name||d.mac||d.id;
+  const title=li.querySelector('.ij-frame-label');
+  if(title) title.textContent=label;
+  let bat=li.querySelector('.ij-frame-battery');
+  if(d.battery){
+    if(!bat){
+      bat=document.createElement('span');
+      bat.className='ij-frame-battery';
+      bat.style.cssText='margin-left:auto;font-size:.8rem;color:#666';
+      li.appendChild(bat);
+    }
+    bat.textContent='🔋'+d.battery+'%';
+  }else if(bat){
+    bat.remove();
+  }
+}
 
 function loadIJFrames(){
   const inkjoy=devices.filter(d=>d.type==='inkjoy');
   ijDevices=inkjoy;
   const el=document.getElementById('inkjoy-frame-list');
-  if(!inkjoy.length){el.innerHTML='<p style="color:#888;font-size:.9rem">No InkJoy frames yet.</p>';return;}
-  el.innerHTML=inkjoy.map(d=>{
-    const label=d.name||d.mac||d.id;
-    const sel=d.id===ijCurrentId?' selected':'';
-    const online=d.connected;
-    return '<div class="frame-list-item'+sel+'" onclick="openIJFrame(\''+d.id+'\')" id="ijli-'+d.id+'">'+
-      '<div class="dot '+(online?'online':'offline')+'"></div>'+
-      '<span style="font-weight:500">'+label+'</span>'+
-      (d.battery?'<span style="margin-left:auto;font-size:.8rem;color:#666">🔋'+d.battery+'%</span>':'')+
-      '</div>';
-  }).join('');
+  if(!inkjoy.length){
+    el.innerHTML='<p style="color:#888;font-size:.9rem">No InkJoy frames yet.</p>';
+    el.dataset.ijSig='';
+    return;
+  }
+  const sig=ijFrameListSig(inkjoy);
+  if(el.dataset.ijSig!==sig){
+    el.dataset.ijSig=sig;
+    el.innerHTML=inkjoy.map(d=>{
+      const label=d.name||d.mac||d.id;
+      const sel=d.id===ijCurrentId?' selected':'';
+      const online=d.connected;
+      return '<div class="frame-list-item'+sel+'" onclick="openIJFrame(\''+d.id+'\')" id="ijli-'+d.id+'">'+
+        '<div class="dot '+(online?'online':'offline')+'"></div>'+
+        '<span class="ij-frame-label" style="font-weight:500">'+label+'</span>'+
+        (d.battery?'<span class="ij-frame-battery" style="margin-left:auto;font-size:.8rem;color:#666">🔋'+d.battery+'%</span>':'')+
+        '</div>';
+    }).join('');
+  }else{
+    inkjoy.forEach(patchIJFrameListItem);
+  }
   // On periodic refresh, only update status/info — never form inputs.
   if(ijCurrentId){
     const d=ijDevices.find(x=>x.id===ijCurrentId);
@@ -991,6 +1087,7 @@ function loadIJFrames(){
 
 function openIJFrame(id){
   ijCurrentId=id;
+  ijPreviewKey=null;
   document.querySelectorAll('.frame-list-item').forEach(el=>el.classList.remove('selected'));
   const li=document.getElementById('ijli-'+id);
   if(li)li.classList.add('selected');
@@ -1026,10 +1123,22 @@ function updateIJEditorStatus(d){
     '<span class="label">Last seen</span><span>'+ago+'</span>'+
     '<span class="label">Last action</span><span>'+(d.last_action||'—')+'</span>';
   const li=document.getElementById('ij-last-image');
-  if(d.last_image_id){
-    li.innerHTML='<img class="last-image-preview" src="/images/'+d.last_image_id+'/thumb" alt="last sent">';
-  } else {
-    li.innerHTML='<p style="color:#888;font-size:.9rem">Nothing sent yet.</p>';
+  const key=ijPreviewSpec(d);
+  const url=ijPreviewURL(d);
+  if(!key){
+    if(ijPreviewKey!==null){
+      ijPreviewKey=null;
+      li.innerHTML='<p style="color:#888;font-size:.9rem">Nothing sent yet.</p>';
+    }
+    return;
+  }
+  const img=document.getElementById('ij-preview');
+  if(!img||img.parentElement!==li){
+    li.innerHTML='<img class="last-image-preview" id="ij-preview" src="'+url+'" alt="currently displayed">';
+    ijPreviewKey=key;
+  }else if(key!==ijPreviewKey){
+    ijPreviewKey=key;
+    refreshIJPreview(url);
   }
 }
 
@@ -1142,7 +1251,7 @@ setInterval(loadDevices,5000);
 document.getElementById('samsung-install-url').textContent=location.origin+'/samsung/';
 
 // ── Samsung tab ─────────────────────────────────────────────────────────────
-let samsungFrames=[], samsungCurrentId=null, samsungStatusCache=null, samsungPreviewEtag=null;
+let samsungFrames=[], samsungCurrentId=null, samsungStatusCache=null, samsungPreviewKey=null;
 
 function samsungFrameRecord(frameId){
   return samsungFrames.find(x=>x.id===frameId);
@@ -1161,6 +1270,43 @@ function samsungFrameIDFromDevice(d){
   return id.replace(/\./g,'-');
 }
 
+function samsungFrameListSig(frames){
+  return frames.map(f=>f.id+'\x1f'+(f.name||f.ip||f.id)).join('\n');
+}
+
+function patchSamsungFrameListItem(f){
+  const li=document.getElementById('samli-'+f.id);
+  if(!li) return;
+  li.classList.toggle('selected', f.id===samsungCurrentId);
+  const dot=li.querySelector('.dot');
+  if(dot) dot.className='dot '+(f.connected?'online':'offline');
+  const label=f.name||f.ip||f.id;
+  const title=li.querySelector('.sam-frame-label');
+  if(title) title.textContent=label;
+  let bat=li.querySelector('.sam-frame-battery');
+  if(f.battery){
+    if(!bat){
+      bat=document.createElement('span');
+      bat.className='sam-frame-battery';
+      bat.style.cssText='margin-left:auto;font-size:.8rem;color:#666';
+      li.appendChild(bat);
+    }
+    bat.textContent='🔋'+f.battery+'%';
+  }else if(bat){
+    bat.remove();
+  }
+}
+
+function samsungPreviewSpec(s){
+  if(s&&s.has_image&&!s.locked) return 'img:'+(s.etag||'');
+  if(s&&s.locked) return 'locked';
+  return 'empty';
+}
+
+function samsungPreviewEmptyHTML(s){
+  return '<p style="color:#888;font-size:.9rem">'+(s&&s.locked?'Image locked.':'No image uploaded yet.')+'</p>';
+}
+
 async function loadSamsungFrames(){
   try{
     const r=await fetch('/api/samsung');
@@ -1171,17 +1317,25 @@ async function loadSamsungFrames(){
   const el=document.getElementById('samsung-frame-list');
   if(!samsungFrames.length){
     el.innerHTML='<p style="color:#888;font-size:.9rem">No Samsung frames yet.</p>';
+    el.dataset.samsungSig='';
     return;
   }
-  el.innerHTML=samsungFrames.map(f=>{
-    const label=f.name||f.ip||f.id;
-    const sel=f.id===samsungCurrentId?' selected':'';
-    const bat=f.battery?('<span style="margin-left:auto;font-size:.8rem;color:#666">🔋'+f.battery+'%</span>'):'';
-    return '<div class="frame-list-item'+sel+'" onclick="openSamsungFrame(\''+f.id+'\')" id="samli-'+f.id+'">'+
-      '<div class="dot '+(f.connected?'online':'offline')+'"></div>'+
-      '<span style="font-weight:500">'+label+'</span>'+bat+
-      '</div>';
-  }).join('');
+  const sig=samsungFrameListSig(samsungFrames);
+  if(el.dataset.samsungSig!==sig){
+    el.dataset.samsungSig=sig;
+    el.innerHTML=samsungFrames.map(f=>{
+      const label=f.name||f.ip||f.id;
+      const sel=f.id===samsungCurrentId?' selected':'';
+      const online=f.connected;
+      return '<div class="frame-list-item'+sel+'" onclick="openSamsungFrame(\''+f.id+'\')" id="samli-'+f.id+'">'+
+        '<div class="dot '+(online?'online':'offline')+'"></div>'+
+        '<span class="sam-frame-label" style="font-weight:500">'+label+'</span>'+
+        (f.battery?'<span class="sam-frame-battery" style="margin-left:auto;font-size:.8rem;color:#666">🔋'+f.battery+'%</span>':'')+
+        '</div>';
+    }).join('');
+  }else{
+    samsungFrames.forEach(patchSamsungFrameListItem);
+  }
   if(samsungCurrentId){
     const rec=samsungFrameRecord(samsungCurrentId);
     const d=samsungDeviceForFrame(samsungCurrentId);
@@ -1210,7 +1364,7 @@ async function discoverSamsungFrames(){
 
 async function openSamsungFrame(frameId){
   samsungCurrentId=frameId;
-  samsungPreviewEtag=null;
+  samsungPreviewKey=null;
   document.querySelectorAll('#samsung-frame-list .frame-list-item').forEach(el=>el.classList.remove('selected'));
   const li=document.getElementById('samli-'+frameId);
   if(li) li.classList.add('selected');
@@ -1230,6 +1384,7 @@ async function openSamsungFrame(frameId){
 function renderSamsungEditor(d,s,rec){
   updateSamsungEditorStatus(d,rec,s);
   document.getElementById('samsung-name-input').value=(s&&s.name)||(rec&&rec.name)||(d&&d.name)||'';
+  document.getElementById('samsung-wifi-mac').value=(s&&s.wifi_mac)||(rec&&rec.wifi_mac)||(d&&d.mdc_mac)||'';
   document.getElementById('samsung-poll').value=(s&&s.poll_interval_minutes)||60;
   document.getElementById('samsung-inactive-begin').value=(s&&s.inactive_begin)||'';
   document.getElementById('samsung-inactive-end').value=(s&&s.inactive_end)||'';
@@ -1237,6 +1392,8 @@ function renderSamsungEditor(d,s,rec){
   document.getElementById('samsung-portrait').checked=(fmt==='9:16'||fmt==='3:4');
   document.getElementById('samsung-display-width').value=(s&&s.display_width)||'';
   document.getElementById('samsung-display-height').value=(s&&s.display_height)||'';
+  document.getElementById('samsung-auto-sleep').checked=(s&&s.auto_sleep_after_push!==false);
+  document.getElementById('samsung-sleep-delay').value=(s&&s.sleep_after_push_seconds)||15;
 }
 
 function updateSamsungEditorStatus(d,rec,s){
@@ -1247,6 +1404,10 @@ function updateSamsungEditorStatus(d,rec,s){
   const badge=document.getElementById('samsung-status-badge');
   badge.className='badge '+(online?'online':'offline');
   badge.textContent=online?'active':'asleep';
+  const wakeBtn=document.getElementById('samsung-wake-btn');
+  const sleepBtn=document.getElementById('samsung-sleep-btn');
+  if(wakeBtn) wakeBtn.style.display=online?'none':'inline-flex';
+  if(sleepBtn) sleepBtn.style.display=online?'inline-flex':'none';
   const lastSeen=(d&&d.last_seen)||(rec&&rec.last_seen);
   const ago=lastSeen?timeAgo(lastSeen):'—';
   const ip=(d&&d.ip)||(rec&&rec.ip)||'—';
@@ -1262,20 +1423,20 @@ function updateSamsungEditorStatus(d,rec,s){
     '<span class="label">Last seen</span><span>'+ago+'</span>'+
     '<span class="label">Last action</span><span>'+lastAction+'</span>';
   const wrap=document.getElementById('samsung-preview-wrap');
-  if(s&&s.has_image&&!s.locked){
+  const key=samsungPreviewSpec(s);
+  if(key.startsWith('img:')){
     const url='/samsung/'+encodeURIComponent(samsungCurrentId)+'.png';
-    const etag=s.etag||'';
     const img=document.getElementById('samsung-preview');
     if(!img||img.parentElement!==wrap){
       wrap.innerHTML='<img class="last-image-preview" id="samsung-preview" src="'+url+'" alt="current image">';
-      samsungPreviewEtag=etag;
-    }else if(etag!==samsungPreviewEtag){
-      samsungPreviewEtag=etag;
+      samsungPreviewKey=key;
+    }else if(key!==samsungPreviewKey){
+      samsungPreviewKey=key;
       refreshSamsungPreview();
     }
-  }else{
-    samsungPreviewEtag=null;
-    wrap.innerHTML='<p style="color:#888;font-size:.9rem">'+(s&&s.locked?'Image locked.':'No image uploaded yet.')+'</p>';
+  }else if(key!==samsungPreviewKey){
+    samsungPreviewKey=key;
+    wrap.innerHTML=samsungPreviewEmptyHTML(s);
   }
   const st=document.getElementById('samsung-status');
   if(s){
@@ -1299,6 +1460,23 @@ async function reloadSamsungFrame(){
   loadSamsungFrames();
 }
 
+function samsungConfigBody(extra){
+  const begin=document.getElementById('samsung-inactive-begin').value;
+  const end=document.getElementById('samsung-inactive-end').value;
+  return Object.assign({
+    name:document.getElementById('samsung-name-input').value.trim(),
+    wifi_mac:document.getElementById('samsung-wifi-mac').value.trim(),
+    poll_interval_minutes:parseInt(document.getElementById('samsung-poll').value,10)||60,
+    inactive_begin:begin?begin.slice(0,5):'',
+    inactive_end:end?end.slice(0,5):'',
+    crop_format:samsungCropFormat(),
+    display_width:parseInt(document.getElementById('samsung-display-width').value,10)||0,
+    display_height:parseInt(document.getElementById('samsung-display-height').value,10)||0,
+    auto_sleep_after_push:document.getElementById('samsung-auto-sleep').checked,
+    sleep_after_push_seconds:parseInt(document.getElementById('samsung-sleep-delay').value,10)||15
+  }, extra||{});
+}
+
 async function saveSamsungName(){
   if(!samsungCurrentId)return;
   const name=document.getElementById('samsung-name-input').value.trim();
@@ -1306,15 +1484,16 @@ async function saveSamsungName(){
   const s=await r.json();
   await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/config',{
     method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      name,
+    body:JSON.stringify(samsungConfigBody({
       poll_interval_minutes:s.poll_interval_minutes||60,
       inactive_begin:s.inactive_begin||'',
       inactive_end:s.inactive_end||'',
       crop_format:s.crop_format||'16:9',
       display_width:s.display_width||0,
-      display_height:s.display_height||0
-    })
+      display_height:s.display_height||0,
+      auto_sleep_after_push:s.auto_sleep_after_push!==false,
+      sleep_after_push_seconds:s.sleep_after_push_seconds||15
+    }))
   });
   document.getElementById('samsung-frame-title').textContent=name||samsungCurrentId;
   await loadDevicesInner();
@@ -1337,23 +1516,45 @@ function samsungCropFormat(){
 
 async function saveSamsungConfig(){
   if(!samsungCurrentId)return;
-  const begin=document.getElementById('samsung-inactive-begin').value;
-  const end=document.getElementById('samsung-inactive-end').value;
   const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/config',{
     method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      name:document.getElementById('samsung-name-input').value.trim(),
-      poll_interval_minutes:parseInt(document.getElementById('samsung-poll').value,10)||60,
-      inactive_begin:begin?begin.slice(0,5):'',
-      inactive_end:end?end.slice(0,5):'',
-      crop_format:samsungCropFormat(),
-      display_width:parseInt(document.getElementById('samsung-display-width').value,10)||0,
-      display_height:parseInt(document.getElementById('samsung-display-height').value,10)||0
-    })
+    body:JSON.stringify(samsungConfigBody())
   });
   if(!r.ok){alert('Save failed: '+(await r.text()));return;}
   await reloadSamsungFrame();
   await loadDevicesInner();
+}
+
+async function samsungWake(){
+  if(!samsungCurrentId)return;
+  const st=document.getElementById('samsung-status');
+  st.textContent='Waking display…';
+  try{
+    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/wake',{method:'POST'});
+    if(!r.ok) throw new Error(await r.text());
+    await loadDevicesInner();
+    await reloadSamsungFrame();
+    st.textContent='Wake sent';
+  }catch(e){
+    alert('Wake failed: '+e.message);
+    st.textContent='';
+  }
+}
+
+async function samsungSleep(){
+  if(!samsungCurrentId)return;
+  const st=document.getElementById('samsung-status');
+  st.textContent='Sending sleep…';
+  try{
+    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/sleep',{method:'POST'});
+    if(!r.ok) throw new Error(await r.text());
+    await loadDevicesInner();
+    await reloadSamsungFrame();
+    st.textContent='Sleep sent';
+  }catch(e){
+    alert('Sleep failed: '+e.message);
+    st.textContent='';
+  }
 }
 
 async function samsungSendImage(){
@@ -1372,6 +1573,11 @@ async function samsungSendImage(){
     body:JSON.stringify({image_id:match.id})
   });
   if(!r.ok){alert('Send failed: '+(await r.text()));return;}
+  const st=document.getElementById('samsung-status');
+  if(document.getElementById('samsung-auto-sleep').checked){
+    const delay=parseInt(document.getElementById('samsung-sleep-delay').value,10)||15;
+    st.textContent='Sent — frame will sleep in ~'+delay+'s…';
+  }
   await loadDevicesInner();
   loadSamsungFrames();
   await reloadSamsungFrame();
@@ -1387,7 +1593,7 @@ async function samsungDeleteDevice(){
   await fetch('/api/devices/'+encodeURIComponent(deviceId),{method:'DELETE'});
   samsungCurrentId=null;
   samsungStatusCache=null;
-  samsungPreviewEtag=null;
+  samsungPreviewKey=null;
   document.getElementById('samsung-editor').style.display='none';
   await loadDevicesInner();
   loadSamsungFrames();
@@ -1586,6 +1792,13 @@ function refreshSamsungPreview(){
   const t=document.getElementById('samsung-preview');
   if(!t||!samsungCurrentId) return;
   const url='/samsung/'+encodeURIComponent(samsungCurrentId)+'.png';
+  t.src='';
+  t.src=url;
+}
+
+function refreshIJPreview(url){
+  const t=document.getElementById('ij-preview');
+  if(!t) return;
   t.src='';
   t.src=url;
 }

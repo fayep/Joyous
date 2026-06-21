@@ -66,7 +66,7 @@ func (a AllowList) Allows(action string) bool {
 
 // DefaultUpstreamAllowCSV is the default frame→broker (upstream) allow list.
 func DefaultUpstreamAllowCSV() string {
-	return "login,heart,play_ack,fpga_ota_ack,shutdown,image_refresh_ack,ota_ack"
+	return "login,heart,play_ack,fpga_ota_ack,shutdown,image_refresh_ack,ota_ack,wifi_sleep_ack,mqtt_config_ack"
 }
 
 // DefaultDownstreamAllowCSV is the default broker→frame passthrough list.

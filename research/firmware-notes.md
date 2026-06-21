@@ -174,8 +174,8 @@ format strings. `[C]` = confirmed from live capture, `[F]` = firmware strings on
 | `login` | `inkjoy` bool, `ver` str `["M H:%d F:%d.%d.%d"]` (H=hardware model, F=ESP32 fw), `statype` int, `sleep_mode` int, `sleep_begin_time` str `[%02d:%02d]`, `sleep_end_time` str | [C] |
 | `heart` | `type` int, `ack` int, `wifi` str, `wifi_name` str, `ble` str, `tf` str `["absent"\|"present"]`, `tfsize` int, `tfused` int, `orientation` int, `battery` int, `wifi_listen_iv` int, `wifi_rssi` int, `wifi_ch` int, `ble_rssi` int, `version` str `[%d.%d.%d]` | [C] |
 | `shutdown` | _(no data field)_ | [C] sent before power-off; no `clientid`; triggers `shutdown_ack` |
-| `play_ack` | `ack_msgid` str, `result` int | [C+F] 106=started, 182–254=progress%, 255=done |
-| `ota_ack` | `ack_msgid` str, `result` int | [F] mirrors play_ack shape |
+| `play_ack` | `ack_msgid` str, `result` int | [C+F] bitfield — see **Ack result bitfield** below |
+| `ota_ack` | `ack_msgid` str, `result` int | [F] same encoding as `play_ack` |
 | `fpga_ota_ack` | _(unknown)_ | [F] wire reply to `"fpga"` action |
 | `mqtt_config_ack` | `ack_msgid` str, `result` int | [F] |
 | `strategy_bin_ack` | `ack_msgid` str, `result` int | [F] |
@@ -184,8 +184,8 @@ format strings. `[C]` = confirmed from live capture, `[F]` = firmware strings on
 | `image_refresh_ack` | _(unknown)_ | [F] |
 | `wifimode_ack` | _(unknown)_ | [F] |
 | `shutdown_ack` | `ack_msgid` str | [C] broker acknowledges frame power-off |
-| `image_refresh_ack` | `ack_msgid` str, `result` int | [C] result 113 = success (confirmed) |
-| `wifi_sleep_ack` | _(unknown)_ | [F] |
+| `image_refresh_ack` | `ack_msgid` str, `result` int | [C] result 113 = success (same complete composite as play done) |
+| `wifi_sleep_ack` | `ack_msgid` str, `result` int | [C] result 106 = accepted (one-shot) |
 | `device_config_ack` | _(unknown)_ | [F] |
 | `strategy_ack` | _(unknown)_ | [F] |
 | `clean_tf_ack` | _(unknown)_ | [F] |
@@ -292,7 +292,40 @@ Note: `ver` in `login` uses the full `"M H:<hw> F:<fw>"` format; `version` in
 Image URLs point to S3. The frame downloads the `.bin` file, which is in the
 native 2-bytes-per-pixel palette format (see `encode_bin.py`).
 
-play_ack result codes: 106 = download started, 182–254 = progress %, 255 = done.
+play_ack / ota_ack **result bitfield** (low byte):
+
+| Bit | Val | Meaning |
+|-----|-----|---------|
+| 7 | 128 | Progress phase (download streaming) |
+| 6 | 64 | Base flag (all observed acks) |
+| 5 | 32 | Base flag |
+| 4 | 16 | Complete phase |
+| 3 | 8 | Accepted / work queued |
+| 2 | 4 | Set during progress steps |
+| 1 | 2 | Accepted / work queued |
+| 0 | 1 | Success / done |
+
+Composites (confirmed v0.5.6 + InkJoy Android app):
+
+| Result | Bits | Meaning |
+|--------|------|---------|
+| 104 | 64+32+8 (106−2) | Play interrupted — second `play_ack` on same `ack_msgid`, frame drops soon after [C] |
+| 106 | 64+32+8+2 | Accepted — work started |
+| 182, 184, 186, 188 | 128+… (+2 steps) | Download 20%, 40%, 60%, 80% |
+| 113 | 64+32+16+1 | Finished OK (play/ota/image_refresh complete) |
+
+Accepted → complete: clear 8+2, set 16+1 (106 + 7 = 113). One-shot acks stop at 106.
+
+Failed play (same `ack_msgid`): 106 (started) → 104 (106 − 2, bit 2 cleared) → MQTT drop,
+with no 182+ progress and no 113. Seen before disconnect without DISCONNECT (sleep/battery/crash).
+
+Hub intercept of `ota`/`fpga`: does not forward to frame; sends synthetic `ota_ack` /
+`fpga_ota_ack` with the same 106 → 104 pair so cloud knows the push was not applied
+(artifact still captured locally). See `buildBlockedOTAAcks` in `joyous-hub/inkjoy_ack.go`.
+Progress formula: `percent = 20 + (result − 182) / 2 × 20` for the 182–188 series.
+Hub helpers: `joyous-hub/inkjoy_ack.go` (`inkjoyProgressResult`, `inkjoyProgressPercent`).
+
+Some older notes mention 255 (0xFF) as done; current app and captures use 113.
 
 ---
 

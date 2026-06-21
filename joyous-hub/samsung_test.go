@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,12 @@ import (
 	"testing"
 	"time"
 )
+
+func samsungFrameHTTPRequest(method, url, frameIP string) *http.Request {
+	req := httptest.NewRequest(method, url, nil)
+	req.RemoteAddr = net.JoinHostPort(frameIP, "54321")
+	return req
+}
 
 func testPNG() []byte {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
@@ -246,7 +253,7 @@ func TestSamsungFrameSeenFromContentJSON(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	h.handleSamsungContentJSON(rec, httptest.NewRequest("GET", "/samsung/"+frameID+"/content.json", nil), frameID)
+	h.handleSamsungContentJSON(rec, samsungFrameHTTPRequest("GET", "/samsung/"+frameID+"/content.json", "192.168.1.108"), frameID)
 	if rec.Code != 200 {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -271,7 +278,7 @@ func TestSamsungFrameSeenFromPNG304(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest("GET", "/samsung/"+frameID+".png", nil)
+	req := samsungFrameHTTPRequest("GET", "/samsung/"+frameID+".png", "192.168.1.108")
 	rec := httptest.NewRecorder()
 	h.handleSamsungPNG(rec, req, frameID)
 	if rec.Code != 200 {
@@ -279,7 +286,7 @@ func TestSamsungFrameSeenFromPNG304(t *testing.T) {
 	}
 	etag := rec.Header().Get("ETag")
 
-	req2 := httptest.NewRequest("GET", "/samsung/"+frameID+".png", nil)
+	req2 := samsungFrameHTTPRequest("GET", "/samsung/"+frameID+".png", "192.168.1.108")
 	req2.Header.Set("If-None-Match", etag)
 	rec2 := httptest.NewRecorder()
 	h.handleSamsungPNG(rec2, req2, frameID)
@@ -293,5 +300,33 @@ func TestSamsungFrameSeenFromPNG304(t *testing.T) {
 	ApplySamsungConnected(d)
 	if !d.Connected {
 		t.Fatal("304 revalidation should count as frame contact")
+	}
+}
+
+func TestSamsungHubPreviewDoesNotMarkActive(t *testing.T) {
+	h := buildTestHub(t)
+	frameID := "192-168-1-108"
+	h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	if err := h.samsung.writePNGLocked(frameID, testPNG()); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/samsung/"+frameID+".png", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	h.handleSamsungPNG(rec, req, frameID)
+	if rec.Code != 200 {
+		t.Fatalf("preview fetch %d", rec.Code)
+	}
+	d, ok := h.devices.Get("samsung:192.168.1.108")
+	if !ok {
+		t.Fatal("device missing")
+	}
+	if d.LastAction == "png" {
+		t.Fatal("hub preview should not update frame last action")
+	}
+	ApplySamsungConnected(d)
+	if d.Connected {
+		t.Fatal("hub preview should not mark frame active")
 	}
 }

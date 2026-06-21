@@ -15,7 +15,7 @@ upstream_usr: ""
 upstream_pwd: ""
 
 # frame → broker (/device/report/{MAC}) — actions forwarded to the cloud
-upstream_allow: "login,heart,play_ack,fpga_ota_ack,shutdown,image_refresh_ack,ota_ack"
+upstream_allow: "login,heart,play_ack,fpga_ota_ack,shutdown,image_refresh_ack,ota_ack,wifi_sleep_ack,mqtt_config_ack"
 
 # broker → frame (/inkjoyap/{MAC}) — actions forwarded from cloud to frame
 downstream_allow: "login_ack,heart_ack,play,device_config,shutdown_ack,image_refresh_ack,wifi_sleep"
@@ -37,6 +37,7 @@ discover_subnets: ""
 log_dir: ""
 
 # Unknown MQTT actions saved here (outside disposable logs).
+# Intercepted cloud→frame payloads → {capture_dir}/intercept/{action}.jsonl
 # empty or "auto" → {data_dir}/capture; "off" to disable
 capture_dir: ""
 

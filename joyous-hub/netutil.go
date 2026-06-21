@@ -3,8 +3,31 @@ package main
 import (
 	"fmt"
 	"net"
+	"net/http"
+	"strings"
 	"time"
 )
+
+// requestClientIP returns the client IP for an HTTP request (first X-Forwarded-For hop, else RemoteAddr host).
+func requestClientIP(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		if i := strings.Index(xff, ","); i >= 0 {
+			xff = strings.TrimSpace(xff[:i])
+		}
+		return xff
+	}
+	if r.RemoteAddr == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return strings.TrimSpace(r.RemoteAddr)
+	}
+	return host
+}
 
 // tcpDialerFor returns a dialer that binds outbound TCP to the local interface
 // on the same subnet as target. Helps on multi-homed Macs and avoids wrong routes.

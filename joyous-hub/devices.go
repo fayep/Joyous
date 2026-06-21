@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -44,7 +45,8 @@ type Device struct {
 	// InkJoy-specific
 	SleepBeginTime string `json:"sleep_begin_time,omitempty"`
 	SleepEndTime   string `json:"sleep_end_time,omitempty"`
-	LastImageID    string `json:"last_image_id,omitempty"`
+	LastImageID       string    `json:"last_image_id,omitempty"`
+	DisplayPreviewAt  time.Time `json:"display_preview_at,omitempty"`
 	HubIP          string `json:"hub_ip,omitempty"`   // hub's LAN IP as seen via this frame's MQTT socket
 	Portrait       bool   `json:"portrait,omitempty"` // user-set: frame is in portrait orientation
 	Orientation    int    `json:"orientation"`        // raw accelerometer value from heart (unreliable)
@@ -71,11 +73,26 @@ func SamsungRecentlySeen(lastSeen time.Time) bool {
 	return !lastSeen.IsZero() && time.Since(lastSeen) < SamsungRecentWindow
 }
 
-// ApplySamsungConnected sets Connected from LastSeen for Samsung devices (InkJoy unchanged).
-func ApplySamsungConnected(d *Device) {
-	if d != nil && d.Type == DeviceTypeSamsung {
-		d.Connected = SamsungRecentlySeen(d.LastSeen)
+// samsungActionProvesAwake reports whether LastAction indicates the frame was reachable while awake.
+func samsungActionProvesAwake(action string) bool {
+	switch action {
+	case "mdc_session", "mdc_push", "mdc_wake", "mdc_battery", "content.json", "png":
+		return true
+	default:
+		return false
 	}
+}
+
+// ApplySamsungConnected sets Connected for Samsung devices from recent awake proof (InkJoy unchanged).
+func ApplySamsungConnected(d *Device) {
+	if d == nil || d.Type != DeviceTypeSamsung {
+		return
+	}
+	if d.LastAction == "mdc_sleep" {
+		d.Connected = false
+		return
+	}
+	d.Connected = SamsungRecentlySeen(d.LastSeen) && samsungActionProvesAwake(d.LastAction)
 }
 
 // Get returns a device by ID, or nil.
@@ -155,6 +172,26 @@ func (r *DeviceRegistry) SetLastImage(mac, imageID string) {
 	defer r.mu.Unlock()
 	d := r.getOrCreateInkJoy(mac)
 	d.LastImageID = imageID
+	d.DisplayPreviewAt = time.Time{}
+}
+
+// SetDisplayPreview marks an externally fetched preview as current (clears hub album thumb).
+func (r *DeviceRegistry) SetDisplayPreview(mac string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d := r.getOrCreateInkJoy(mac)
+	d.DisplayPreviewAt = time.Now()
+	d.LastImageID = ""
+}
+
+// SetDisplayPreviewAt restores display preview timestamp from disk cache (startup).
+func (r *DeviceRegistry) SetDisplayPreviewAt(mac string, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d := r.getOrCreateInkJoy(mac)
+	if at.After(d.DisplayPreviewAt) {
+		d.DisplayPreviewAt = at
+	}
 }
 
 // UpdateSleep stores the sleep schedule on an InkJoy device after hub sends wifi_sleep.
@@ -208,9 +245,36 @@ func (r *DeviceRegistry) UpsertSamsung(found SSDPDevice) *Device {
 	d.USN = found.USN
 	d.Location = found.Location
 	applySamsungDisplayProfile(d, found.DisplayProfile())
-	d.LastSeen = time.Now()
 	d.LastAction = "discover"
 	return d
+}
+
+// SetMDCMAC stores the WiFi MAC used for Samsung WoL / magic wake.
+func (r *DeviceRegistry) SetMDCMAC(id, mac string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok {
+		return false
+	}
+	d.MDCMAC = strings.TrimSpace(mac)
+	return true
+}
+
+// NoteSamsungSlept records a successful sleep command without marking the frame awake.
+func (r *DeviceRegistry) NoteSamsungSlept(ip string) bool {
+	if ip == "" {
+		return false
+	}
+	id := samsungID(ip)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok {
+		return false
+	}
+	d.LastAction = "mdc_sleep"
+	return true
 }
 
 // TouchSamsung records hub contact from a Samsung frame (HTTP poll, PNG fetch, MDC probe, etc.).
@@ -254,7 +318,32 @@ func (r *DeviceRegistry) UpdateSamsungBattery(ip string, percent int, powerSourc
 	return true
 }
 
-// List returns a snapshot of all known devices sorted by type then name/id.
+// deviceDisplayLabel returns the same label the web UI shows for sorting.
+func deviceDisplayLabel(d Device) string {
+	if s := strings.TrimSpace(d.Name); s != "" {
+		return s
+	}
+	if d.Type == DeviceTypeInkJoy && d.MAC != "" {
+		return d.MAC
+	}
+	if d.IP != "" {
+		return d.IP
+	}
+	return d.ID
+}
+
+func deviceLess(a, b Device) bool {
+	la, lb := strings.ToLower(deviceDisplayLabel(a)), strings.ToLower(deviceDisplayLabel(b))
+	if la != lb {
+		return la < lb
+	}
+	if a.Type != b.Type {
+		return a.Type < b.Type
+	}
+	return a.ID < b.ID
+}
+
+// List returns a snapshot of all known devices sorted by display name, then id.
 func (r *DeviceRegistry) Delete(id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -272,6 +361,7 @@ func (r *DeviceRegistry) List() []Device {
 	for _, d := range r.m {
 		out = append(out, *d)
 	}
+	sort.Slice(out, func(i, j int) bool { return deviceLess(out[i], out[j]) })
 	return out
 }
 
