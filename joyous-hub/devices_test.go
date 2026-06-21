@@ -158,6 +158,31 @@ func TestTouchSamsungUpdatesLastSeen(t *testing.T) {
 	}
 }
 
+func TestUpdateSamsungBattery(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	if !reg.UpdateSamsungBattery("192.168.1.108", 72, "usb") {
+		t.Fatal("UpdateSamsungBattery should succeed")
+	}
+	d, ok := reg.Get("samsung:192.168.1.108")
+	if !ok {
+		t.Fatal("device missing")
+	}
+	if d.Battery != 72 {
+		t.Fatalf("battery: got %d want 72", d.Battery)
+	}
+	if d.PowerSource != "usb" {
+		t.Fatalf("power source: got %q want usb", d.PowerSource)
+	}
+	if d.LastAction != "mdc_battery" {
+		t.Fatalf("LastAction: got %q", d.LastAction)
+	}
+	ApplySamsungConnected(d)
+	if !d.Connected {
+		t.Fatal("frame should be active after battery update")
+	}
+}
+
 func TestApplySamsungConnectedStale(t *testing.T) {
 	reg := NewDeviceRegistry(t.TempDir())
 	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})

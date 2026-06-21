@@ -1017,7 +1017,7 @@ async function loadDevicesInner(){
       : (d.connected?'<span class="badge online">online</span>':'<span class="badge offline">offline</span>');
     const meta=type==='inkjoy'
       ? ((d.firmware?'fw '+d.firmware+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.rssi?'📶'+d.rssi+'dBm ':''))
-      : (d.ip?d.ip+' ':'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
+      : (d.ip?d.ip+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.power_source?('<span style="color:#666">'+d.power_source+' </span>'):'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
     const refreshBtn=type==='inkjoy'?'<button class="btn btn-sm btn-primary" onclick="refreshDevice(\''+d.id+'\')">Refresh display</button> ':'';
     return '<div class="card">'+
       '<span class="badge" style="background:#eee;color:#333;margin-right:.5rem">'+type+'</span>'+
@@ -1069,9 +1069,10 @@ async function loadSamsungFrames(){
   el.innerHTML=samsungFrames.map(f=>{
     const label=f.name||f.ip||f.id;
     const sel=f.id===samsungCurrentId?' selected':'';
+    const bat=f.battery?('<span style="margin-left:auto;font-size:.8rem;color:#666">🔋'+f.battery+'%</span>'):'';
     return '<div class="frame-list-item'+sel+'" onclick="openSamsungFrame(\''+f.id+'\')" id="samli-'+f.id+'">'+
       '<div class="dot '+(f.connected?'online':'offline')+'"></div>'+
-      '<span style="font-weight:500">'+label+'</span>'+
+      '<span style="font-weight:500">'+label+'</span>'+bat+
       '</div>';
   }).join('');
   if(samsungCurrentId){
@@ -1143,9 +1144,12 @@ function updateSamsungEditorStatus(d,rec,s){
   const ago=lastSeen?timeAgo(lastSeen):'—';
   const ip=(d&&d.ip)||(rec&&rec.ip)||'—';
   const lastAction=(d&&d.last_action)||(rec&&rec.last_action)||'—';
+  const batteryVal=(d&&d.battery)||(rec&&rec.battery);
+  const powerSrc=(d&&d.power_source)||(rec&&rec.power_source);
   document.getElementById('samsung-info').innerHTML=
     '<span class="label">Frame ID</span><span style="font-family:monospace">'+samsungCurrentId+'</span>'+
     '<span class="label">IP</span><span>'+ip+'</span>'+
+    '<span class="label">Battery</span><span>'+(batteryVal?batteryVal+'%'+(powerSrc?' · '+powerSrc:''):'—')+'</span>'+
     '<span class="label">Crop</span><span>'+((s&&s.crop_format)||(rec&&rec.crop_format)||'—')+((s&&s.display_width)?(' · '+s.display_width+'×'+s.display_height):'')+'</span>'+
     '<span class="label">Poll</span><span>'+((s&&s.poll_interval_minutes)?(s.poll_interval_minutes+' min'):((rec&&rec.poll_interval_minutes)?(rec.poll_interval_minutes+' min'):'—'))+'</span>'+
     '<span class="label">Last seen</span><span>'+ago+'</span>'+

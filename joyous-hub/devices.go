@@ -30,10 +30,11 @@ type Device struct {
 	USN        string     `json:"usn,omitempty"`
 	Location   string     `json:"location,omitempty"`
 	Firmware   string     `json:"firmware,omitempty"`
-	Battery    int        `json:"battery"`
-	RSSI       int        `json:"rssi"`
-	Connected  bool       `json:"connected"`
-	LastSeen   time.Time  `json:"last_seen"`
+	Battery     int        `json:"battery"`
+	PowerSource string     `json:"power_source,omitempty"` // samsung: ac, usb, wireless
+	RSSI        int        `json:"rssi"`
+	Connected   bool       `json:"connected"`
+	LastSeen    time.Time  `json:"last_seen"`
 	LastAction string     `json:"last_action,omitempty"`
 	MDCPin            string     `json:"mdc_pin,omitempty"`
 	MDCMAC            string     `json:"mdc_mac,omitempty"` // optional WoL target
@@ -226,6 +227,30 @@ func (r *DeviceRegistry) TouchSamsung(ip, action string) bool {
 	}
 	d.LastSeen = time.Now()
 	d.LastAction = action
+	return true
+}
+
+// UpdateSamsungBattery stores MDC battery telemetry for a registered Samsung frame.
+func (r *DeviceRegistry) UpdateSamsungBattery(ip string, percent int, powerSource string) bool {
+	if ip == "" {
+		return false
+	}
+	if percent < 0 {
+		percent = 0
+	} else if percent > 100 {
+		percent = 100
+	}
+	id := samsungID(ip)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok {
+		return false
+	}
+	d.Battery = percent
+	d.PowerSource = powerSource
+	d.LastSeen = time.Now()
+	d.LastAction = "mdc_battery"
 	return true
 }
 

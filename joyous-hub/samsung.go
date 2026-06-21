@@ -616,6 +616,8 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 		DeviceID            string    `json:"device_id,omitempty"`
 		IP                  string    `json:"ip,omitempty"`
 		Connected           bool      `json:"connected"`
+		Battery             int       `json:"battery,omitempty"`
+		PowerSource         string    `json:"power_source,omitempty"`
 		LastSeen            time.Time `json:"last_seen,omitempty"`
 		LastAction          string    `json:"last_action,omitempty"`
 		HasImage            bool      `json:"has_image"`
@@ -674,6 +676,8 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 			info.IP = dev.IP
 			info.LastSeen = dev.LastSeen
 			info.LastAction = dev.LastAction
+			info.Battery = dev.Battery
+			info.PowerSource = dev.PowerSource
 			info.Connected = SamsungRecentlySeen(dev.LastSeen)
 			if info.Name == "" && dev.Name != "" {
 				info.Name = dev.Name
@@ -745,6 +749,7 @@ func (h *Hub) handleSamsungPoll(w http.ResponseWriter, r *http.Request) {
 	devs := h.devices.List()
 	probed := 0
 	awake := 0
+	battery := 0
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, d := range devs {
@@ -753,23 +758,32 @@ func (h *Hub) handleSamsungPoll(w http.ResponseWriter, r *http.Request) {
 		}
 		probed++
 		ip := d.IP
+		pin := d.MDCPin
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if !probeMDCBanner(ip) {
+			res, err := QueryMDCBatteryLevel(ip, pin)
+			if res.SessionOK {
+				h.devices.TouchSamsung(ip, "mdc_session")
+				mu.Lock()
+				awake++
+				mu.Unlock()
+			}
+			if err != nil {
 				return
 			}
-			h.devices.TouchSamsung(ip, "mdc_probe")
+			h.devices.UpdateSamsungBattery(ip, res.Percent, res.PowerSource)
 			mu.Lock()
-			awake++
+			battery++
 			mu.Unlock()
 		}()
 	}
 	wg.Wait()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"probed": probed,
-		"awake":  awake,
+		"probed":  probed,
+		"awake":   awake,
+		"battery": battery,
 	})
 }
 
