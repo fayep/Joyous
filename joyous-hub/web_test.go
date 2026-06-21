@@ -243,6 +243,9 @@ func TestWebBranding(t *testing.T) {
 			t.Fatalf("indexHTML still contains legacy branding %q", legacy)
 		}
 	}
+	if strings.Contains(indexHTML, "/thumb?t=") {
+		t.Fatal("indexHTML should not cache-bust album thumbs with ?t=")
+	}
 }
 
 // TestDeleteCropAPI: DELETE /api/images/{id}/crop?format=4:3 removes the stored crop.

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,12 +31,74 @@ func (w *statusResponseWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// devicesListPollLogQuiet is how long GET /api/devices must be idle before the next
+// poll request is logged again (UI refreshes every 5s).
+const devicesListPollLogQuiet = 30 * time.Second
+
+type quietAccessLogger struct {
+	mu     sync.Mutex
+	armed  bool
+	lastAt time.Time
+	quiet  time.Duration
+}
+
+func newQuietAccessLogger(quiet time.Duration) *quietAccessLogger {
+	return &quietAccessLogger{armed: true, quiet: quiet}
+}
+
+// shouldLog reports whether this hit should be logged. The first hit after arming
+// logs once; further hits are suppressed until quiet elapses with no hits.
+func (q *quietAccessLogger) shouldLog() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	now := time.Now()
+	if !q.lastAt.IsZero() && now.Sub(q.lastAt) >= q.quiet {
+		q.armed = true
+	}
+	q.lastAt = now
+	if !q.armed {
+		return false
+	}
+	q.armed = false
+	return true
+}
+
+var devicesListAccessLog = newQuietAccessLogger(devicesListPollLogQuiet)
+
+func isDevicesListPoll(r *http.Request) bool {
+	return r.Method == http.MethodGet && r.URL.Path == "/api/devices"
+}
+
+func isImageThumbOrPreview(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	p := r.URL.Path
+	return strings.HasPrefix(p, "/images/") &&
+		(strings.HasSuffix(p, "/thumb") || strings.HasSuffix(p, "/preview"))
+}
+
+func shouldSkipAccessLog(r *http.Request, status int) bool {
+	if isDevicesListPoll(r) && !devicesListAccessLog.shouldLog() {
+		return true
+	}
+	// UI reloads revalidate every cached thumb; 304 means nothing changed.
+	if isImageThumbOrPreview(r) && status == http.StatusNotModified {
+		return true
+	}
+	return false
+}
+
 // accessLogMiddleware logs every inbound HTTP request (hub UI, API, frame fetches).
 func accessLogMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusResponseWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
+		if shouldSkipAccessLog(r, sw.status) {
+			return
+		}
 		log.Printf("access: %s %s %s %d %dB %s",
 			clientAddr(r),
 			r.Method,

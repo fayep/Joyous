@@ -138,6 +138,7 @@ MACOS="$APP/Contents/MacOS"
 mkdir -p "$MACOS"
 cp "$STAGING_BIN" "$MACOS/joyous-hub"
 chmod +x "$MACOS/joyous-hub"
+echo "==> bundled $(basename "$STAGING_BIN") ($(stat -f '%Sm %z bytes' -t '%Y-%m-%d %H:%M:%S' "$STAGING_BIN"))"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
 cat >"$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

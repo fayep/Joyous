@@ -29,10 +29,16 @@ echo "==> building darwin/arm64 binary..."
 )
 
 echo "==> syncing to ${REMOTE}:${REMOTE_DIR} ..."
-ssh "$REMOTE" "mkdir -p ${REMOTE_DIR}/bin ${REMOTE_DIR}/scripts"
+ssh "$REMOTE" "mkdir -p ${REMOTE_DIR}/bin ${REMOTE_DIR}/src ${REMOTE_DIR}/scripts"
 rsync -av \
 	"$SCRIPT_DIR/joyous-hub" \
 	"$REMOTE:${REMOTE_DIR}/bin/"
+rsync -av \
+	--exclude joyous-hub \
+	--exclude data \
+	--exclude .git \
+	"$SCRIPT_DIR/" \
+	"$REMOTE:${REMOTE_DIR}/src/"
 rsync -av \
 	"$SCRIPT_DIR/entitlements.plist" \
 	"$REMOTE:${REMOTE_DIR}/"

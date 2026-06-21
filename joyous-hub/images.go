@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 const frameW, frameH = 1600, 1200
@@ -59,6 +61,10 @@ func (s *ImageStore) rawPath(id string) string   { return filepath.Join(s.rawDir
 func (s *ImageStore) metaPath(id string) string  { return filepath.Join(s.rawDir(), id+".json") }
 func (s *ImageStore) cachePath(id string) string { return filepath.Join(s.cacheDir(), id+".bin") }
 func (s *ImageStore) thumbPath(id string) string { return filepath.Join(s.thumbDir(), id+".jpg") }
+
+func (s *ImageStore) previewPath(id string) string {
+	return filepath.Join(s.thumbDir(), id+"_preview.jpg")
+}
 
 // Store saves r as-is under a new ID and returns that ID.
 func (s *ImageStore) Store(r io.Reader, name string) (string, error) {
@@ -224,7 +230,7 @@ func (s *ImageStore) DeleteImage(id string) error {
 	os.Remove(s.metaPath(id))
 	os.Remove(s.cachePath(id))
 	os.Remove(s.thumbPath(id))
-	os.Remove(filepath.Join(s.thumbDir(), id+"_preview.jpg"))
+	os.Remove(s.previewPath(id))
 	return nil
 }
 
@@ -241,19 +247,20 @@ func (s *ImageStore) ServeThumb(id string) ([]byte, error) {
 
 // ServeThumbHTTP writes the JPEG thumbnail as an HTTP response.
 func (s *ImageStore) ServeThumbHTTP(w http.ResponseWriter, r *http.Request, id string) {
-	data, err := s.ServeThumb(id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
+	path := s.thumbPath(id)
+	if _, err := os.Stat(path); err != nil {
+		if _, genErr := s.generateThumb(id); genErr != nil {
+			http.Error(w, genErr.Error(), http.StatusNotFound)
+			return
+		}
 	}
-	w.Header().Set("Content-Type", "image/jpeg")
-	w.Write(data)
+	serveJPEGFile(w, r, path)
 }
 
 // ServePreview returns the image as a browser-displayable JPEG (for the crop editor).
 // Result is cached in the thumbs dir alongside thumbnails.
 func (s *ImageStore) ServePreview(id string) ([]byte, error) {
-	path := filepath.Join(s.thumbDir(), id+"_preview.jpg")
+	path := s.previewPath(id)
 	if data, err := os.ReadFile(path); err == nil {
 		return data, nil
 	}
@@ -262,12 +269,65 @@ func (s *ImageStore) ServePreview(id string) ([]byte, error) {
 
 // ServePreviewHTTP writes the preview JPEG as an HTTP response.
 func (s *ImageStore) ServePreviewHTTP(w http.ResponseWriter, r *http.Request, id string) {
-	data, err := s.ServePreview(id)
+	path := s.previewPath(id)
+	if _, err := os.Stat(path); err != nil {
+		if _, genErr := s.generatePreview(id, path); genErr != nil {
+			http.Error(w, genErr.Error(), http.StatusNotFound)
+			return
+		}
+	}
+	serveJPEGFile(w, r, path)
+}
+
+func jpegFileInfo(path string) (etag string, mod time.Time, ok bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%d", fi.Size(), fi.ModTime().UnixNano())))
+	return hex.EncodeToString(sum[:8]), fi.ModTime(), true
+}
+
+func cacheNotModified(r *http.Request, etag string, mod time.Time) bool {
+	if inm := r.Header.Get("If-None-Match"); inm != "" {
+		for _, part := range strings.Split(inm, ",") {
+			part = strings.TrimSpace(part)
+			if part == `"`+etag+`"` || part == `W/"`+etag+`"` {
+				return true
+			}
+		}
+		return false
+	}
+	if mod.IsZero() {
+		return false
+	}
+	if ims := r.Header.Get("If-Modified-Since"); ims != "" {
+		if t, err := http.ParseTime(ims); err == nil {
+			return !mod.Truncate(time.Second).After(t)
+		}
+	}
+	return false
+}
+
+func serveJPEGFile(w http.ResponseWriter, r *http.Request, path string) {
+	etag, mod, ok := jpegFileInfo(path)
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if cacheNotModified(r, etag, mod) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("ETag", `"`+etag+`"`)
+	w.Header().Set("Last-Modified", mod.UTC().Format(http.TimeFormat))
+	w.Header().Set("Cache-Control", "no-cache")
 	w.Write(data)
 }
 

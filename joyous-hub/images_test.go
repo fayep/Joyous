@@ -495,3 +495,94 @@ func TestServeContentType(t *testing.T) {
 		t.Errorf("Content-Type: got %q want %q", ct, "application/octet-stream")
 	}
 }
+
+func TestServeThumbHTTPCaching(t *testing.T) {
+	dir := t.TempDir()
+	store := NewImageStore(dir)
+	bin := make([]byte, frameW*frameH*2)
+	id, _ := store.Store(bytes.NewReader(bin), "photo.bin")
+
+	rec := httptest.NewRecorder()
+	store.ServeThumbHTTP(rec, httptest.NewRequest(http.MethodGet, "/images/"+id+"/thumb", nil), id)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first fetch %d", rec.Code)
+	}
+	etag := rec.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("expected ETag")
+	}
+	if rec.Header().Get("Last-Modified") == "" {
+		t.Fatal("expected Last-Modified")
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/images/"+id+"/thumb", nil)
+	req2.Header.Set("If-None-Match", etag)
+	rec2 := httptest.NewRecorder()
+	store.ServeThumbHTTP(rec2, req2, id)
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("If-None-Match: expected 304, got %d", rec2.Code)
+	}
+
+	req3 := httptest.NewRequest(http.MethodGet, "/images/"+id+"/thumb", nil)
+	req3.Header.Set("If-Modified-Since", rec.Header().Get("Last-Modified"))
+	rec3 := httptest.NewRecorder()
+	store.ServeThumbHTTP(rec3, req3, id)
+	if rec3.Code != http.StatusNotModified {
+		t.Fatalf("If-Modified-Since: expected 304, got %d", rec3.Code)
+	}
+}
+
+func TestServePreviewHTTPCaching(t *testing.T) {
+	dir := t.TempDir()
+	store := NewImageStore(dir)
+	bin := make([]byte, frameW*frameH*2)
+	id, _ := store.Store(bytes.NewReader(bin), "photo.bin")
+
+	rec := httptest.NewRecorder()
+	store.ServePreviewHTTP(rec, httptest.NewRequest(http.MethodGet, "/images/"+id+"/preview", nil), id)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first fetch %d", rec.Code)
+	}
+	etag := rec.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("expected ETag")
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/images/"+id+"/preview", nil)
+	req2.Header.Set("If-None-Match", etag)
+	rec2 := httptest.NewRecorder()
+	store.ServePreviewHTTP(rec2, req2, id)
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("expected 304, got %d", rec2.Code)
+	}
+}
+
+func TestServeThumbHTTPETagChangesAfterCrop(t *testing.T) {
+	dir := t.TempDir()
+	store := NewImageStore(dir)
+	bin := make([]byte, frameW*frameH*2)
+	id, _ := store.Store(bytes.NewReader(bin), "photo.bin")
+
+	rec := httptest.NewRecorder()
+	store.ServeThumbHTTP(rec, httptest.NewRequest(http.MethodGet, "/images/"+id+"/thumb", nil), id)
+	etag1 := rec.Header().Get("ETag")
+
+	if err := store.SetCrop(id, "4:3", CropRect{X: 0.1, Y: 0.1, W: 0.8, H: 0.6}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec2 := httptest.NewRecorder()
+	store.ServeThumbHTTP(rec2, httptest.NewRequest(http.MethodGet, "/images/"+id+"/thumb", nil), id)
+	etag2 := rec2.Header().Get("ETag")
+	if etag1 == etag2 {
+		t.Fatalf("etag should change after crop: %s", etag1)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/images/"+id+"/thumb", nil)
+	req.Header.Set("If-None-Match", etag1)
+	rec3 := httptest.NewRecorder()
+	store.ServeThumbHTTP(rec3, req, id)
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("stale etag should return 200, got %d", rec3.Code)
+	}
+}

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAccessLogMiddleware(t *testing.T) {
@@ -19,5 +22,90 @@ func TestAccessLogMiddleware(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "ok") {
 		t.Fatalf("body %q", rec.Body.String())
+	}
+}
+
+func TestQuietAccessLogger(t *testing.T) {
+	q := newQuietAccessLogger(30 * time.Millisecond)
+
+	if !q.shouldLog() {
+		t.Fatal("first hit should log")
+	}
+	if q.shouldLog() {
+		t.Fatal("immediate second hit should be suppressed")
+	}
+	if q.shouldLog() {
+		t.Fatal("third hit within quiet window should be suppressed")
+	}
+
+	time.Sleep(35 * time.Millisecond)
+
+	if !q.shouldLog() {
+		t.Fatal("hit after quiet window should log again")
+	}
+	if q.shouldLog() {
+		t.Fatal("next hit should be suppressed again")
+	}
+}
+
+func TestDevicesListPollAccessLogSuppressed(t *testing.T) {
+	orig := devicesListAccessLog
+	t.Cleanup(func() { devicesListAccessLog = orig })
+	devicesListAccessLog = newQuietAccessLogger(30 * time.Second)
+
+	var buf bytes.Buffer
+	origLog := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(origLog) })
+
+	handler := accessLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/devices", nil))
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 access log line, got %d:\n%s", len(lines), buf.String())
+	}
+	if !strings.Contains(lines[0], "GET /api/devices") {
+		t.Fatalf("unexpected log line: %q", lines[0])
+	}
+
+	buf.Reset()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/devices/discover", nil))
+	if buf.Len() == 0 {
+		t.Fatal("non-poll routes should still log")
+	}
+}
+
+func TestImageThumb304AccessLogSuppressed(t *testing.T) {
+	var buf bytes.Buffer
+	origLog := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(origLog) })
+
+	notModified := accessLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		notModified.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/images/abc123/thumb", nil))
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected no access logs for thumb 304, got:\n%s", buf.String())
+	}
+
+	okHandler := accessLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("jpeg"))
+	}))
+	rec := httptest.NewRecorder()
+	okHandler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/images/abc123/thumb", nil))
+	if buf.Len() == 0 {
+		t.Fatal("thumb 200 should still log")
 	}
 }
