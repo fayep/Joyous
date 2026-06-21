@@ -10,10 +10,13 @@ InkJoy/InkJoyOfflineTool/
 images/
 # APK files and decompiled output
 *.apk
+*.xapk
+*.swp
 InkJoy/com.inkjoyframe.domus/
 InkJoy/inkjoy-0.*
 InkJoy/firmware*
 Samsung/epaper-decompiled
+Reflection/ReflectionFrame_*
 # Logs
 *.log
 proxy.log
