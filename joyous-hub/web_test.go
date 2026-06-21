@@ -72,6 +72,45 @@ func TestGetDevicesWithData(t *testing.T) {
 	}
 }
 
+func TestSamsungFriendlyNameInDevices(t *testing.T) {
+	h := buildTestHub(t)
+	frameID := "192-168-1-108"
+	h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	if err := h.samsung.SaveConfig(SamsungFrameConfig{
+		FrameID:             frameID,
+		Name:                "Kitchen Frame",
+		PollIntervalMinutes: 60,
+		CropFormat:          "16:9",
+		DisplayWidth:        2560,
+		DisplayHeight:       1440,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.handleDevices(rec, httptest.NewRequest("GET", "/api/devices", nil))
+	var out []map[string]any
+	json.NewDecoder(rec.Body).Decode(&out)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(out))
+	}
+	if out[0]["name"] != "Kitchen Frame" {
+		t.Fatalf("name: got %v", out[0]["name"])
+	}
+
+	body := `{"name":"Kitchen Frame","poll_interval_minutes":30,"crop_format":"16:9","display_width":2560,"display_height":1440}`
+	req := httptest.NewRequest("PUT", "/api/samsung/"+frameID+"/config", strings.NewReader(body))
+	rec = httptest.NewRecorder()
+	h.handleSamsungConfigPut(rec, req, frameID)
+	if rec.Code != 200 {
+		t.Fatalf("config put status %d: %s", rec.Code, rec.Body)
+	}
+	d, ok := h.devices.Get("samsung:192.168.1.108")
+	if !ok || d.Name != "Kitchen Frame" {
+		t.Fatalf("registry name: ok=%v name=%q", ok, d.Name)
+	}
+}
+
 // TestGetImagesEmpty: GET /api/images with no images returns empty array.
 func TestGetImagesEmpty(t *testing.T) {
 	h := buildTestHub(t)

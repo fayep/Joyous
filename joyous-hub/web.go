@@ -36,6 +36,7 @@ func (h *Hub) handleDevices(w http.ResponseWriter, r *http.Request) {
 		devs[i].SleepBeginTime = utcHHMMToLocal(devs[i].SleepBeginTime)
 		devs[i].SleepEndTime = utcHHMMToLocal(devs[i].SleepEndTime)
 	}
+	h.applySamsungFriendlyNames(devs)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(devs)
 }
@@ -1002,6 +1003,7 @@ async function saveSamsungName(){
     })
   });
   document.getElementById('samsung-frame-title').textContent=name||samsungCurrentId;
+  await loadDevicesInner();
 }
 
 function samsungCropFormat(){
@@ -1025,6 +1027,7 @@ async function saveSamsungConfig(){
   const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/config',{
     method:'PUT',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
+      name:document.getElementById('samsung-name-input').value.trim(),
       poll_interval_minutes:parseInt(document.getElementById('samsung-poll').value,10)||60,
       inactive_begin:begin?begin.slice(0,5):'',
       inactive_end:end?end.slice(0,5):'',
@@ -1035,6 +1038,7 @@ async function saveSamsungConfig(){
   });
   if(!r.ok){alert('Save failed: '+(await r.text()));return;}
   loadSamsungFrame();
+  await loadDevicesInner();
 }
 
 document.getElementById('samsung-file-input').addEventListener('change',async e=>{

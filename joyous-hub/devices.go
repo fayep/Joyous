@@ -191,9 +191,6 @@ func (r *DeviceRegistry) UpsertSamsung(found SSDPDevice) *Device {
 	d.IP = found.IP
 	d.USN = found.USN
 	d.Location = found.Location
-	if found.Server != "" {
-		d.Name = found.DisplayName()
-	}
 	applySamsungDisplayProfile(d, found.DisplayProfile())
 	d.LastSeen = time.Now()
 	d.LastAction = "discover"

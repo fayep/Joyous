@@ -73,12 +73,42 @@ func TestUpsertSamsungDevice(t *testing.T) {
 	if d.ID != "samsung:192.168.1.101" {
 		t.Fatalf("id %q", d.ID)
 	}
+	if d.Name != "Samsung · 192.168.1.101" {
+		t.Fatalf("name %q", d.Name)
+	}
 	if SamsungFrameID(d) != "192-168-50-111" {
 		t.Fatalf("frame id %q", SamsungFrameID(d))
+	}
+	reg.SetName(d.ID, "Living Room")
+	d2 := reg.UpsertSamsung(SSDPDevice{
+		IP:     "192.168.1.101",
+		USN:    "uuid:abc::urn:samsung:device:1",
+		Server: "Samsung/MDC",
+	})
+	if d2.Name != "Living Room" {
+		t.Fatalf("rediscover overwrote name: %q", d2.Name)
 	}
 	devs := reg.List()
 	if len(devs) != 1 {
 		t.Fatalf("expected 1 device, got %d", len(devs))
+	}
+}
+
+func TestSSDPDisplayName(t *testing.T) {
+	tests := []struct {
+		name string
+		dev  SSDPDevice
+		want string
+	}{
+		{"mdc sweep", SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"}, "Samsung · 192.168.1.108"},
+		{"em32 ssdp", SSDPDevice{IP: "10.0.0.5", Server: "Samsung/EM32DX", USN: "uuid:x::urn:samsung:em32"}, "EM32DX · 10.0.0.5"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.dev.DisplayName(); got != tc.want {
+				t.Fatalf("DisplayName() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

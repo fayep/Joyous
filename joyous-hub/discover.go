@@ -52,18 +52,32 @@ func (d SSDPDevice) DisplayProfile() SamsungDisplayProfile {
 	return inferSamsungDisplay(d.Server, "")
 }
 
-// DisplayName returns a short label for UI lists.
+// DisplayName returns a short discovery label: model (when known) plus IP.
 func (d SSDPDevice) DisplayName() string {
-	if d.Server != "" && !strings.HasPrefix(strings.ToLower(d.Server), "unspecified") {
-		return d.Server
+	model := samsungSSDPModel(d)
+	if d.IP != "" {
+		return model + " · " + d.IP
 	}
-	if d.USN != "" {
-		parts := strings.Split(d.USN, "::")
-		if len(parts) > 0 && parts[0] != "" {
-			return parts[0]
+	return model
+}
+
+func samsungSSDPModel(d SSDPDevice) string {
+	combined := ssdpCombined(d)
+	if strings.Contains(combined, "em32") {
+		return "EM32DX"
+	}
+	if d.Server != "" && !strings.HasPrefix(strings.ToLower(d.Server), "unspecified") {
+		s := d.Server
+		if i := strings.LastIndex(s, "/"); i >= 0 {
+			s = s[i+1:]
+		}
+		s = strings.TrimSpace(s)
+		lower := strings.ToLower(s)
+		if s != "" && lower != "mdc" && lower != "samsung mdc" {
+			return s
 		}
 	}
-	return "Samsung " + d.IP
+	return "Samsung"
 }
 
 func ssdpCombined(d SSDPDevice) string {

@@ -499,10 +499,24 @@ func (h *Hub) handleSamsungConfigPut(w http.ResponseWriter, r *http.Request, fra
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
 	}
-	var body SamsungFrameConfig
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
+	}
+	var body SamsungFrameConfig
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	existing, _ := h.samsung.LoadConfig(frameID)
+	if _, hasName := raw["name"]; !hasName {
+		body.Name = existing.Name
 	}
 	body.FrameID = frameID
 	if body.PollIntervalMinutes <= 0 {
@@ -513,8 +527,38 @@ func (h *Hub) handleSamsungConfigPut(w http.ResponseWriter, r *http.Request, fra
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	h.syncSamsungDeviceName(frameID, body.Name)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// syncSamsungDeviceName copies the saved Samsung friendly name into the device registry.
+func (h *Hub) syncSamsungDeviceName(frameID, name string) {
+	ip := frameIDToIP(frameID)
+	if ip == "" {
+		return
+	}
+	if h.devices.SetName(samsungID(ip), strings.TrimSpace(name)) {
+		_ = h.devices.Save()
+	}
+}
+
+// applySamsungFriendlyNames overlays saved SamsungFrameConfig.Name on device list entries.
+func (h *Hub) applySamsungFriendlyNames(devs []Device) {
+	for i := range devs {
+		if devs[i].Type != DeviceTypeSamsung {
+			continue
+		}
+		frameID := SamsungFrameID(&devs[i])
+		if frameID == "" {
+			continue
+		}
+		cfg, err := h.samsung.LoadConfig(frameID)
+		if err != nil || cfg.Name == "" {
+			continue
+		}
+		devs[i].Name = cfg.Name
+	}
 }
 
 func (h *Hub) handleSamsungImageUpload(w http.ResponseWriter, r *http.Request, frameID string) {
