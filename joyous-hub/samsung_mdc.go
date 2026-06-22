@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -312,7 +313,7 @@ func WakeSamsungDisplay(ip, pin, wifiMAC string) error {
 	if wifiMAC == "" {
 		return fmt.Errorf("wifi MAC required for remote wake")
 	}
-	sendWoL(wifiMAC)
+	sendWoL(wifiMAC, ip)
 	if err := sendSamsungMagicWake(ip, wifiMAC); err != nil {
 		logOutbound("mdc magic wake fail ip=%s err=%v", ip, err)
 	}
@@ -340,7 +341,7 @@ func waitMDCAwake(ip, pin, wifiMAC string, timeout time.Duration) bool {
 	for time.Now().Before(deadline) {
 		attempt++
 		if wifiMAC != "" && !nextMagic.After(time.Now()) {
-			sendWoL(wifiMAC)
+			sendWoL(wifiMAC, ip)
 			_ = sendSamsungMagicWake(ip, wifiMAC)
 			nextMagic = time.Now().Add(mdcWakeMagicResend)
 			logOutbound("mdc wake retry ip=%s attempt=%d", ip, attempt)
@@ -671,7 +672,48 @@ func probeMDCBanner(ip string) bool {
 	return true
 }
 
-func sendWoL(mac string) {
+func ipv4DirectedBroadcast(ipnet *net.IPNet) net.IP {
+	ip4 := ipnet.IP.To4()
+	if ip4 == nil || len(ipnet.Mask) != net.IPv4len {
+		return nil
+	}
+	bc := make(net.IP, net.IPv4len)
+	for i := range ip4 {
+		bc[i] = ip4[i] | ^ipnet.Mask[i]
+	}
+	return bc
+}
+
+// wolBroadcastForFrame returns the subnet-directed broadcast for WoL (e.g. 192.168.51.255 on a /23).
+func wolBroadcastForFrame(frameIP string) (net.IP, error) {
+	dst := net.ParseIP(frameIP)
+	if dst == nil {
+		return nil, fmt.Errorf("invalid frame IP %q", frameIP)
+	}
+	dst = dst.To4()
+	if dst == nil {
+		return nil, fmt.Errorf("frame IP must be IPv4")
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if ipnet.IP.To4() == nil || !ipnet.Contains(dst) {
+			continue
+		}
+		if bc := ipv4DirectedBroadcast(ipnet); bc != nil {
+			return bc, nil
+		}
+	}
+	return nil, fmt.Errorf("no local subnet contains frame IP %s", frameIP)
+}
+
+func sendWoL(mac, frameIP string) {
 	mac = strings.ReplaceAll(strings.ReplaceAll(mac, ":", ""), "-", "")
 	raw, err := hex.DecodeString(mac)
 	if err != nil || len(raw) != 6 {
@@ -682,15 +724,26 @@ func sendWoL(mac string) {
 	for i := 0; i < 16; i++ {
 		packet = append(packet, raw...)
 	}
-	conn, err := net.Dial("udp", "255.255.255.255:9")
+	bc, err := wolBroadcastForFrame(frameIP)
+	if err != nil {
+		logOutbound("wol fail mac=%s ip=%s err=%v", mac, frameIP, err)
+		return
+	}
+	addr := &net.UDPAddr{IP: bc, Port: 9}
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
 		logOutbound("wol fail mac=%s err=%v", mac, err)
 		return
 	}
 	defer conn.Close()
-	if _, err := conn.Write(packet); err != nil {
+	if f, err := conn.File(); err == nil {
+		fd := int(f.Fd())
+		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
+		_ = f.Close()
+	}
+	if _, err := conn.WriteToUDP(packet, addr); err != nil {
 		logOutbound("wol fail mac=%s err=%v", mac, err)
 		return
 	}
-	logOutbound("wol sent mac=%s", mac)
+	logOutbound("wol sent mac=%s broadcast=%s", mac, bc)
 }
