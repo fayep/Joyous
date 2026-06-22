@@ -33,6 +33,12 @@ type Device struct {
 	Firmware   string     `json:"firmware,omitempty"`
 	Battery     int        `json:"battery"`
 	PowerSource string     `json:"power_source,omitempty"` // samsung: ac, usb, wireless
+	// Samsung battery history (API-only; not persisted on Device in devices.json).
+	BatterySamples   int                    `json:"battery_samples,omitempty"`
+	BatteryDelta     *int                   `json:"battery_delta,omitempty"`
+	BatteryPushDelta *int                   `json:"battery_push_delta,omitempty"`
+	BatteryAt        time.Time              `json:"battery_at,omitempty"`
+	BatteryHistory   []SamsungBatterySample `json:"battery_history,omitempty"`
 	RSSI        int        `json:"rssi"`
 	Connected   bool       `json:"connected"`
 	LastSeen    time.Time  `json:"last_seen"`

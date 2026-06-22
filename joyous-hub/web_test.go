@@ -17,6 +17,7 @@ func buildTestHub(t *testing.T) *Hub {
 	dir := t.TempDir()
 	return &Hub{
 		devices:        NewDeviceRegistry(dir),
+		samsungBattery: NewSamsungBatteryStore(dir),
 		images:         NewImageStore(dir),
 		displayPreview: NewDisplayPreviewStore(dir),
 		samsung:        NewSamsungStore(dir),

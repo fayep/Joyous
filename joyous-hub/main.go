@@ -114,6 +114,10 @@ func main() {
 	displayPreview := NewDisplayPreviewStore(*dataDir)
 	displayPreview.RestoreFromDisk(devices)
 	samsungStore := NewSamsungStore(*dataDir)
+	samsungBattery := NewSamsungBatteryStore(*dataDir)
+	if err := samsungBattery.Load(); err != nil {
+		log.Printf("warn: load samsung battery history: %v", err)
+	}
 
 	// ── local MQTT broker ───────────────────────────────────────────────────
 	broker := mochi.New(&mochi.Options{InlineClient: true})
@@ -160,6 +164,7 @@ func main() {
 	hubIP := resolvedLANIP(addr)
 	hub := &Hub{
 		devices:        devices,
+		samsungBattery: samsungBattery,
 		images:         imageStore,
 		displayPreview: displayPreview,
 		samsung:        samsungStore,
@@ -201,6 +206,9 @@ func main() {
 	httpServer.Shutdown(shutCtx)
 	broker.Close()
 	devices.Save()
+	if err := samsungBattery.Save(); err != nil {
+		log.Printf("warn: save samsung battery history: %v", err)
+	}
 }
 
 // ── broker publisher ─────────────────────────────────────────────────────────

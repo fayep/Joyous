@@ -17,6 +17,7 @@ type MQTTPublisher interface {
 // Hub wires together the broker, bridges, device registry, image store, and HTTP server.
 type Hub struct {
 	devices        *DeviceRegistry
+	samsungBattery *SamsungBatteryStore
 	images         *ImageStore
 	displayPreview *DisplayPreviewStore
 	samsung        *SamsungStore
@@ -56,6 +57,9 @@ func (h *Hub) handleDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	h.applySamsungFriendlyNames(devs)
 	for i := range devs {
+		if devs[i].Type == DeviceTypeSamsung {
+			applySamsungBatterySummary(&devs[i], h.samsungBatterySummary(devs[i].ID, 8))
+		}
 		ApplySamsungConnected(&devs[i])
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1291,10 +1295,35 @@ function patchSamsungFrameListItem(f){
       bat.style.cssText='margin-left:auto;font-size:.8rem;color:#666';
       li.appendChild(bat);
     }
-    bat.textContent='🔋'+f.battery+'%';
+    bat.textContent='🔋'+f.battery+'%'+(f.battery_push_delta!=null&&f.battery_samples>=2?(f.battery_push_delta===0?'':' '+(f.battery_push_delta>0?'+':'')+f.battery_push_delta+'%'):'');
   }else if(bat){
     bat.remove();
   }
+}
+
+function samsungBatteryMeta(obj){
+  const pct=obj&&(obj.battery||(obj.battery===0?0:null));
+  if(pct==null) return '—';
+  const src=obj.power_source;
+  let s=pct+'%'+(src?' · '+src:'');
+  const pushDelta=obj.battery_push_delta;
+  if(pushDelta!=null&&obj.battery_samples>=2){
+    s+=(pushDelta===0?' · unchanged since last push':(' · '+(pushDelta>0?'+':'')+pushDelta+'% since last push'));
+  }else if(obj.battery_delta!=null&&obj.battery_samples>=2){
+    const d=obj.battery_delta;
+    s+=(d===0?' · unchanged since last reading':(' · '+(d>0?'+':'')+d+'% since last reading'));
+  }
+  if(obj.battery_samples>1) s+=' · '+obj.battery_samples+' readings';
+  return s;
+}
+
+function samsungBatteryHistoryHTML(history){
+  if(!history||!history.length) return '';
+  return history.slice().reverse().map(h=>{
+    const when=h.at?timeAgo(h.at):'—';
+    const src=h.source==='pre_sleep'?'push':(h.source||'');
+    return '<div style="font-size:.8rem;color:#666">'+when+' · '+h.percent+'%'+(h.power_source?' · '+h.power_source:'')+(src?' · '+src:'')+'</div>';
+  }).join('');
 }
 
 function samsungPreviewSpec(s){
@@ -1413,11 +1442,19 @@ function updateSamsungEditorStatus(d,rec,s){
   const ip=(d&&d.ip)||(rec&&rec.ip)||'—';
   const lastAction=(d&&d.last_action)||(rec&&rec.last_action)||'—';
   const batteryVal=(d&&d.battery)||(rec&&rec.battery);
-  const powerSrc=(d&&d.power_source)||(rec&&rec.power_source);
+  const batteryObj={
+    battery:batteryVal,
+    power_source:(d&&d.power_source)||(rec&&rec.power_source),
+    battery_delta:(d&&d.battery_delta)!=null?d.battery_delta:(rec&&rec.battery_delta),
+    battery_push_delta:(d&&d.battery_push_delta)!=null?d.battery_push_delta:(rec&&rec.battery_push_delta),
+    battery_samples:(d&&d.battery_samples)||(rec&&rec.battery_samples)||0
+  };
+  const history=(d&&d.battery_history)||(rec&&rec.battery_history);
   document.getElementById('samsung-info').innerHTML=
     '<span class="label">Frame ID</span><span style="font-family:monospace">'+samsungCurrentId+'</span>'+
     '<span class="label">IP</span><span>'+ip+'</span>'+
-    '<span class="label">Battery</span><span>'+(batteryVal?batteryVal+'%'+(powerSrc?' · '+powerSrc:''):'—')+'</span>'+
+    '<span class="label">Battery</span><span>'+samsungBatteryMeta(batteryObj)+'</span>'+
+    (history&&history.length?('<span class="label">History</span><span>'+samsungBatteryHistoryHTML(history)+'</span>'):'')+
     '<span class="label">Crop</span><span>'+((s&&s.crop_format)||(rec&&rec.crop_format)||'—')+((s&&s.display_width)?(' · '+s.display_width+'×'+s.display_height):'')+'</span>'+
     '<span class="label">Poll</span><span>'+((s&&s.poll_interval_minutes)?(s.poll_interval_minutes+' min'):((rec&&rec.poll_interval_minutes)?(rec.poll_interval_minutes+' min'):'—'))+'</span>'+
     '<span class="label">Last seen</span><span>'+ago+'</span>'+

@@ -303,6 +303,26 @@ func TestSamsungFrameSeenFromPNG304(t *testing.T) {
 	}
 }
 
+func TestHubRecordSamsungBattery(t *testing.T) {
+	h := buildTestHub(t)
+	h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+
+	h.recordSamsungBattery("192.168.1.108", 100, "usb", samsungBatteryPreSleep)
+	h.recordSamsungBattery("192.168.1.108", 97, "usb", samsungBatteryPreSleep)
+
+	sum := h.samsungBatterySummary("samsung:192.168.1.108", 5)
+	if sum.Samples != 2 {
+		t.Fatalf("samples: got %d want 2", sum.Samples)
+	}
+	if sum.PushDelta == nil || *sum.PushDelta != -3 {
+		t.Fatalf("push delta: got %v want -3", sum.PushDelta)
+	}
+	d, ok := h.devices.Get("samsung:192.168.1.108")
+	if !ok || d.Battery != 97 {
+		t.Fatalf("latest battery: ok=%v battery=%d", ok, d.Battery)
+	}
+}
+
 func TestSamsungHubPreviewDoesNotMarkActive(t *testing.T) {
 	h := buildTestHub(t)
 	frameID := "192-168-1-108"

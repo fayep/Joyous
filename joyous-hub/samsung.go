@@ -615,12 +615,25 @@ func (h *Hub) syncSamsungWakeMAC(frameID, mac string) {
 	}
 }
 
+// recordSamsungBattery stores the latest reading and appends to passive history.
+func (h *Hub) recordSamsungBattery(ip string, percent int, powerSource, source string) {
+	if !h.devices.UpdateSamsungBattery(ip, percent, powerSource) {
+		return
+	}
+	id := samsungID(ip)
+	if h.samsungBattery != nil {
+		h.samsungBattery.Record(id, percent, powerSource, source)
+		_ = h.samsungBattery.Save()
+	}
+	_ = h.devices.Save()
+}
+
 // sleepSamsungDisplay reads battery and sends sleep-now on a single MDC session (with connect retries).
 func (h *Hub) sleepSamsungDisplay(ip, pin string) error {
 	res, err := SendMDCSleepWithBatteryCheck(ip, pin)
 	if res.SessionOK {
 		if res.BatteryOK {
-			h.devices.UpdateSamsungBattery(ip, res.Percent, res.PowerSource)
+			h.recordSamsungBattery(ip, res.Percent, res.PowerSource, samsungBatteryPreSleep)
 		} else {
 			h.devices.TouchSamsung(ip, "mdc_session")
 		}
@@ -752,6 +765,11 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 		Connected             bool      `json:"connected"`
 		Battery               int       `json:"battery,omitempty"`
 		PowerSource           string    `json:"power_source,omitempty"`
+		BatterySamples        int       `json:"battery_samples,omitempty"`
+		BatteryDelta          *int      `json:"battery_delta,omitempty"`
+		BatteryPushDelta      *int      `json:"battery_push_delta,omitempty"`
+		BatteryAt             time.Time `json:"battery_at,omitempty"`
+		BatteryHistory        []SamsungBatterySample `json:"battery_history,omitempty"`
 		LastSeen              time.Time `json:"last_seen,omitempty"`
 		LastAction            string    `json:"last_action,omitempty"`
 		HasImage              bool      `json:"has_image"`
@@ -817,6 +835,12 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 			info.LastAction = dev.LastAction
 			info.Battery = dev.Battery
 			info.PowerSource = dev.PowerSource
+			sum := h.samsungBatterySummary(dev.ID, 5)
+			info.BatterySamples = sum.Samples
+			info.BatteryDelta = sum.Delta
+			info.BatteryPushDelta = sum.PushDelta
+			info.BatteryAt = sum.LastAt
+			info.BatteryHistory = sum.Recent
 			cp := dev
 			ApplySamsungConnected(&cp)
 			info.Connected = cp.Connected
@@ -931,7 +955,7 @@ func (h *Hub) handleSamsungPoll(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return
 			}
-			h.devices.UpdateSamsungBattery(ip, res.Percent, res.PowerSource)
+			h.recordSamsungBattery(ip, res.Percent, res.PowerSource, samsungBatteryPoll)
 			mu.Lock()
 			battery++
 			mu.Unlock()
