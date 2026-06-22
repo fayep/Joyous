@@ -23,7 +23,13 @@ const (
 	defaultSleepAfterPushSec = 15
 	mdcConnectTimeout       = 10 * time.Second
 	mdcCommandReadTimeout   = 10 * time.Second
-	mdcWakeTimeout          = 15 * time.Second
+	mdcWakeTimeout          = 45 * time.Second
+	mdcWakeInitialDelay     = 3 * time.Second
+	mdcWakeProbeTimeout     = 3 * time.Second
+	mdcWakeProbeInterval    = 1 * time.Second
+	mdcWakeMagicResend      = 10 * time.Second
+	mdcManualWakePoll       = 5 * time.Second
+	mdcManualWakeTimeout    = 5 * time.Minute
 	mdcSleepConnectAttempts = 3
 	mdcSleepRetryDelay      = 2 * time.Second
 )
@@ -127,11 +133,9 @@ func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool,
 		pin = defaultMDCPin
 	}
 	logOutbound("mdc push start ip=%s url=%s wake_mac=%t auto_sleep=%t", ip, contentJSONURL, wifiMAC != "", autoSleep)
-	if !mdcSessionOK(ip, pin) {
-		if err := WakeSamsungDisplay(ip, pin, wifiMAC); err != nil {
-			logOutbound("mdc push wake fail ip=%s err=%v", ip, err)
-			return err
-		}
+	if err := ensureMDCAwakeForPush(ip, pin, wifiMAC); err != nil {
+		logOutbound("mdc push wake fail ip=%s err=%v", ip, err)
+		return err
 	}
 	err := sendMDCContentURL(ip, pin, contentJSONURL)
 	if err != nil {
@@ -160,6 +164,49 @@ func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool,
 		}
 	}()
 	return nil
+}
+
+// ensureMDCAwakeForPush tries remote wake when needed, then polls MDC until the frame
+// responds (e.g. after the user presses the power button on the display).
+func ensureMDCAwakeForPush(ip, pin, wifiMAC string) error {
+	if pin == "" {
+		pin = defaultMDCPin
+	}
+	if mdcSessionOK(ip, pin) {
+		return nil
+	}
+	if wifiMAC != "" {
+		if err := WakeSamsungDisplay(ip, pin, wifiMAC); err == nil {
+			return nil
+		}
+		logOutbound("mdc push remote wake timed out ip=%s — waiting for power button", ip)
+	} else {
+		logOutbound("mdc push frame asleep ip=%s — waiting for power button (no WiFi MAC for remote wake)", ip)
+	}
+	return waitForMDCAwakeManual(ip, pin, mdcManualWakeTimeout, mdcManualWakePoll)
+}
+
+func waitForMDCAwakeManual(ip, pin string, timeout, interval time.Duration) error {
+	if pin == "" {
+		pin = defaultMDCPin
+	}
+	if interval <= 0 {
+		interval = mdcManualWakePoll
+	}
+	deadline := time.Now().Add(timeout)
+	attempt := 0
+	for time.Now().Before(deadline) {
+		attempt++
+		if attempt == 1 || attempt%6 == 0 {
+			logOutbound("mdc push waiting ip=%s attempt=%d — press power button on display", ip, attempt)
+		}
+		if mdcSessionOK(ip, pin) {
+			logOutbound("mdc push frame reachable ip=%s attempt=%d", ip, attempt)
+			return nil
+		}
+		time.Sleep(interval)
+	}
+	return fmt.Errorf("frame did not wake within %s — press the power button on the display, wait until it is awake, then send again", timeout.Round(time.Second))
 }
 
 func sendMDCContentURL(ip, pin, url string) error {
@@ -269,16 +316,16 @@ func WakeSamsungDisplay(ip, pin, wifiMAC string) error {
 	if err := sendSamsungMagicWake(ip, wifiMAC); err != nil {
 		logOutbound("mdc magic wake fail ip=%s err=%v", ip, err)
 	}
-	time.Sleep(2 * time.Second)
-	if waitMDCAwake(ip, pin, mdcWakeTimeout) {
+	time.Sleep(mdcWakeInitialDelay)
+	if waitMDCAwake(ip, pin, wifiMAC, mdcWakeTimeout) {
 		logOutbound("mdc wake ok ip=%s", ip)
 		return nil
 	}
-	return fmt.Errorf("frame did not wake within %s", mdcWakeTimeout)
+	return fmt.Errorf("frame did not wake within %s (enable Network Standby in the E-Paper app — required for battery wake)", mdcWakeTimeout)
 }
 
 func mdcSessionOK(ip, pin string) bool {
-	s, err := openMDCSession(ip, pin, mdcConnectTimeout)
+	s, err := openMDCSessionLogged(ip, pin, mdcWakeProbeTimeout, false)
 	if err != nil {
 		return false
 	}
@@ -286,13 +333,24 @@ func mdcSessionOK(ip, pin string) bool {
 	return true
 }
 
-func waitMDCAwake(ip, pin string, timeout time.Duration) bool {
+func waitMDCAwake(ip, pin, wifiMAC string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
+	nextMagic := time.Now().Add(mdcWakeMagicResend)
+	attempt := 0
 	for time.Now().Before(deadline) {
+		attempt++
+		if wifiMAC != "" && !nextMagic.After(time.Now()) {
+			sendWoL(wifiMAC)
+			_ = sendSamsungMagicWake(ip, wifiMAC)
+			nextMagic = time.Now().Add(mdcWakeMagicResend)
+			logOutbound("mdc wake retry ip=%s attempt=%d", ip, attempt)
+		} else if attempt == 1 || attempt%5 == 0 {
+			logOutbound("mdc wake probe ip=%s attempt=%d", ip, attempt)
+		}
 		if mdcSessionOK(ip, pin) {
 			return true
 		}
-		time.Sleep(time.Second)
+		time.Sleep(mdcWakeProbeInterval)
 	}
 	return false
 }
@@ -401,6 +459,10 @@ func (s *mdcSession) setDeadline(d time.Duration) {
 }
 
 func openMDCSession(ip, pin string, timeout time.Duration) (*mdcSession, error) {
+	return openMDCSessionLogged(ip, pin, timeout, true)
+}
+
+func openMDCSessionLogged(ip, pin string, timeout time.Duration, logDial bool) (*mdcSession, error) {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
@@ -410,7 +472,9 @@ func openMDCSession(ip, pin string, timeout time.Duration) (*mdcSession, error) 
 	if la, ok := d.LocalAddr.(*net.TCPAddr); ok && la.IP != nil {
 		local = la.IP.String()
 	}
-	logOutbound("mdc tcp dial local=%s remote=%s", local, addr)
+	if logDial {
+		logOutbound("mdc tcp dial local=%s remote=%s", local, addr)
+	}
 	conn, err := d.Dial("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("mdc connect: %w", err)

@@ -259,7 +259,11 @@ func (h *Hub) handleDisplay(w http.ResponseWriter, r *http.Request, deviceID str
 		return
 	}
 	if err := h.SendImageToDevice(deviceID, body.ImageID); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		code := http.StatusBadRequest
+		if strings.Contains(err.Error(), "frame did not wake") {
+			code = http.StatusGatewayTimeout
+		}
+		http.Error(w, err.Error(), code)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
@@ -871,16 +875,31 @@ document.addEventListener('click',e=>{
   if(!sendPicker.contains(e.target)&&!e.target.id.startsWith('send-btn-')) closePickers();
 });
 
-async function doSend(imageId, deviceId, feedbackBtn){
-  closePickers();
-  const orig=feedbackBtn?feedbackBtn.textContent:'';
+const SAMSUNG_MANUAL_WAKE_HINT_MS=20000;
+const SAMSUNG_MANUAL_WAKE_MSG='Press power button on frame…';
+
+async function postDisplay(deviceId,imageId,onLongWait){
+  const hintTimer=setTimeout(()=>{if(onLongWait) onLongWait();},SAMSUNG_MANUAL_WAKE_HINT_MS);
   try{
-    if(feedbackBtn){feedbackBtn.disabled=true;feedbackBtn.textContent='Sending…';}
     const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/display',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({image_id:imageId})
     });
     if(!r.ok) throw new Error(await r.text());
+  }finally{
+    clearTimeout(hintTimer);
+  }
+}
+
+async function doSend(imageId, deviceId, feedbackBtn){
+  closePickers();
+  const orig=feedbackBtn?feedbackBtn.textContent:'';
+  const dev=devices.find(d=>d.id===deviceId);
+  try{
+    if(feedbackBtn){feedbackBtn.disabled=true;feedbackBtn.textContent='Sending…';}
+    await postDisplay(deviceId,imageId,()=>{
+      if(dev&&dev.type==='samsung'&&feedbackBtn) feedbackBtn.textContent=SAMSUNG_MANUAL_WAKE_MSG;
+    });
     if(feedbackBtn){feedbackBtn.textContent='✓ Sent';setTimeout(()=>{feedbackBtn.textContent=orig;feedbackBtn.disabled=false;},2000);}
   }catch(e){
     alert('Send failed: '+e.message);
@@ -1605,15 +1624,22 @@ async function samsungSendImage(){
   imageId=imageId.trim().split(/\s+/)[0];
   const match=images.find(i=>i.id.startsWith(imageId))||images.find(i=>i.name.includes(imageId));
   if(!match){alert('Image not found');return;}
-  const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/display',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({image_id:match.id})
-  });
-  if(!r.ok){alert('Send failed: '+(await r.text()));return;}
   const st=document.getElementById('samsung-status');
+  if(st) st.textContent='Sending…';
+  try{
+    await postDisplay(deviceId,match.id,()=>{
+      if(st) st.textContent=SAMSUNG_MANUAL_WAKE_MSG+' (retrying every 5s…)';
+    });
+  }catch(e){
+    alert('Send failed: '+e.message);
+    if(st) st.textContent='';
+    return;
+  }
   if(document.getElementById('samsung-auto-sleep').checked){
     const delay=parseInt(document.getElementById('samsung-sleep-delay').value,10)||15;
-    st.textContent='Sent — frame will sleep in ~'+delay+'s…';
+    if(st) st.textContent='Sent — frame will sleep in ~'+delay+'s…';
+  }else if(st){
+    st.textContent='Sent';
   }
   await loadDevicesInner();
   loadSamsungFrames();
