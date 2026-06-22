@@ -684,8 +684,8 @@ const indexHTML = `<!DOCTYPE html>
             <label style="font-size:.9rem">Sleep delay (sec)<br><input type="number" id="samsung-sleep-delay" min="5" value="15" style="width:5rem;padding:.3rem;margin-top:.25rem"></label>
             <button class="btn btn-sm btn-primary" onclick="saveSamsungConfig()">Save settings</button>
           </div>
-          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">Wake uses WoL + Samsung magic UDP (needs WiFi MAC from the E-Paper app device info). Sends wake → push → sleep when enabled.</p>
-          <p style="font-size:.8rem;color:#888;margin:.75rem 0 0">Frame skips polling during the inactive window.</p>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">The frame should stay <strong>asleep</strong> between pushes. On send: wake → deliver image → sleep (after delay). WiFi MAC required for remote wake. Moon/power are for manual override only.</p>
+          <p style="font-size:.8rem;color:#888;margin:.75rem 0 0">Hub does not probe MDC while you browse Album. Battery history comes from pre-sleep reads during sends. Frame skips hub polling during the inactive window.</p>
         </div>
         <div class="card">
           <div class="section-label" style="margin-top:0">Tizen widget (optional)</div>
@@ -703,15 +703,18 @@ const indexHTML = `<!DOCTYPE html>
   </div>
 </main>
 <script>
-let devices=[], images=[];
+let devices=[], images=[], activeTab='devices';
 
 function showTab(name,btn){
+  activeTab=name;
   document.querySelectorAll('[id^=tab-]').forEach(e=>e.style.display='none');
   document.getElementById('tab-'+name).style.display='';
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  if(name==='devices'||name==='samsung') startSamsungReachabilityPoll();
-  else stopSamsungReachabilityPoll();
+  stopTabRefresh();
+  if(name==='devices') startTabRefresh(5000, refreshDevicesTab);
+  else if(name==='inkjoy') startTabRefresh(5000, refreshInkjoyTab);
+  else if(name==='samsung') startTabRefresh(30000, refreshSamsungTab);
   if(name==='mqtt') startMQTTLogPoll();
   else stopMQTTLogPoll();
 }
@@ -773,27 +776,38 @@ async function loadMQTTLogs(){
   }catch(_){}
 }
 
-let samsungReachabilityTimer=null;
-function startSamsungReachabilityPoll(){
-  if(samsungReachabilityTimer) return;
-  pollSamsungReachability();
-  samsungReachabilityTimer=setInterval(pollSamsungReachability, 5*60*1000);
+let tabRefreshTimer=null;
+function startTabRefresh(intervalMs, fn){
+  stopTabRefresh();
+  fn();
+  tabRefreshTimer=setInterval(fn, intervalMs);
 }
-function stopSamsungReachabilityPoll(){
-  if(samsungReachabilityTimer){ clearInterval(samsungReachabilityTimer); samsungReachabilityTimer=null; }
+function stopTabRefresh(){
+  if(tabRefreshTimer){ clearInterval(tabRefreshTimer); tabRefreshTimer=null; }
 }
-async function pollSamsungReachability(){
-  try{
-    await fetch('/api/samsung/poll',{method:'POST'});
-    await loadDevicesInner();
-    loadSamsungFrames();
-  }catch(_){}
+
+async function refreshDevicesTab(){
+  await loadDevicesInner();
+}
+
+async function refreshInkjoyTab(){
+  await loadDevicesInner();
+  loadIJFrames();
+}
+
+async function refreshSamsungTab(){
+  await loadDevicesInner();
+  await loadSamsungFrames();
+}
+
+async function ensureDevicesForSend(){
+  await loadDevicesInner();
 }
 
 async function loadDevices(){
   await loadDevicesInner();
-  loadIJFrames();
-  loadSamsungFrames();
+  if(activeTab==='inkjoy') loadIJFrames();
+  else if(activeTab==='samsung') await loadSamsungFrames();
 }
 
 async function discoverFrames(){
@@ -909,17 +923,19 @@ async function doSend(imageId, deviceId, feedbackBtn){
 
 function sendImageToFrame(evt, imageId){
   evt.stopPropagation();
-  const frameDevices=devices.filter(d=>d.type==='inkjoy'||d.type==='samsung');
   const btn=document.getElementById('send-btn-'+imageId);
-  if(!frameDevices.length){alert('No frames connected — check Devices tab.');return;}
-  if(frameDevices.length===1){doSend(imageId,frameDevices[0].id,btn);return;}
-  if(sendPickerImageId===imageId){closePickers();return;}
-  sendPickerImageId=imageId;
-  sendPicker.innerHTML=frameDevices.map(d=>{
-    const label=d.name||(d.mac?d.mac:d.ip)||d.id;
-    return '<div class="send-picker-item" onclick="doSend(\''+imageId+'\',\''+d.id+'\',document.getElementById(\'send-btn-'+imageId+'\'))">'+label+'</div>';
-  }).join('');
-  positionSendPicker(btn.getBoundingClientRect());
+  ensureDevicesForSend().then(()=>{
+    const frameDevices=devices.filter(d=>d.type==='inkjoy'||d.type==='samsung');
+    if(!frameDevices.length){alert('No frames registered — check Devices tab or Discover.');return;}
+    if(frameDevices.length===1){doSend(imageId,frameDevices[0].id,btn);return;}
+    if(sendPickerImageId===imageId){closePickers();return;}
+    sendPickerImageId=imageId;
+    sendPicker.innerHTML=frameDevices.map(d=>{
+      const label=d.name||(d.mac?d.mac:d.ip)||d.id;
+      return '<div class="send-picker-item" onclick="doSend(\''+imageId+'\',\''+d.id+'\',document.getElementById(\'send-btn-'+imageId+'\'))">'+label+'</div>';
+    }).join('');
+    positionSendPicker(btn.getBoundingClientRect());
+  });
 }
 
 async function sendToFrame(deviceId){
@@ -1268,9 +1284,8 @@ async function loadDevicesInner(){
   }).join('');
 }
 
-loadDevices(); loadImages();
-startSamsungReachabilityPoll();
-setInterval(loadDevices,5000);
+loadImages();
+showTab('devices', document.querySelector('nav button.active'));
 document.getElementById('samsung-install-url').textContent=location.origin+'/samsung/';
 
 // ── Samsung tab ─────────────────────────────────────────────────────────────

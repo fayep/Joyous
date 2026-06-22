@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **UI polling** — removed global Samsung MDC poll and 5s device refresh on every tab; Album does not query frames. Registry refresh is tab-scoped; Send from Album loads the device list once on click.
 - **Samsung send when remote wake fails** — after WoL/magic timeout, hub polls MDC every 5s for up to 5 minutes so a manual power-button wake can complete the push; UI prompts “Press power button on frame…” after 20s.
 - **Samsung battery wake** — wake polling now matches the E-Paper app more closely (3s initial delay, 45s timeout, 3s MDC probes, WoL/magic resend every 10s). Fixes false wake failures on battery when the first TCP attempt consumed the entire 15s window.
 

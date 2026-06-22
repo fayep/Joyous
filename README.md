@@ -63,20 +63,24 @@ Default ports: HTTP **18080**, MQTT **11883**. Config path:
 Open the hub HTTP URL in a browser.
 
 - **Devices** — discovered InkJoy and Samsung frames; send album images, refresh InkJoy display, discover SSDP.
-- **Album** — upload JPEG/PNG/HEIC; per-format crops; send to any frame.
+- **Album** — upload JPEG/PNG/HEIC; per-format crops; send to a frame (no background frame polling).
 - **InkJoy** — per-frame editor: name, portrait, sleep schedule, display preview, BLE adopt.
 - **Samsung** — per-frame editor: wake (moon) / sleep (power), WiFi MAC for remote wake, poll interval, auto-sleep after send, battery history and “since last push” delta.
 
-### Samsung send & power (recommended defaults)
+### Samsung send & power (sleep by default)
+
+The panel should be **asleep almost always**. The hub only wakes it for an image send (or if you tap moon wake). After delivery it sleeps again — battery is read on that same MDC session before sleep.
 
 1. Set **WiFi MAC** from the Samsung E-Paper app (device info) — required for wake-on-send.
 2. Enable **Network Standby** on the frame (E-Paper app → power settings). Remote wake does not work when standby is off.
-3. Leave **Sleep after send** on (default ~15–45s delay lets the panel finish refreshing before sleep).
-4. On send: **wake → push → wait → battery read → sleep** on one MDC session when possible.
+3. Leave **Sleep after send** on; set delay long enough for e-ink refresh (often 30–45s).
+4. **Asleep** in the UI is normal. The hub does not MDC-poll Samsung frames in the background.
 
-If remote wake times out (common on battery), the hub **keeps polling MDC every 5s for up to 5 minutes** — press the frame’s **power button** when prompted; the push completes without sending again.
+**On send:** wake → push → wait → battery read → sleep.
 
-Battery samples from each pre-sleep read append to `{data_dir}/samsung_battery_history.json` (up to 365 per frame) so you can track drain over time without waking the frame just to check level.
+If remote wake fails, press the frame **power button** when prompted; the hub keeps retrying MDC for up to 5 minutes.
+
+Battery samples append to `{data_dir}/samsung_battery_history.json` from pre-sleep reads during sends — no wake-only battery polls.
 
 ## Configuration
 
