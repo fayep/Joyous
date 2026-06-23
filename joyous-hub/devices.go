@@ -146,7 +146,7 @@ func ApplySamsungConnected(d *Device) {
 	if d == nil || d.Type != DeviceTypeSamsung {
 		return
 	}
-	if d.LastAction == "mdc_sleep" {
+	if d.LastAction == "mdc_sleep" || d.LastAction == "mdc_deep_sleep" {
 		d.Connected = false
 		return
 	}
@@ -451,7 +451,8 @@ func (r *DeviceRegistry) SetMDCMAC(id, mac string) bool {
 }
 
 // NoteSamsungSlept records a successful sleep command without marking the frame awake.
-func (r *DeviceRegistry) NoteSamsungSlept(ip string) bool {
+// deep=true means overnight deep sleep (network standby off; button wake required).
+func (r *DeviceRegistry) NoteSamsungSlept(ip string, deep bool) bool {
 	if ip == "" {
 		return false
 	}
@@ -461,7 +462,28 @@ func (r *DeviceRegistry) NoteSamsungSlept(ip string) bool {
 	if d == nil {
 		return false
 	}
-	d.LastAction = "mdc_sleep"
+	if deep {
+		d.LastAction = "mdc_deep_sleep"
+		d.DeepSleepActive = true
+	} else {
+		d.LastAction = "mdc_sleep"
+		d.DeepSleepActive = false
+	}
+	return true
+}
+
+// SetSamsungDeepSleep records hub-initiated overnight deep sleep on the device registry.
+func (r *DeviceRegistry) SetSamsungDeepSleep(ip string, active bool) bool {
+	if ip == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d := r.findSamsungByIPLocked(ip)
+	if d == nil {
+		return false
+	}
+	d.DeepSleepActive = active
 	return true
 }
 

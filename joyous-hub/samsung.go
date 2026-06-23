@@ -713,6 +713,15 @@ func (h *Hub) recordSamsungBattery(ip string, percent int, powerSource, source s
 
 // sleepSamsungDisplay reads battery and sends sleep-now on a single MDC session (with connect retries).
 func (h *Hub) sleepSamsungDisplay(ip, pin string) error {
+	return h.sleepSamsungDisplayDepth(ip, pin, false)
+}
+
+// sleepSamsungDeepDisplay sleeps after disabling network standby (overnight deep sleep).
+func (h *Hub) sleepSamsungDeepDisplay(ip, pin string) error {
+	return h.sleepSamsungDisplayDepth(ip, pin, true)
+}
+
+func (h *Hub) sleepSamsungDisplayDepth(ip, pin string, deep bool) error {
 	res, err := SendMDCSleepWithBatteryCheck(ip, pin)
 	if res.SessionOK {
 		if res.BatteryOK {
@@ -724,7 +733,8 @@ func (h *Hub) sleepSamsungDisplay(ip, pin string) error {
 	if err != nil {
 		return err
 	}
-	h.devices.NoteSamsungSlept(ip)
+	h.devices.NoteSamsungSlept(ip, deep)
+	_ = h.devices.Save()
 	return nil
 }
 
@@ -769,13 +779,22 @@ func (h *Hub) pushSamsungFrame(frameID string, dev *Device) error {
 	wifiMAC := h.samsungWakeMAC(frameID, dev)
 	autoSleep := samsungAutoSleepAfterPush(cfg)
 	sleepAfter := samsungSleepAfterPushSec(cfg)
-	err := PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, h.sleepSamsungDisplay, SamsungPushOptions{
+	now := time.Now()
+	insideInactive := cfg.InactiveBegin != "" && cfg.InactiveEnd != "" && InInactiveWindow(now, cfg.InactiveBegin, cfg.InactiveEnd)
+	restoreStandby := samsungRestoreNetworkStandbyOnPush(cfg, now)
+	sleepFn := SamsungSleepFunc(h.sleepSamsungDisplay)
+	if cfg.DeepSleepActive && insideInactive {
+		sleepFn = h.sleepSamsungDeepDisplay
+	}
+	err := PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, sleepFn, SamsungPushOptions{
 		DeepSleepActive: cfg.DeepSleepActive,
-		RestoreStandby:  cfg.DeepSleepActive,
+		RestoreStandby:  restoreStandby,
 	})
 	if err == nil {
 		h.devices.TouchSamsung(dev.IP, "mdc_push")
-		h.clearSamsungDeepSleepAfterPush(frameID)
+		if restoreStandby {
+			h.clearSamsungDeepSleepAfterPush(frameID)
+		}
 	}
 	return err
 }

@@ -241,10 +241,27 @@ func TestNoteSamsungSleptNotActive(t *testing.T) {
 	if !d.Connected {
 		t.Fatal("frame should be active after push touch")
 	}
-	reg.NoteSamsungSlept("192.168.1.108")
+	reg.NoteSamsungSlept("192.168.1.108", false)
 	d, _ = reg.Get("samsung:192.168.1.108")
 	ApplySamsungConnected(d)
 	if d.Connected {
 		t.Fatal("frame should be asleep after sleep command")
+	}
+}
+
+func TestNoteSamsungDeepSlept(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	reg.NoteSamsungSlept("192.168.1.108", true)
+	d, _ := reg.Get("samsung:192.168.1.108")
+	if d.LastAction != "mdc_deep_sleep" {
+		t.Fatalf("LastAction: got %q", d.LastAction)
+	}
+	if !d.DeepSleepActive {
+		t.Fatal("expected deep_sleep_active")
+	}
+	ApplySamsungConnected(d)
+	if d.Connected {
+		t.Fatal("deep sleep should not mark frame active")
 	}
 }

@@ -768,7 +768,7 @@ const indexHTML = `<!DOCTYPE html>
             <button class="btn btn-sm btn-primary" onclick="saveSamsungConfig()">Save settings</button>
           </div>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">The frame should stay <strong>asleep</strong> between pushes. On send: wake → deliver image → sleep (after delay). WiFi MAC required for remote wake. Moon/power are for manual override only.</p>
-          <p style="font-size:.8rem;color:#888;margin:.75rem 0 0"><strong>Overnight deep sleep:</strong> at inactive begin the hub wakes the frame, turns off network standby, and sleeps it (lower battery drain). The first send after that needs the <strong>power button</strong>; the hub then restores network standby for daytime remote wake.</p>
+          <p style="font-size:.8rem;color:#888;margin:.75rem 0 0"><strong>Overnight deep sleep:</strong> at inactive begin the hub wakes the frame, turns off network standby, and sleeps it (lower battery drain). A send during inactive hours needs a <strong>3s power-button wake</strong> and returns to deep sleep after; outside those hours the hub restores network standby for remote wake.</p>
         </div>
         <div class="card" style="border:1px solid #f5c6cb">
           <div class="section-label" style="margin-top:0;color:#dc3545">Danger zone</div>
@@ -1078,9 +1078,18 @@ document.addEventListener('click',e=>{
   if(!sendPicker.contains(e.target)&&!e.target.id.startsWith('send-btn-')) closePickers();
 });
 
+function samsungDeepSleep(d,rec,s){
+  return !!((s&&s.deep_sleep_active)||(rec&&rec.deep_sleep_active)||(d&&d.deep_sleep_active)||
+    (d&&d.last_action==='mdc_deep_sleep')||(rec&&rec.last_action==='mdc_deep_sleep'));
+}
+
 const SAMSUNG_MANUAL_WAKE_HINT_MS=20000;
 const SAMSUNG_MANUAL_WAKE_MSG='Press power button on frame…';
-const SAMSUNG_DEEP_SLEEP_WAKE_MSG='Deep sleep — press power button on frame…';
+const SAMSUNG_DEEP_SLEEP_WAKE_MSG='Press power button on frame for 3s to wake frame';
+
+function samsungDeepSleepWakeHint(d,rec,s){
+  return samsungDeepSleep(d,rec,s)?SAMSUNG_DEEP_SLEEP_WAKE_MSG:null;
+}
 
 async function postDisplay(deviceId,imageId,onLongWait){
   const hintTimer=setTimeout(()=>{if(onLongWait) onLongWait();},SAMSUNG_MANUAL_WAKE_HINT_MS);
@@ -1099,11 +1108,17 @@ async function doSend(imageId, deviceId, feedbackBtn){
   closePickers();
   const orig=feedbackBtn?feedbackBtn.textContent:'';
   const dev=devices.find(d=>d.id===deviceId);
+  const deepHint=samsungDeepSleepWakeHint(dev);
   try{
-    if(feedbackBtn){feedbackBtn.disabled=true;feedbackBtn.textContent='Sending…';}
+    if(feedbackBtn){
+      feedbackBtn.disabled=true;
+      feedbackBtn.textContent=deepHint||'Sending…';
+    }else if(deepHint){
+      alert(deepHint);
+    }
     await postDisplay(deviceId,imageId,()=>{
-      if(dev&&dev.type==='samsung'&&feedbackBtn){
-        feedbackBtn.textContent=dev.deep_sleep_active?SAMSUNG_DEEP_SLEEP_WAKE_MSG:SAMSUNG_MANUAL_WAKE_MSG;
+      if(dev&&dev.type==='samsung'&&feedbackBtn&&!deepHint){
+        feedbackBtn.textContent=SAMSUNG_MANUAL_WAKE_MSG;
       }
     });
     if(feedbackBtn){feedbackBtn.textContent='✓ Sent';setTimeout(()=>{feedbackBtn.textContent=orig;feedbackBtn.disabled=false;},2000);}
@@ -1464,7 +1479,7 @@ async function loadDevicesInner(){
     const label=d.name||d.mac||d.ip||d.id;
     const type=d.type||'inkjoy';
     const status=type==='samsung'
-      ? (d.connected?'<span class="badge online">active</span>':'<span class="badge offline">asleep</span>')
+      ? (d.connected?'<span class="badge online">active</span>':'<span class="badge offline">'+samsungOfflineLabel(d)+'</span>')
       : (d.connected?'<span class="badge online">online</span>':'<span class="badge offline">offline</span>');
     const meta=type==='inkjoy'
       ? ((d.firmware?'fw '+d.firmware+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.rssi?'📶'+d.rssi+'dBm ':''))
@@ -1485,6 +1500,10 @@ showTab('devices', document.querySelector('nav button.active'));
 
 // ── Samsung tab ─────────────────────────────────────────────────────────────
 let samsungFrames=[], samsungCurrentId=null, samsungStatusCache=null, samsungPreviewKey=null;
+
+function samsungOfflineLabel(d,rec,s){
+  return samsungDeepSleep(d,rec,s)?'deep sleep':'asleep';
+}
 
 function samsungFrameRecord(frameId){
   return samsungFrames.find(x=>x.id===frameId);
@@ -1676,7 +1695,7 @@ function updateSamsungEditorStatus(d,rec,s){
   document.getElementById('samsung-dot').className='dot '+(online?'online':'offline');
   const badge=document.getElementById('samsung-status-badge');
   badge.className='badge '+(online?'online':'offline');
-  badge.textContent=online?'active':((s&&s.deep_sleep_active)||(rec&&rec.deep_sleep_active)?'deep sleep':'asleep');
+  badge.textContent=online?'active':samsungOfflineLabel(d,rec,s);
   const wakeBtn=document.getElementById('samsung-wake-btn');
   const sleepBtn=document.getElementById('samsung-sleep-btn');
   if(wakeBtn) wakeBtn.style.display=online?'none':'inline-flex';
@@ -1723,7 +1742,7 @@ function updateSamsungEditorStatus(d,rec,s){
   if(s){
     st.textContent=(s.has_image?'Image etag '+s.etag:'No image yet')+(s.locked?' (locked)':'');
     if(s.inactive_begin&&s.inactive_end) st.textContent+=' · inactive '+s.inactive_begin+'–'+s.inactive_end;
-    if(s.deep_sleep_active) st.textContent+=' · deep sleep (button wake)';
+    if(samsungDeepSleep(d,rec,samsungStatusCache)) st.textContent+=' · deep sleep (button wake)';
   }else{
     st.textContent='';
   }
@@ -1847,7 +1866,8 @@ async function samsungPushCurrent(){
   const dev=samsungDeviceForFrame(samsungCurrentId);
   if(!rec&&!dev){alert('Frame is not registered on the hub — click Discover displays first.');return;}
   const st=document.getElementById('samsung-status');
-  if(st) st.textContent='Pushing…';
+  const deepHint=samsungDeepSleepWakeHint(dev,rec,samsungStatusCache);
+  if(st) st.textContent=deepHint||'Pushing…';
   try{
     const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/push',{method:'POST'});
     if(!r.ok) throw new Error(await r.text());
@@ -1878,11 +1898,11 @@ async function samsungSendImage(){
   const match=images.find(i=>i.id.startsWith(imageId))||images.find(i=>i.name.includes(imageId));
   if(!match){alert('Image not found');return;}
   const st=document.getElementById('samsung-status');
-  if(st) st.textContent='Sending…';
+  const deepHint=samsungDeepSleepWakeHint(dev,rec,samsungStatusCache);
+  if(st) st.textContent=deepHint||'Sending…';
   try{
     await postDisplay(deviceId,match.id,()=>{
-      const deep=(samsungStatusCache&&samsungStatusCache.deep_sleep_active)||(rec&&rec.deep_sleep_active);
-      if(st) st.textContent=(deep?SAMSUNG_DEEP_SLEEP_WAKE_MSG:SAMSUNG_MANUAL_WAKE_MSG)+' (retrying every 5s…)';
+      if(st&&!deepHint) st.textContent=SAMSUNG_MANUAL_WAKE_MSG+' (retrying every 5s…)';
     });
   }catch(e){
     alert('Send failed: '+e.message);

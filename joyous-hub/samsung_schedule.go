@@ -39,6 +39,19 @@ func samsungOvernightDeepSleepEnabled(cfg SamsungFrameConfig) bool {
 	return cfg.InactiveBegin != "" && cfg.InactiveEnd != ""
 }
 
+// samsungRestoreNetworkStandbyOnPush reports whether a push from deep sleep should
+// re-enable network standby. Outside the inactive window, restore remote wake;
+// inside the window, leave standby off so post-push sleep returns to deep sleep.
+func samsungRestoreNetworkStandbyOnPush(cfg SamsungFrameConfig, now time.Time) bool {
+	if !cfg.DeepSleepActive {
+		return false
+	}
+	if cfg.InactiveBegin == "" || cfg.InactiveEnd == "" {
+		return true
+	}
+	return !InInactiveWindow(now, cfg.InactiveBegin, cfg.InactiveEnd)
+}
+
 func shouldTriggerOvernightDeepSleep(cfg SamsungFrameConfig, now time.Time) bool {
 	if !samsungOvernightDeepSleepEnabled(cfg) {
 		return false
@@ -72,6 +85,16 @@ func (h *Hub) setSamsungDeepSleepState(frameID string, active bool, ranAt time.T
 		cfg.OvernightDeepSleepAt = ranAt
 	}
 	_ = h.samsung.SaveConfig(cfg)
+	h.syncSamsungDeepSleepDevice(frameID, active)
+}
+
+func (h *Hub) syncSamsungDeepSleepDevice(frameID string, active bool) {
+	dev := h.samsungDeviceByFrameID(frameID)
+	if dev == nil || dev.IP == "" {
+		return
+	}
+	h.devices.SetSamsungDeepSleep(dev.IP, active)
+	_ = h.devices.Save()
 }
 
 func (h *Hub) runSamsungOvernightDeepSleep(frameID string) {
@@ -84,7 +107,7 @@ func (h *Hub) runSamsungOvernightDeepSleep(frameID string) {
 		log.Printf("samsung overnight: skip %s — wifi MAC required", frameID)
 		return
 	}
-	err := EnterSamsungDeepSleep(dev.IP, dev.MDCPin, mac, h.sleepSamsungDisplay)
+	err := EnterSamsungDeepSleep(dev.IP, dev.MDCPin, mac, h.sleepSamsungDeepDisplay)
 	if err != nil {
 		log.Printf("samsung overnight deep sleep %s: %v", frameID, err)
 		logOutbound("mdc overnight deep sleep fail ip=%s err=%v", dev.IP, err)
@@ -102,6 +125,7 @@ func (h *Hub) clearSamsungDeepSleepAfterPush(frameID string) {
 	}
 	cfg.DeepSleepActive = false
 	_ = h.samsung.SaveConfig(cfg)
+	h.syncSamsungDeepSleepDevice(frameID, false)
 }
 
 func (h *Hub) checkSamsungOvernightSchedules() {

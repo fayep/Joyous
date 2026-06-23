@@ -68,3 +68,26 @@ func TestShouldTriggerOvernightDeepSleep(t *testing.T) {
 		t.Fatal("already deep sleep")
 	}
 }
+
+func TestSamsungRestoreNetworkStandbyOnPush(t *testing.T) {
+	loc := time.Local
+	on := true
+	cfg := SamsungFrameConfig{
+		InactiveBegin:      "22:00",
+		InactiveEnd:        "07:00",
+		OvernightDeepSleep: &on,
+		DeepSleepActive:    true,
+	}
+	inside := time.Date(2026, 6, 22, 23, 0, 0, 0, loc)
+	outside := time.Date(2026, 6, 23, 10, 0, 0, 0, loc)
+	if samsungRestoreNetworkStandbyOnPush(cfg, inside) {
+		t.Fatal("inside inactive window should not restore standby")
+	}
+	if !samsungRestoreNetworkStandbyOnPush(cfg, outside) {
+		t.Fatal("outside inactive window should restore standby")
+	}
+	cfg.DeepSleepActive = false
+	if samsungRestoreNetworkStandbyOnPush(cfg, outside) {
+		t.Fatal("not deep sleep should not restore")
+	}
+}
