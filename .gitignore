@@ -31,5 +31,7 @@ Reflection/ReflectionFrame_*
 *.log
 proxy.log
 **/screenlog.0
+# Local design mocks (extracted from designer zips; not source of truth)
+.design-ref/
 *.png
 !joyous-hub/wipes/*.png
