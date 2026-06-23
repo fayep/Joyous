@@ -427,6 +427,9 @@ const indexHTML = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Joyous</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&display=swap" rel="stylesheet">
 <style>
   body{font-family:system-ui,sans-serif;margin:0;padding:0;background:#f5f5f5}
   header{background:#1a1a2e;color:#fff;padding:1rem 2rem;display:flex;align-items:center;gap:1rem}
@@ -461,6 +464,68 @@ const indexHTML = `<!DOCTYPE html>
   .img-card img{width:100%;aspect-ratio:4/3;object-fit:contain;display:block;background:#eee}
   .img-card .card-body{padding:.5rem .75rem}
   .img-card .name{font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:.4rem}
+  /* album wall */
+  #tab-album.album-wall{
+    margin:-2rem calc(50% - 50vw) 0;
+    width:100vw;
+    max-width:100vw;
+    min-height:calc(100vh - 64px);
+    background:#d9d2c4;
+    background-image:radial-gradient(120% 90% at 50% 0%,#e7e1d4 0%,#d4ccbc 55%,#c6bda9 100%);
+    color:#22252e;
+  }
+  .album-upload-wrap{max-width:1180px;margin:0 auto;padding:34px 40px 8px}
+  #upload-zone.album-upload{
+    display:flex;align-items:center;justify-content:center;gap:10px;
+    border:2px dashed #b3a994;border-radius:12px;padding:18px;margin-bottom:0;
+    color:#6e6450;font-size:15px;background:rgba(255,255,255,.28);cursor:pointer;
+  }
+  #upload-zone.album-upload.drag{border-color:#8a8069;background:rgba(255,255,255,.45)}
+  .album-upload-mono{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:#8a8069}
+  .album-grid{
+    display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-start;gap:0;
+    padding:30px 56px 90px;max-width:1240px;margin:0 auto;
+  }
+  .album-outer{
+    width:auto;flex:0 0 auto;margin:-14px -12px -14px 0;position:relative;cursor:pointer;
+    transform:translateY(var(--dy,0)) rotate(var(--rot,0deg));transform-origin:center 60%;
+    transition:transform .26s cubic-bezier(.2,.8,.3,1.25);z-index:var(--z,1);
+  }
+  .album-outer:hover{transform:translateY(-6px) rotate(0deg) scale(1.075);z-index:1000}
+  .album-print{
+    width:fit-content;background:#fdfbf6;padding:12px 12px 0;border-radius:2px;position:relative;
+    box-shadow:0 7px 16px -4px rgba(50,38,20,.28),0 1px 3px rgba(0,0,0,.12);
+    transition:box-shadow .26s ease;
+  }
+  .album-outer:hover .album-print{
+    box-shadow:0 26px 46px -8px rgba(40,28,12,.42),0 4px 10px rgba(0,0,0,.18);
+  }
+  .album-img{
+    position:relative;height:148px;width:auto;background:#ece8e0;overflow:hidden;
+  }
+  .album-img img{width:100%;height:100%;object-fit:contain;display:block}
+  .album-menu{
+    position:absolute;left:0;right:0;bottom:9px;display:flex;justify-content:center;gap:6px;
+    opacity:0;transform:translateY(8px);pointer-events:none;
+    transition:opacity .2s ease,transform .2s ease;
+  }
+  .album-outer:hover .album-menu{opacity:1;transform:translateY(0);pointer-events:auto}
+  .album-btn{border:0;cursor:pointer;font:600 12px/1 inherit;color:#fff;background:#1f2740;padding:7px 11px;border-radius:6px}
+  .album-btn-delete{background:#e1483f;padding:7px 10px;font-size:13px;line-height:1}
+  .album-caption{
+    font-family:'Caveat',cursive;font-size:21px;line-height:1;color:#4a4135;text-align:center;
+    padding:11px 6px 13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    max-width:var(--photo-w,100%);box-sizing:border-box;min-width:0;
+  }
+  .album-empty{text-align:center;color:#6e6450;padding:3rem 1.5rem;font-size:15px;margin:0}
+  @media (hover:none){
+    .album-menu{opacity:1;transform:translateY(0);pointer-events:auto}
+  }
+  @media (max-width:640px){
+    .album-upload-wrap{padding:20px 16px 8px}
+    .album-grid{padding:20px 12px 60px}
+    .album-img{height:120px}
+  }
   /* crop modal */
   #crop-modal{display:none;position:fixed;inset:0;background:#000c;z-index:1000;align-items:center;justify-content:center;touch-action:none;overscroll-behavior:none}
   #crop-modal.open{display:flex;overflow:hidden}
@@ -486,7 +551,6 @@ const indexHTML = `<!DOCTYPE html>
   #crop-hint{color:#888;font-size:.75rem;text-align:right}
   .crop-dim{position:absolute;box-sizing:border-box;pointer-events:none;border:1.5px dashed rgba(255,255,255,.38)}
   .crop-dim-label{position:absolute;top:3px;left:5px;font:10px/1 sans-serif;color:rgba(255,255,255,.5);pointer-events:none}
-  #upload-zone{border:2px dashed #ccc;border-radius:8px;padding:2rem;text-align:center;margin-bottom:1rem;cursor:pointer}
   #upload-zone.drag{border-color:#1a1a2e;background:#f0f0ff}
   input[type=file]{display:none}
   #send-picker{display:none;position:fixed;z-index:1000;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 12px #0002;min-width:160px;max-height:min(50vh,320px);overflow-y:auto;-webkit-overflow-scrolling:touch}
@@ -531,12 +595,14 @@ const indexHTML = `<!DOCTYPE html>
     </div>
     <div id="device-list"><p>Loading…</p></div>
   </div>
-  <div id="tab-album" style="display:none">
-    <div id="upload-zone" onclick="document.getElementById('file-input').click()">
-      Drop images here or click to upload (.bin, .png, .jpg)
+  <div id="tab-album" class="album-wall" style="display:none">
+    <div class="album-upload-wrap">
+      <div id="upload-zone" class="album-upload" onclick="document.getElementById('file-input').click()">
+        Drop images here or click to upload <span class="album-upload-mono">(.bin, .png, .jpg)</span>
+      </div>
     </div>
+    <div id="image-grid" class="album-grid"></div>
     <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg" multiple>
-    <div id="image-grid" class="img-grid"></div>
   </div>
   <div id="tab-inkjoy" style="display:none">
     <!-- Adopt modal -->
@@ -720,6 +786,7 @@ function showTab(name,btn){
   if(name==='devices') startTabRefresh(5000, refreshDevicesTab);
   else if(name==='inkjoy') startTabRefresh(5000, refreshInkjoyTab);
   else if(name==='samsung') startTabRefresh(30000, refreshSamsungTab);
+  else if(name==='album') loadImages();
   if(name==='mqtt') startMQTTLogPoll();
   else stopMQTTLogPoll();
 }
@@ -839,20 +906,55 @@ async function refreshDevice(id){
 
 let imageCropsCache = {}; // id → crops map, kept fresh by loadImages + save/delete
 
+function escHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function albumPrintAspect(img){
+  const w=img.width|0, h=img.height|0;
+  if(w>0&&h>0) return w+' / '+h;
+  return '4 / 3';
+}
+
+function albumPhotoHeightPx(){
+  return window.matchMedia('(max-width:640px)').matches ? 120 : 148;
+}
+
+function albumPhotoWidthPx(img){
+  const w=img.width|0, h=img.height|0;
+  const photoH=albumPhotoHeightPx();
+  if(w>0&&h>0) return Math.round(photoH*w/h);
+  return Math.round(photoH*4/3);
+}
+
+function albumStackVars(i){
+  const rot=((i*41)%11)-5;
+  const dy=(((i*29)%9)-4)*1.6;
+  return '--rot:'+rot+'deg;--dy:'+dy+'px;--z:'+(i+1);
+}
+
 async function loadImages(){
   const r=await fetch('/api/images'); images=await r.json();
   images.forEach(img=>{ imageCropsCache[img.id]=img.crops||{}; });
   const el=document.getElementById('image-grid');
-  if(!images||!images.length){el.innerHTML='<p>No images uploaded yet.</p>';return;}
-  el.innerHTML=images.map(img=>'<div class="img-card" id="card-'+img.id+'">'+
-    '<img src="/images/'+img.id+'/thumb" alt="'+img.name+'" loading="lazy">'+
-    '<div class="card-body">'+
-      '<div class="name" title="'+img.name+'">'+img.name+'</div>'+
-      '<button class="btn btn-sm btn-primary" onclick="openCrop(\''+img.id+'\')">Frame</button> '+
-      '<button class="btn btn-sm btn-primary" id="send-btn-'+img.id+'" onclick="sendImageToFrame(event,\''+img.id+'\')">Send</button> '+
-      '<button class="btn btn-sm" style="background:#dc3545;color:#fff" onclick="deleteImg(\''+img.id+'\')">✕</button>'+
-    '</div>'+
-  '</div>').join('');
+  if(!images||!images.length){el.innerHTML='<p class="album-empty">No images uploaded yet.</p>';return;}
+  el.innerHTML=images.map((img,i)=>{
+    const name=escHtml(img.name);
+    const ar=albumPrintAspect(img);
+    const pw=albumPhotoWidthPx(img);
+    return '<div class="album-outer" id="card-'+img.id+'" style="'+albumStackVars(i)+'">'+
+      '<div class="album-print" style="--photo-w:'+pw+'px">'+
+        '<div class="album-img" style="aspect-ratio:'+ar+'">'+
+          '<img src="/images/'+img.id+'/preview" alt="'+name+'" loading="lazy">'+
+          '<div class="album-menu">'+
+            '<button type="button" class="album-btn" onclick="openCrop(\''+img.id+'\')">Frame</button>'+
+            '<button type="button" class="album-btn" id="send-btn-'+img.id+'" onclick="sendImageToFrame(event,\''+img.id+'\')">Send</button>'+
+            '<button type="button" class="album-btn album-btn-delete" onclick="event.stopPropagation();deleteImg(\''+img.id+'\')">&times;</button>'+
+          '</div>'+
+        '</div>'+
+        '<div class="album-caption" title="'+name+'">'+name+'</div>'+
+      '</div></div>';
+  }).join('');
 }
 
 const sendPicker=document.getElementById('send-picker');
@@ -930,7 +1032,7 @@ async function doSend(imageId, deviceId, feedbackBtn){
 }
 
 function sendImageToFrame(evt, imageId){
-  evt.stopPropagation();
+  if(evt) evt.stopPropagation();
   const btn=document.getElementById('send-btn-'+imageId);
   ensureDevicesForSend().then(()=>{
     const frameDevices=devices.filter(d=>d.type==='inkjoy'||d.type==='samsung');
@@ -1914,8 +2016,7 @@ function refreshThumb(id){
   if(!card) return;
   const t=card.querySelector('img');
   if(!t) return;
-  const url='/images/'+encodeURIComponent(id)+'/thumb';
-  // Etag changes when crop is saved; reassign src to force revalidation (no ?t= bust).
+  const url='/images/'+encodeURIComponent(id)+'/preview';
   t.src='';
   t.src=url;
 }

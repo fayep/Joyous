@@ -39,6 +39,8 @@ type ImageMeta struct {
 	ID      string              `json:"id"`
 	Name    string              `json:"name"`
 	Size    int64               `json:"size"`
+	Width   int                  `json:"width,omitempty"`
+	Height  int                  `json:"height,omitempty"`
 	Crops   map[string]CropRect `json:"crops,omitempty"`
 	FlatRGB bool                `json:"flat_rgb,omitempty"` // calibration PNG: per-pixel snap, no Stucki/LAB
 }
@@ -82,6 +84,9 @@ func (s *ImageStore) Store(r io.Reader, name string) (string, error) {
 		return "", err
 	}
 	meta := ImageMeta{ID: id, Name: name, Size: int64(len(data)), FlatRGB: isFlatCalibrationName(name)}
+	if w, h, err := imageDisplaySize(data, name); err == nil {
+		meta.Width, meta.Height = w, h
+	}
 	b, _ := json.Marshal(meta)
 	os.WriteFile(s.metaPath(id), b, 0644)
 	return id, nil
@@ -168,6 +173,7 @@ func (s *ImageStore) ListImages() ([]ImageMeta, error) {
 		}
 		var m ImageMeta
 		if json.Unmarshal(data, &m) == nil {
+			s.fillDimensions(&m)
 			out = append(out, m)
 		}
 	}
@@ -816,6 +822,35 @@ func decodeAnyImage(data []byte) (image.Image, error) {
 		return nil, errors.New("unsupported image format (accept .bin, PNG, JPEG, or HEIC)")
 	}
 	return applyExifOrientation(img, readExifOrientation(data)), nil
+}
+
+func imageDisplaySize(raw []byte, name string) (int, int, error) {
+	if strings.ToLower(filepath.Ext(name)) == ".bin" {
+		return frameW, frameH, nil
+	}
+	img, err := decodeAnyImage(raw)
+	if err != nil {
+		return 0, 0, err
+	}
+	b := img.Bounds()
+	return b.Dx(), b.Dy(), nil
+}
+
+func (s *ImageStore) fillDimensions(meta *ImageMeta) {
+	if meta.Width > 0 && meta.Height > 0 {
+		return
+	}
+	raw, err := os.ReadFile(s.rawPath(meta.ID))
+	if err != nil {
+		return
+	}
+	w, h, err := imageDisplaySize(raw, meta.Name)
+	if err != nil || w <= 0 || h <= 0 {
+		return
+	}
+	meta.Width, meta.Height = w, h
+	b, _ := json.Marshal(meta)
+	os.WriteFile(s.metaPath(meta.ID), b, 0644)
 }
 
 func resizeToFrame(img image.Image) image.Image { return resizeTo(img, frameW, frameH) }
