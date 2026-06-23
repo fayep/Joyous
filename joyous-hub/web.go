@@ -559,7 +559,7 @@ const indexHTML = `<!DOCTYPE html>
   .crop-dim-label{position:absolute;top:3px;left:5px;font:10px/1 sans-serif;color:rgba(255,255,255,.5);pointer-events:none}
   #upload-zone.drag{border-color:#1a1a2e;background:#f0f0ff}
   input[type=file]{display:none}
-  #send-picker{display:none;position:fixed;z-index:1000;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 12px #0002;min-width:160px;max-height:min(50vh,320px);overflow-y:auto;-webkit-overflow-scrolling:touch}
+  #send-picker{display:none;position:fixed;z-index:5000;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 12px #0002;min-width:160px;max-height:min(50vh,320px);overflow-y:auto;-webkit-overflow-scrolling:touch}
   .send-picker-item{padding:.5rem .85rem;cursor:pointer;font-size:.9rem;white-space:nowrap}
   .send-picker-item:hover{background:#f0f0ff}
   .mqtt-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
@@ -1041,7 +1041,8 @@ function closePickers(){
   sendPicker.style.overflowY='';
   sendPickerImageId=null;
 }
-function positionSendPicker(anchor){
+function positionSendPicker(anchor, opts){
+  opts=opts||{};
   const margin=8;
   sendPicker.style.display='block';
   sendPicker.style.maxHeight='';
@@ -1052,9 +1053,14 @@ function positionSendPicker(anchor){
   const pickerH=sendPicker.offsetHeight;
   const viewH=window.innerHeight;
   const viewW=window.innerWidth;
-  let top=anchor.bottom+4;
-  if(top+pickerH>viewH-margin && anchor.top-4-pickerH>=margin){
+  let top;
+  if(opts.preferAbove && anchor.top-4-pickerH>=margin){
     top=anchor.top-pickerH-4;
+  }else{
+    top=anchor.bottom+4;
+    if(top+pickerH>viewH-margin && anchor.top-4-pickerH>=margin){
+      top=anchor.top-pickerH-4;
+    }
   }
   if(top+pickerH>viewH-margin){
     top=margin;
@@ -1120,7 +1126,7 @@ function sendImageToFrame(evt, imageId){
       const label=d.name||(d.mac?d.mac:d.ip)||d.id;
       return '<div class="send-picker-item" onclick="doSend(\''+imageId+'\',\''+d.id+'\',document.getElementById(\'send-btn-'+imageId+'\'))">'+label+'</div>';
     }).join('');
-    positionSendPicker(btn.getBoundingClientRect());
+    positionSendPicker(btn.getBoundingClientRect(),{preferAbove:!!btn.closest('.album-menu')});
   });
 }
 
