@@ -72,8 +72,6 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("POST /api/samsung/{frameId}/image", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungImageUpload(w, r, r.PathValue("frameId"))
 	})
-	mux.HandleFunc("GET /samsung/sssp_config.xml", hub.handleSamsungSSSPConfig)
-	mux.HandleFunc("GET /samsung/"+widgetFile, hub.handleSamsungWGT)
 	mux.HandleFunc("GET /samsung/{frameId}/content.json", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungContentJSON(w, r, r.PathValue("frameId"))
 	})
@@ -94,6 +92,5 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 			http.NotFound(w, r)
 		}
 	})
-	mux.HandleFunc("GET /samsung/", hub.handleSamsungIndex)
 	mux.HandleFunc("/", hub.handleStatic)
 }

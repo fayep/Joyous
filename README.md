@@ -5,7 +5,7 @@ Local-first control for e-ink photo frames on your LAN. **Joyous Hub** (`joyous-
 | Frame | Protocol | Hub role |
 |-------|----------|----------|
 | **InkJoy** | MQTT + HTTP `.bin` download | Local MQTT broker, optional cloud bridge, image encode & push |
-| **Samsung EM32DX** | MDC (TLS `:1515`) + HTTP pull | Wake/sleep, content push, custom Tizen widget, battery logging |
+| **Samsung EM32DX** | MDC (TLS `:1515`) + HTTP pull | Wake/sleep, MDC content push, battery logging |
 
 See [CHANGELOG.md](CHANGELOG.md) for recent hub changes.
 
@@ -29,7 +29,7 @@ See [CHANGELOG.md](CHANGELOG.md) for recent hub changes.
 
 **InkJoy:** Point the frame at the hub’s MQTT port (redirect / BLE adopt). The hub can bridge selected traffic to the vendor cloud, intercept OTA and sleep commands, encode album images to `.bin`, and push play URLs.
 
-**Samsung:** Install the hub’s custom widget once from the Samsung E-Paper app. The hub discovers frames via SSDP, wakes them over the network when needed, pushes PNGs via MDC, then puts the display back to sleep to save battery. Battery level is read on the same MDC session as sleep — no extra wake-only polls.
+**Samsung:** The hub discovers frames via SSDP, wakes them over the network when needed, pushes PNGs via MDC (mobile deploy `content.json` URL), then puts the display back to sleep to save battery. Battery level is read on the same MDC session as sleep — no extra wake-only polls.
 
 ## Quick start (macOS)
 
@@ -97,16 +97,6 @@ Battery samples append to `{data_dir}/samsung_battery_history.json` from pre-sle
 | `discover_subnets` | LAN prefixes for Samsung MDC sweep when SSDP is quiet |
 
 Credentials: `INKJOY_MQTT_USER` / `INKJOY_MQTT_PASSWORD` or `upstream_usr` / `upstream_pwd`.
-
-## Samsung widget install
-
-On the frame (Samsung E-Paper app → custom app / widget):
-
-```
-http://<hub-host>:18080/samsung/
-```
-
-Serves `sssp_config.xml` and `joyous-widget.wgt`. After install, the frame polls `{hub}/samsung/{frame-id}/content.json` and fetches PNGs from the hub.
 
 ## Development
 

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 	"time"
 )
@@ -166,35 +165,6 @@ func TestNextWakeTime(t *testing.T) {
 	want2 := active.Add(time.Hour)
 	if !next2.Equal(want2) {
 		t.Errorf("next = %v, want %v", next2, want2)
-	}
-}
-
-func TestSSSPConfigSize(t *testing.T) {
-	dir := t.TempDir()
-	s := NewSamsungStore(dir)
-	if err := s.ensureDir(); err != nil {
-		t.Fatal(err)
-	}
-	wgtData := []byte("fake-wgt-content-for-test")
-	if err := os.WriteFile(s.wgtPath(), wgtData, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	h := &Hub{samsung: s, serverAddr: "localhost:8080"}
-	rec := httptest.NewRecorder()
-	h.handleSamsungSSSPConfig(rec, httptest.NewRequest("GET", "/samsung/sssp_config.xml", nil))
-	if rec.Code != 200 {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "<size>") {
-		t.Fatal("missing size tag")
-	}
-	if !strings.Contains(body, string(rune(len(wgtData)))) && !strings.Contains(body, "25") {
-		// size should be 25 bytes
-		if !strings.Contains(body, ">25<") {
-			t.Errorf("expected size 25 in xml: %s", body)
-		}
 	}
 }
 

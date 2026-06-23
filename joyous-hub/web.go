@@ -697,12 +697,6 @@ const indexHTML = `<!DOCTYPE html>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">The frame should stay <strong>asleep</strong> between pushes. On send: wake → deliver image → sleep (after delay). WiFi MAC required for remote wake. Moon/power are for manual override only.</p>
           <p style="font-size:.8rem;color:#888;margin:.75rem 0 0"><strong>Overnight deep sleep:</strong> at inactive begin the hub wakes the frame, turns off network standby, and sleeps it (lower battery drain). The first send after that needs the <strong>power button</strong>; the hub then restores network standby for daytime remote wake.</p>
         </div>
-        <div class="card">
-          <div class="section-label" style="margin-top:0">Tizen widget (optional)</div>
-          <p style="font-size:.9rem;margin:.25rem 0">Install URL for Samsung E-Paper Custom App player:</p>
-          <code id="samsung-install-url">loading…</code>
-          <p style="color:#666;font-size:.85rem;margin-top:.75rem;margin-bottom:0">Place signed <code>joyous-widget.wgt</code> in <code>data/samsung/</code> on the hub.</p>
-        </div>
         <div class="card" style="border:1px solid #f5c6cb">
           <div class="section-label" style="margin-top:0;color:#dc3545">Danger zone</div>
           <button class="btn btn-sm" style="background:#dc3545;color:#fff" onclick="samsungDeleteDevice()">Remove frame from hub</button>
@@ -1299,7 +1293,6 @@ async function loadDevicesInner(){
 
 loadImages();
 showTab('devices', document.querySelector('nav button.active'));
-document.getElementById('samsung-install-url').textContent=location.origin+'/samsung/';
 
 // ── Samsung tab ─────────────────────────────────────────────────────────────
 let samsungFrames=[], samsungCurrentId=null, samsungStatusCache=null, samsungPreviewKey=null;

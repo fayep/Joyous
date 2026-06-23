@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// SamsungDisplayProfile describes target framing for MDC/widget output.
+// SamsungDisplayProfile describes target framing for MDC push output.
 type SamsungDisplayProfile struct {
 	CropFormat string // metadata crop key, e.g. "16:9"
 	Width      int

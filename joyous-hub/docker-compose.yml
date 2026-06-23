@@ -17,4 +17,4 @@ services:
       - --server-addr=hubhost.local:18080
       - --discover-subnets=192.168.50.0/24
     # SSDP multicast does not work through Docker Desktop; unicast sweep covers listed /24s.
-    # Samsung EM32DX widget: place signed joyous-widget.wgt and frame PNGs under /data/samsung/
+    # Samsung frame PNGs and configs live under /data/samsung/

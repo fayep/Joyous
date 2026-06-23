@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"image"
@@ -23,8 +22,6 @@ import (
 )
 
 const defaultPollInterval = 60
-const widgetName = "JoyousWidget"
-const widgetFile = "joyous-widget.wgt"
 
 // SamsungFrameConfig is persisted per frame under {data-dir}/samsung/{frameId}.json.
 type SamsungFrameConfig struct {
@@ -68,10 +65,6 @@ func (s *SamsungStore) lockPath(frameID string) string {
 
 func (s *SamsungStore) configPath(frameID string) string {
 	return filepath.Join(s.dir, frameID+".json")
-}
-
-func (s *SamsungStore) wgtPath() string {
-	return filepath.Join(s.dir, widgetFile)
 }
 
 func validFrameID(id string) bool {
@@ -309,7 +302,7 @@ func centerCropToSize(img image.Image, tw, th int) image.Image {
 	return resizeTo(cropped, tw, th)
 }
 
-// ── inactive hours helpers (shared with widget logic in tests) ───────────────
+// ── inactive hours helpers (shared with schedule logic in tests) ─────────────
 
 func parseHHMM(s string) (hour, min int, ok bool) {
 	if s == "" {
@@ -946,62 +939,6 @@ func samsungListLabel(name, ip, id string) string {
 	return id
 }
 
-type ssspConfig struct {
-	XMLName    xml.Name `xml:"widget"`
-	Ver        int      `xml:"ver"`
-	Size       int64    `xml:"size"`
-	WidgetName string   `xml:"widgetname"`
-	Source     string   `xml:"source,omitempty"`
-	WebType    string   `xml:"webtype"`
-}
-
-func (h *Hub) handleSamsungSSSPConfig(w http.ResponseWriter, r *http.Request) {
-	wgtPath := h.samsung.wgtPath()
-	fi, err := os.Stat(wgtPath)
-	if err != nil {
-		http.Error(w, "widget not installed: place "+widgetFile+" in data/samsung/", http.StatusNotFound)
-		return
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	host := r.Host
-	if h.serverAddr != "" {
-		host = h.serverAddr
-	}
-	source := fmt.Sprintf("%s://%s/samsung/%s", scheme, host, widgetFile)
-	ver := fi.ModTime().Unix()
-	cfg := ssspConfig{
-		Ver:        int(ver),
-		Size:       fi.Size(),
-		WidgetName: widgetName,
-		Source:     source,
-		WebType:    "tizen",
-	}
-	out, err := xml.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Write([]byte(xml.Header))
-	w.Write(out)
-}
-
-func (h *Hub) handleSamsungWGT(w http.ResponseWriter, r *http.Request) {
-	path := h.samsung.wgtPath()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		http.Error(w, "widget not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "application/widget")
-	w.Header().Set("Content-Length", strconv.FormatInt(int64(len(data)), 10))
-	w.Write(data)
-}
-
 func (h *Hub) handleSamsungPoll(w http.ResponseWriter, r *http.Request) {
 	devs := h.devices.List()
 	probed := 0
@@ -1042,13 +979,4 @@ func (h *Hub) handleSamsungPoll(w http.ResponseWriter, r *http.Request) {
 		"awake":   awake,
 		"battery": battery,
 	})
-}
-
-func (h *Hub) handleSamsungIndex(w http.ResponseWriter, r *http.Request) {
-	addr := h.serverAddr
-	if addr == "" {
-		addr = r.Host
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprintf(w, "Samsung EM32DX widget deployment\n\nInstall URL (Custom App in Samsung E-Paper app):\n  http://%s/samsung/\n\nEndpoints:\n  GET /samsung/sssp_config.xml\n  GET /samsung/%s\n", addr, widgetFile)
 }
