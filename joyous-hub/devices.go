@@ -56,6 +56,7 @@ type Device struct {
 	HubIP          string `json:"hub_ip,omitempty"`   // hub's LAN IP as seen via this frame's MQTT socket
 	Portrait       bool   `json:"portrait,omitempty"` // user-set: frame is in portrait orientation
 	Orientation    int    `json:"orientation"`        // raw accelerometer value from heart (unreliable)
+	DeepSleepActive bool  `json:"deep_sleep_active,omitempty"` // samsung: overnight deep sleep (button wake)
 }
 
 // DeviceRegistry tracks known frames in memory and persists them to disk.

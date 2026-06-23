@@ -39,6 +39,9 @@ type SamsungFrameConfig struct {
 	DisplayHeight         int    `json:"display_height,omitempty"`
 	AutoSleepAfterPush    *bool  `json:"auto_sleep_after_push,omitempty"`
 	SleepAfterPushSeconds int    `json:"sleep_after_push_seconds,omitempty"`
+	OvernightDeepSleep    *bool  `json:"overnight_deep_sleep,omitempty"`
+	DeepSleepActive       bool   `json:"deep_sleep_active,omitempty"`
+	OvernightDeepSleepAt  time.Time `json:"overnight_deep_sleep_at,omitempty"`
 }
 
 // SamsungStore manages Samsung EM32DX frame images and config on disk.
@@ -408,6 +411,8 @@ type samsungStatusResponse struct {
 	DisplayHeight         int       `json:"display_height"`
 	AutoSleepAfterPush    bool      `json:"auto_sleep_after_push"`
 	SleepAfterPushSeconds int       `json:"sleep_after_push_seconds"`
+	OvernightDeepSleep    bool      `json:"overnight_deep_sleep"`
+	DeepSleepActive       bool      `json:"deep_sleep_active"`
 }
 
 func (h *Hub) noteSamsungFrameSeen(r *http.Request, frameID, action string) {
@@ -446,6 +451,8 @@ func (h *Hub) handleSamsungStatus(w http.ResponseWriter, r *http.Request, frameI
 		DisplayHeight:         cfg.DisplayHeight,
 		AutoSleepAfterPush:    samsungAutoSleepAfterPush(cfg),
 		SleepAfterPushSeconds: samsungSleepAfterPushSec(cfg),
+		OvernightDeepSleep:    samsungOvernightDeepSleepEnabled(cfg),
+		DeepSleepActive:       cfg.DeepSleepActive,
 	}
 	if hasImage {
 		resp.Modified = mod
@@ -562,6 +569,15 @@ func (h *Hub) handleSamsungConfigPut(w http.ResponseWriter, r *http.Request, fra
 	if _, has := raw["sleep_after_push_seconds"]; !has && body.SleepAfterPushSeconds <= 0 {
 		body.SleepAfterPushSeconds = existing.SleepAfterPushSeconds
 	}
+	if _, has := raw["overnight_deep_sleep"]; !has {
+		body.OvernightDeepSleep = existing.OvernightDeepSleep
+	}
+	if _, has := raw["deep_sleep_active"]; !has {
+		body.DeepSleepActive = existing.DeepSleepActive
+	}
+	if _, has := raw["overnight_deep_sleep_at"]; !has {
+		body.OvernightDeepSleepAt = existing.OvernightDeepSleepAt
+	}
 	body.FrameID = frameID
 	if body.PollIntervalMinutes <= 0 {
 		body.PollIntervalMinutes = defaultPollInterval
@@ -652,6 +668,59 @@ func (h *Hub) handleSamsungSleep(w http.ResponseWriter, r *http.Request, frameID
 	}
 	if err := h.sleepSamsungDisplay(dev.IP, dev.MDCPin); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// pushSamsungFrame MDC-pushes the frame's current PNG (wake → content.json → optional sleep).
+func (h *Hub) pushSamsungFrame(frameID string, dev *Device) error {
+	if _, _, ok := h.samsung.PNGInfo(frameID); !ok {
+		return fmt.Errorf("no image for frame %s", frameID)
+	}
+	addr := h.serverAddr
+	if addr == "" {
+		addr = "localhost:8080"
+	}
+	fileID := newSamsungPushFileID()
+	setSamsungPushFileID(frameID, fileID)
+	contentURL := samsungMDCContentURL(addr, dev.IP, frameID)
+	logOutbound("samsung push frame=%s ip=%s file_id=%s content=%s", frameID, dev.IP, fileID, contentURL)
+	cfg, _ := h.samsung.LoadConfig(frameID)
+	wifiMAC := h.samsungWakeMAC(frameID, dev)
+	autoSleep := samsungAutoSleepAfterPush(cfg)
+	sleepAfter := samsungSleepAfterPushSec(cfg)
+	err := PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, h.sleepSamsungDisplay, SamsungPushOptions{
+		DeepSleepActive: cfg.DeepSleepActive,
+		RestoreStandby:  cfg.DeepSleepActive,
+	})
+	if err == nil {
+		h.devices.TouchSamsung(dev.IP, "mdc_push")
+		h.clearSamsungDeepSleepAfterPush(frameID)
+	}
+	return err
+}
+
+func (h *Hub) handleSamsungPush(w http.ResponseWriter, r *http.Request, frameID string) {
+	if !validFrameID(frameID) {
+		http.Error(w, "invalid frame id", http.StatusBadRequest)
+		return
+	}
+	dev := h.samsungDeviceByFrameID(frameID)
+	if dev == nil || dev.IP == "" {
+		http.Error(w, "frame not registered on hub", http.StatusNotFound)
+		return
+	}
+	if err := h.pushSamsungFrame(frameID, dev); err != nil {
+		code := http.StatusBadGateway
+		if strings.Contains(err.Error(), "no image for frame") {
+			code = http.StatusNotFound
+		}
+		if strings.Contains(err.Error(), "frame did not wake") {
+			code = http.StatusGatewayTimeout
+		}
+		http.Error(w, err.Error(), code)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -785,6 +854,8 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 		DisplayHeight         int       `json:"display_height"`
 		AutoSleepAfterPush    bool      `json:"auto_sleep_after_push"`
 		SleepAfterPushSeconds int       `json:"sleep_after_push_seconds"`
+		OvernightDeepSleep    bool      `json:"overnight_deep_sleep"`
+		DeepSleepActive       bool      `json:"deep_sleep_active"`
 	}
 	devByFrame := make(map[string]Device)
 	for _, d := range h.devices.List() {
@@ -828,6 +899,8 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 			DisplayHeight:         cfg.DisplayHeight,
 			AutoSleepAfterPush:    samsungAutoSleepAfterPush(cfg),
 			SleepAfterPushSeconds: samsungSleepAfterPushSec(cfg),
+			OvernightDeepSleep:    samsungOvernightDeepSleepEnabled(cfg),
+			DeepSleepActive:       cfg.DeepSleepActive,
 		}
 		if dev, ok := devByFrame[id]; ok {
 			info.DeviceID = dev.ID

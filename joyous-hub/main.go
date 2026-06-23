@@ -197,6 +197,7 @@ func main() {
 		}
 	}()
 
+	startSamsungOvernightScheduler(ctx, hub)
 
 	<-ctx.Done()
 	log.Println("shutting down...")

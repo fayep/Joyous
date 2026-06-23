@@ -104,23 +104,8 @@ func (h *Hub) sendSamsungImage(dev *Device, imageID string) error {
 		return err
 	}
 	_ = meta // name retained for future manifest metadata
-
-	addr := h.serverAddr
-	if addr == "" {
-		addr = "localhost:8080"
-	}
-	fileID := newSamsungPushFileID()
-	setSamsungPushFileID(frameID, fileID)
-	contentURL := samsungMDCContentURL(addr, dev.IP, frameID)
-	logOutbound("samsung prepare frame=%s ip=%s file_id=%s content=%s png=%dB", frameID, dev.IP, fileID, contentURL, len(pngData))
-	cfg, _ := h.samsung.LoadConfig(frameID)
-	wifiMAC := h.samsungWakeMAC(frameID, dev)
-	autoSleep := samsungAutoSleepAfterPush(cfg)
-	sleepAfter := samsungSleepAfterPushSec(cfg)
-	err = PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, h.sleepSamsungDisplay)
-	if err == nil {
-		h.devices.TouchSamsung(dev.IP, "mdc_push")
-	}
+	logOutbound("samsung prepare frame=%s ip=%s png=%dB", frameID, dev.IP, len(pngData))
+	err = h.pushSamsungFrame(frameID, dev)
 	logFrameSend(dev.ID, imageID, "samsung", err)
 	return err
 }

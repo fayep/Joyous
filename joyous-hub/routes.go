@@ -63,6 +63,9 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("POST /api/samsung/{frameId}/wake", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungWake(w, r, r.PathValue("frameId"))
 	})
+	mux.HandleFunc("POST /api/samsung/{frameId}/push", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleSamsungPush(w, r, r.PathValue("frameId"))
+	})
 	mux.HandleFunc("PUT /api/samsung/{frameId}/config", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungConfigPut(w, r, r.PathValue("frameId"))
 	})

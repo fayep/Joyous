@@ -20,6 +20,7 @@ const (
 	mdcCmdBattery           = 0x1B
 	mdcSubCmdBattery        = 0x73
 	mdcCmdSleepNow          = 0x11 // MDC_COMMAND_SLEEP (Samsung E-Paper app)
+	mdcCmdNetworkStandby    = 0xB5 // MDC_COMMAND_NETWORK_STANDBY
 	samsungWakeUDPPort      = 10194
 	defaultSleepAfterPushSec = 15
 	mdcConnectTimeout       = 10 * time.Second
@@ -118,25 +119,40 @@ func mdcContentDownloadPacket(url string) ([]byte, error) {
 
 // SendMDCContentDownload wakes the display if needed, then sends content.json URL via MDC.
 func SendMDCContentDownload(ip, contentJSONURL, pin, wifiMAC string) error {
-	return pushSamsungContent(ip, contentJSONURL, pin, wifiMAC, false, 0, nil)
+	return pushSamsungContent(ip, contentJSONURL, pin, wifiMAC, false, 0, nil, SamsungPushOptions{})
 }
 
 // SamsungSleepFunc runs a battery check and sends MDCSleepNow (see Hub.sleepSamsungDisplay).
 type SamsungSleepFunc func(ip, pin string) error
 
-// PushSamsungContent wakes if needed, pushes content, and optionally sleeps after a delay.
-func PushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc) error {
-	return pushSamsungContent(ip, contentJSONURL, pin, wifiMAC, autoSleep, sleepAfterSec, sleepFn)
+// SamsungPushOptions controls wake/sleep behaviour for a content push.
+type SamsungPushOptions struct {
+	// DeepSleepActive: frame is in overnight deep sleep (network standby off); skip remote wake.
+	DeepSleepActive bool
+	// RestoreStandby: re-enable network standby on MDC before delivering content.
+	RestoreStandby bool
 }
 
-func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc) error {
+// PushSamsungContent wakes if needed, pushes content, and optionally sleeps after a delay.
+func PushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc, opts SamsungPushOptions) error {
+	return pushSamsungContent(ip, contentJSONURL, pin, wifiMAC, autoSleep, sleepAfterSec, sleepFn, opts)
+}
+
+func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc, opts SamsungPushOptions) error {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
-	logOutbound("mdc push start ip=%s url=%s wake_mac=%t auto_sleep=%t", ip, contentJSONURL, wifiMAC != "", autoSleep)
-	if err := ensureMDCAwakeForPush(ip, pin, wifiMAC); err != nil {
+	logOutbound("mdc push start ip=%s url=%s wake_mac=%t auto_sleep=%t deep_sleep=%t restore_standby=%t", ip, contentJSONURL, wifiMAC != "", autoSleep, opts.DeepSleepActive, opts.RestoreStandby)
+	if err := ensureMDCAwakeForPush(ip, pin, wifiMAC, opts.DeepSleepActive); err != nil {
 		logOutbound("mdc push wake fail ip=%s err=%v", ip, err)
 		return err
+	}
+	if opts.RestoreStandby {
+		if err := SendMDCNetworkStandby(ip, pin, true); err != nil {
+			logOutbound("mdc restore network standby fail ip=%s err=%v", ip, err)
+			return err
+		}
+		logOutbound("mdc restore network standby ok ip=%s", ip)
 	}
 	err := sendMDCContentURL(ip, pin, contentJSONURL)
 	if err != nil {
@@ -169,12 +185,16 @@ func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool,
 
 // ensureMDCAwakeForPush tries remote wake when needed, then polls MDC until the frame
 // responds (e.g. after the user presses the power button on the display).
-func ensureMDCAwakeForPush(ip, pin, wifiMAC string) error {
+func ensureMDCAwakeForPush(ip, pin, wifiMAC string, deepSleepActive bool) error {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
 	if mdcSessionOK(ip, pin) {
 		return nil
+	}
+	if deepSleepActive {
+		logOutbound("mdc push deep sleep ip=%s — waiting for power button", ip)
+		return waitForMDCAwakeManual(ip, pin, mdcManualWakeTimeout, mdcManualWakePoll)
 	}
 	if wifiMAC != "" {
 		if err := WakeSamsungDisplay(ip, pin, wifiMAC); err == nil {
@@ -399,6 +419,48 @@ func mdcSleepNowPacket(sleep bool) []byte {
 		payload = 1
 	}
 	return mdcCommandPacket(mdcCmdSleepNow, []byte{payload})
+}
+
+func mdcNetworkStandbyPacket(on bool) []byte {
+	payload := byte(0)
+	if on {
+		payload = 1
+	}
+	return mdcCommandPacket(mdcCmdNetworkStandby, []byte{payload})
+}
+
+// SendMDCNetworkStandby sets Samsung network standby (remote wake) on or off.
+func SendMDCNetworkStandby(ip, pin string, on bool) error {
+	if pin == "" {
+		pin = defaultMDCPin
+	}
+	pkt := mdcNetworkStandbyPacket(on)
+	label := "network_standby_off"
+	if on {
+		label = "network_standby_on"
+	}
+	return transactMDCCommand(ip, pin, pkt, label, fmt.Sprintf("on=%t", on))
+}
+
+// EnterSamsungDeepSleep wakes the frame, disables network standby, then sleeps (deep sleep mode).
+func EnterSamsungDeepSleep(ip, pin, wifiMAC string, sleepFn SamsungSleepFunc) error {
+	if pin == "" {
+		pin = defaultMDCPin
+	}
+	if wifiMAC == "" {
+		return fmt.Errorf("wifi MAC required for overnight deep sleep")
+	}
+	logOutbound("mdc overnight deep sleep start ip=%s", ip)
+	if err := WakeSamsungDisplay(ip, pin, wifiMAC); err != nil {
+		return err
+	}
+	if err := SendMDCNetworkStandby(ip, pin, false); err != nil {
+		return err
+	}
+	if sleepFn != nil {
+		return sleepFn(ip, pin)
+	}
+	return SendMDCSleepNow(ip, pin)
 }
 
 func transactMDCCommand(ip, pin string, pkt []byte, label, detail string) error {
