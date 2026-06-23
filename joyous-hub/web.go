@@ -483,25 +483,36 @@ const indexHTML = `<!DOCTYPE html>
   #upload-zone.album-upload.drag{border-color:#8a8069;background:rgba(255,255,255,.45)}
   .album-upload-mono{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:#8a8069}
   .album-grid{
-    display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-start;gap:0;
+    display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:0;
     padding:30px 56px 90px;max-width:1240px;margin:0 auto;
   }
   .album-outer{
-    width:auto;flex:0 0 auto;margin:-14px -12px -14px 0;position:relative;cursor:pointer;
+    width:auto;flex:0 0 auto;margin:-18px -12px -18px 0;position:relative;cursor:pointer;
     transform:translateY(var(--dy,0)) rotate(var(--rot,0deg));transform-origin:center 60%;
     transition:transform .26s cubic-bezier(.2,.8,.3,1.25);z-index:var(--z,1);
   }
-  .album-outer:hover{transform:translateY(-6px) rotate(0deg) scale(1.075);z-index:1000}
+  .album-outer-portrait{margin-top:-34px;margin-bottom:-34px}
+  @media (hover:hover){
+    .album-outer:hover{transform:translateY(-6px) rotate(0deg) scale(1.075);z-index:1000}
+    .album-outer:hover .album-print{
+      box-shadow:0 26px 46px -8px rgba(40,28,12,.42),0 4px 10px rgba(0,0,0,.18);
+    }
+    .album-outer:hover .album-menu{opacity:1;transform:translateY(0);pointer-events:auto}
+  }
+  .album-outer-selected{
+    transform:translateY(-6px) rotate(0deg) scale(1.075)!important;z-index:1000!important;
+  }
+  .album-outer-selected .album-print{
+    box-shadow:0 26px 46px -8px rgba(40,28,12,.42),0 4px 10px rgba(0,0,0,.18);
+  }
+  .album-outer-selected .album-menu{opacity:1;transform:translateY(0);pointer-events:auto}
   .album-print{
     width:fit-content;background:#fdfbf6;padding:12px 12px 0;border-radius:2px;position:relative;
     box-shadow:0 7px 16px -4px rgba(50,38,20,.28),0 1px 3px rgba(0,0,0,.12);
     transition:box-shadow .26s ease;
   }
-  .album-outer:hover .album-print{
-    box-shadow:0 26px 46px -8px rgba(40,28,12,.42),0 4px 10px rgba(0,0,0,.18);
-  }
   .album-img{
-    position:relative;height:148px;width:auto;background:#ece8e0;overflow:hidden;
+    position:relative;width:var(--photo-w);height:var(--photo-h);background:#ece8e0;overflow:hidden;
   }
   .album-img img{width:100%;height:100%;object-fit:contain;display:block}
   .album-menu{
@@ -509,7 +520,6 @@ const indexHTML = `<!DOCTYPE html>
     opacity:0;transform:translateY(8px);pointer-events:none;
     transition:opacity .2s ease,transform .2s ease;
   }
-  .album-outer:hover .album-menu{opacity:1;transform:translateY(0);pointer-events:auto}
   .album-btn{border:0;cursor:pointer;font:600 12px/1 inherit;color:#fff;background:#1f2740;padding:7px 11px;border-radius:6px}
   .album-btn-delete{background:#e1483f;padding:7px 10px;font-size:13px;line-height:1}
   .album-caption{
@@ -518,13 +528,9 @@ const indexHTML = `<!DOCTYPE html>
     max-width:var(--photo-w,100%);box-sizing:border-box;min-width:0;
   }
   .album-empty{text-align:center;color:#6e6450;padding:3rem 1.5rem;font-size:15px;margin:0}
-  @media (hover:none){
-    .album-menu{opacity:1;transform:translateY(0);pointer-events:auto}
-  }
   @media (max-width:640px){
     .album-upload-wrap{padding:20px 16px 8px}
     .album-grid{padding:20px 12px 60px}
-    .album-img{height:120px}
   }
   /* crop modal */
   #crop-modal{display:none;position:fixed;inset:0;background:#000c;z-index:1000;align-items:center;justify-content:center;touch-action:none;overscroll-behavior:none}
@@ -910,21 +916,45 @@ function escHtml(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-function albumPrintAspect(img){
-  const w=img.width|0, h=img.height|0;
-  if(w>0&&h>0) return w+' / '+h;
-  return '4 / 3';
-}
-
-function albumPhotoHeightPx(){
+function albumPhotoBaseHeightPx(){
   return window.matchMedia('(max-width:640px)').matches ? 120 : 148;
 }
 
-function albumPhotoWidthPx(img){
-  const w=img.width|0, h=img.height|0;
-  const photoH=albumPhotoHeightPx();
-  if(w>0&&h>0) return Math.round(photoH*w/h);
-  return Math.round(photoH*4/3);
+function albumPhotoMinDimPx(){
+  return window.matchMedia('(max-width:640px)').matches ? 140 : 168;
+}
+
+function albumPhotoSize(img){
+  const iw=img.width|0, ih=img.height|0;
+  const baseH=albumPhotoBaseHeightPx();
+  const minDim=albumPhotoMinDimPx();
+  let photoW, photoH;
+  if(iw>0&&ih>0){
+    if(ih>iw){
+      // Portrait: wide enough for buttons, height follows the photo.
+      photoW=minDim;
+      photoH=Math.round(photoW*ih/iw);
+    }else{
+      photoH=baseH;
+      photoW=Math.round(photoH*iw/ih);
+      const smallest=Math.min(photoW, photoH);
+      if(smallest<minDim){
+        const scale=minDim/smallest;
+        photoW=Math.round(photoW*scale);
+        photoH=Math.round(photoH*scale);
+      }
+    }
+  }else{
+    photoW=Math.round(baseH*4/3);
+    photoH=baseH;
+    const smallest=Math.min(photoW, photoH);
+    if(smallest<minDim){
+      const scale=minDim/smallest;
+      photoW=Math.round(photoW*scale);
+      photoH=Math.round(photoH*scale);
+    }
+  }
+  return {w:photoW, h:photoH, portrait:iw>0&&ih>iw};
 }
 
 function albumStackVars(i){
@@ -933,21 +963,58 @@ function albumStackVars(i){
   return '--rot:'+rot+'deg;--dy:'+dy+'px;--z:'+(i+1);
 }
 
+let albumSelectedId=null;
+
+function albumTouchSelect(){
+  return window.matchMedia('(hover: none)').matches;
+}
+
+function setAlbumSelected(id){
+  const next=id||null;
+  if(albumSelectedId===next) return;
+  if(albumSelectedId){
+    const prev=document.getElementById('card-'+albumSelectedId);
+    if(prev) prev.classList.remove('album-outer-selected');
+  }
+  albumSelectedId=next;
+  if(albumSelectedId){
+    const el=document.getElementById('card-'+albumSelectedId);
+    if(el) el.classList.add('album-outer-selected');
+  }
+}
+
+function albumGridTap(e){
+  if(!albumTouchSelect()) return;
+  const card=e.target.closest('.album-outer');
+  if(!card||e.target.closest('.album-btn')) return;
+  setAlbumSelected(card.id.slice(5));
+}
+
+function initAlbumGridTap(){
+  const grid=document.getElementById('image-grid');
+  if(!grid||grid.dataset.albumTap) return;
+  grid.dataset.albumTap='1';
+  grid.addEventListener('click',albumGridTap);
+}
+
 async function loadImages(){
   const r=await fetch('/api/images'); images=await r.json();
   images.forEach(img=>{ imageCropsCache[img.id]=img.crops||{}; });
   const el=document.getElementById('image-grid');
-  if(!images||!images.length){el.innerHTML='<p class="album-empty">No images uploaded yet.</p>';return;}
+  if(!images||!images.length){
+    albumSelectedId=null;
+    el.innerHTML='<p class="album-empty">No images uploaded yet.</p>';
+    return;
+  }
   el.innerHTML=images.map((img,i)=>{
     const name=escHtml(img.name);
-    const ar=albumPrintAspect(img);
-    const pw=albumPhotoWidthPx(img);
-    return '<div class="album-outer" id="card-'+img.id+'" style="'+albumStackVars(i)+'">'+
-      '<div class="album-print" style="--photo-w:'+pw+'px">'+
-        '<div class="album-img" style="aspect-ratio:'+ar+'">'+
+    const sz=albumPhotoSize(img);
+    return '<div class="album-outer'+(sz.portrait?' album-outer-portrait':'')+'" id="card-'+img.id+'" style="'+albumStackVars(i)+'">'+
+      '<div class="album-print" style="--photo-w:'+sz.w+'px;--photo-h:'+sz.h+'px">'+
+        '<div class="album-img">'+
           '<img src="/images/'+img.id+'/preview" alt="'+name+'" loading="lazy">'+
           '<div class="album-menu">'+
-            '<button type="button" class="album-btn" onclick="openCrop(\''+img.id+'\')">Frame</button>'+
+            '<button type="button" class="album-btn" onclick="event.stopPropagation();openCrop(\''+img.id+'\')">Frame</button>'+
             '<button type="button" class="album-btn" id="send-btn-'+img.id+'" onclick="sendImageToFrame(event,\''+img.id+'\')">Send</button>'+
             '<button type="button" class="album-btn album-btn-delete" onclick="event.stopPropagation();deleteImg(\''+img.id+'\')">&times;</button>'+
           '</div>'+
@@ -955,6 +1022,15 @@ async function loadImages(){
         '<div class="album-caption" title="'+name+'">'+name+'</div>'+
       '</div></div>';
   }).join('');
+  initAlbumGridTap();
+  if(albumSelectedId){
+    if(images.some(img=>img.id===albumSelectedId)){
+      const el=document.getElementById('card-'+albumSelectedId);
+      if(el) el.classList.add('album-outer-selected');
+    }else{
+      albumSelectedId=null;
+    }
+  }
 }
 
 const sendPicker=document.getElementById('send-picker');
@@ -1064,6 +1140,7 @@ async function sendToFrame(deviceId){
 async function deleteImg(id){
   if(!confirm('Delete image?'))return;
   await fetch('/api/images/'+id,{method:'DELETE'});
+  if(albumSelectedId===id) albumSelectedId=null;
   loadImages();
 }
 
