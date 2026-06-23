@@ -301,6 +301,37 @@ func RenderIndicesToRGB(indices [][]byte, sendPalette [6][3]float64) image.Image
 	return renderIndicesToRGB(indices, sendPalette)
 }
 
+// RemapSamsungSendPNGToDisplay rewrites a P1 send PNG to P2 display colors for hub preview.
+func RemapSamsungSendPNGToDisplay(pngData []byte) ([]byte, error) {
+	img, err := png.Decode(bytes.NewReader(pngData))
+	if err != nil {
+		return nil, err
+	}
+	b := img.Bounds()
+	out := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r8, g8, b8, a8 := img.At(x, y).RGBA()
+			r, g, bv := uint8(r8>>8), uint8(g8>>8), uint8(b8>>8)
+			idx := samsungSendIndexForRGB(r, g, bv)
+			p := PaletteSamsungDisplay[idx]
+			out.SetRGBA(x, y, color.RGBA{
+				R: uint8(p[0]), G: uint8(p[1]), B: uint8(p[2]), A: uint8(a8 >> 8),
+			})
+		}
+	}
+	return encodePNG(out), nil
+}
+
+func samsungSendIndexForRGB(r, g, b uint8) int {
+	for i, c := range PaletteSamsungSend {
+		if uint8(c[0]) == r && uint8(c[1]) == g && uint8(c[2]) == b {
+			return i
+		}
+	}
+	return nearestColor([3]float64{float64(r), float64(g), float64(b)}, PaletteSamsungSend)
+}
+
 // LABEnhance applies LAB chroma boost and highlight rolloff before dithering.
 // strength=1.0 matches observed server processing (chroma ×1.3, highlight rolloff).
 func LABEnhance(img image.Image, strength float64) image.Image {

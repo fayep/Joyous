@@ -14,6 +14,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -251,6 +252,7 @@ func (s *ImageStore) DeleteImage(id string) error {
 
 const thumbW, thumbH = 320, 240
 const previewMaxW, previewMaxH = 1600, 1200
+const inkjoyDisplayPreviewScale = 0.5
 
 // ServeThumb returns a JPEG thumbnail for the image, generating and caching it on first call.
 func (s *ImageStore) ServeThumb(id string) ([]byte, error) {
@@ -498,12 +500,44 @@ func binToDisplayPreviewJPEG(bin []byte, portrait bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	thumb := resizeToFit(img, thumbW, thumbH)
+	preview := scaleInkJoyDisplayPreview(img)
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, thumb, &jpeg.Options{Quality: 82}); err != nil {
+	if err := jpeg.Encode(&buf, preview, &jpeg.Options{Quality: 85}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// scaleInkJoyDisplayPreview halves dithered frame previews with bilinear filtering
+// so 2×2 ink patterns blend toward their local average color.
+func scaleInkJoyDisplayPreview(img image.Image) image.Image {
+	b := img.Bounds()
+	w := int(float64(b.Dx())*inkjoyDisplayPreviewScale + 0.5)
+	h := int(float64(b.Dy())*inkjoyDisplayPreviewScale + 0.5)
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	return resizeBilinear(img, w, h)
+}
+
+// ServeInkJoyFramePreviewHTTP renders the cached send .bin at half resolution for hub UI preview.
+func (s *ImageStore) ServeInkJoyFramePreviewHTTP(w http.ResponseWriter, r *http.Request, id string, portrait bool) {
+	bin, err := s.ServeBinOrientation(id, portrait)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	jpeg, err := binToDisplayPreviewJPEG(bin, portrait)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(jpeg)
 }
 
 // renderHiToImage converts hi-byte grid to an RGBA image using the InkJoy palette.
@@ -525,6 +559,86 @@ func renderHiToImage(hi [][]byte) image.Image {
 		}
 	}
 	return dst
+}
+
+// resizeBilinear scales img using bilinear interpolation (center-sampled).
+func resizeBilinear(img image.Image, w, h int) image.Image {
+	b := img.Bounds()
+	if b.Dx() == w && b.Dy() == h {
+		return img
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	srcW, srcH := b.Dx(), b.Dy()
+	scaleX := float64(srcW) / float64(w)
+	scaleY := float64(srcH) / float64(h)
+	minX, minY := b.Min.X, b.Min.Y
+	maxX, maxY := b.Max.X-1, b.Max.Y-1
+
+	for dy := range h {
+		sy := (float64(dy)+0.5)*scaleY - 0.5 + float64(minY)
+		y0 := int(math.Floor(sy))
+		y1 := y0 + 1
+		fy := sy - float64(y0)
+		if y0 < minY {
+			y0 = minY
+			y1 = minY
+			fy = 0
+		} else if y1 > maxY {
+			y1 = maxY
+			fy = 1
+			if y0 > maxY {
+				y0 = maxY
+				fy = 0
+			}
+		}
+		for dx := range w {
+			sx := (float64(dx)+0.5)*scaleX - 0.5 + float64(minX)
+			x0 := int(math.Floor(sx))
+			x1 := x0 + 1
+			fx := sx - float64(x0)
+			if x0 < minX {
+				x0 = minX
+				x1 = minX
+				fx = 0
+			} else if x1 > maxX {
+				x1 = maxX
+				fx = 1
+				if x0 > maxX {
+					x0 = maxX
+					fx = 0
+				}
+			}
+			dst.Set(dx, dy, bilinearSample(img, x0, y0, x1, y1, fx, fy))
+		}
+	}
+	return dst
+}
+
+func bilinearSample(img image.Image, x0, y0, x1, y1 int, fx, fy float64) color.RGBA {
+	c00 := colorRGBA8(img.At(x0, y0))
+	c10 := colorRGBA8(img.At(x1, y0))
+	c01 := colorRGBA8(img.At(x0, y1))
+	c11 := colorRGBA8(img.At(x1, y1))
+	lerp := func(a, b uint8, t float64) uint8 {
+		return uint8(float64(a)*(1-t) + float64(b)*t + 0.5)
+	}
+	topR := lerp(c00.R, c10.R, fx)
+	topG := lerp(c00.G, c10.G, fx)
+	topB := lerp(c00.B, c10.B, fx)
+	botR := lerp(c01.R, c11.R, fx)
+	botG := lerp(c01.G, c11.G, fx)
+	botB := lerp(c01.B, c11.B, fx)
+	return color.RGBA{
+		R: lerp(topR, botR, fy),
+		G: lerp(topG, botG, fy),
+		B: lerp(topB, botB, fy),
+		A: 255,
+	}
+}
+
+func colorRGBA8(c color.Color) color.RGBA {
+	r, g, b, a := c.RGBA()
+	return color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
 }
 
 // resizeTo scales img to the given dimensions using nearest-neighbour.

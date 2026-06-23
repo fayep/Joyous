@@ -92,6 +92,26 @@ func (s *SamsungBatteryStore) Save() error {
 	return os.WriteFile(s.path, b, 0644)
 }
 
+// MigrateDeviceID moves battery history from an old registry id to a MAC-based id.
+func (s *SamsungBatteryStore) MigrateDeviceID(oldID, newID string) {
+	if s == nil || oldID == "" || newID == "" || oldID == newID {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hist, ok := s.m[oldID]
+	if !ok || len(hist) == 0 {
+		return
+	}
+	existing := s.m[newID]
+	merged := append(append([]SamsungBatterySample(nil), hist...), existing...)
+	if len(merged) > samsungBatteryMaxSamples {
+		merged = merged[len(merged)-samsungBatteryMaxSamples:]
+	}
+	s.m[newID] = merged
+	delete(s.m, oldID)
+}
+
 // Record appends a reading unless it duplicates the latest sample within samsungBatteryMinGap.
 func (s *SamsungBatteryStore) Record(deviceID string, percent int, powerSource, source string) bool {
 	if deviceID == "" {

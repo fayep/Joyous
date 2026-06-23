@@ -19,6 +19,7 @@ const (
 	defaultMDCPin           = "250126"
 	mdcCmdBattery           = 0x1B
 	mdcSubCmdBattery        = 0x73
+	mdcSubCmdWifiMAC        = 0x81
 	mdcCmdSleepNow          = 0x11 // MDC_COMMAND_SLEEP (Samsung E-Paper app)
 	mdcCmdNetworkStandby    = 0xB5 // MDC_COMMAND_NETWORK_STANDBY
 	samsungWakeUDPPort      = 10194
@@ -657,6 +658,58 @@ func QueryMDCBatteryLevel(ip, pin string) (MDCBatteryResult, error) {
 	result.PowerSource = src
 	logOutbound("mdc battery ok ip=%s pct=%d src=%s", ip, pct, src)
 	return result, nil
+}
+
+// QueryMDCWifiMAC opens MDC and queries WiFi MAC (0x1B/0x81).
+func QueryMDCWifiMAC(ip, pin string) (string, error) {
+	s, err := openMDCSession(ip, pin, mdcConnectTimeout)
+	if err != nil {
+		return "", err
+	}
+	defer s.Close()
+	return readMDCWifiMACOnSession(s, ip)
+}
+
+func readMDCWifiMACOnSession(s *mdcSession, ip string) (string, error) {
+	pkt := mdcSubCommandQueryPacket(mdcCmdBattery, mdcSubCmdWifiMAC)
+	logOutbound("mdc wifi mac query ip=%s pkt=% x", ip, pkt)
+	if err := s.transact(pkt); err != nil {
+		return "", err
+	}
+	s.setDeadline(mdcCommandReadTimeout)
+	resp, err := s.readMDCPacket()
+	if err != nil {
+		logOutbound("mdc wifi mac read fail ip=%s err=%v", ip, err)
+		return "", fmt.Errorf("mdc wifi mac read: %w", err)
+	}
+	mac, err := parseMDCWifiMACResponse(resp)
+	if err != nil {
+		logOutbound("mdc wifi mac parse fail ip=%s resp=% x err=%v", ip, resp, err)
+		return "", err
+	}
+	logOutbound("mdc wifi mac ok ip=%s mac=%s", ip, mac)
+	return mac, nil
+}
+
+func parseMDCWifiMACResponse(resp []byte) (string, error) {
+	if len(resp) < 13 {
+		return "", fmt.Errorf("mdc wifi mac response too short: % x", resp)
+	}
+	if resp[0] != 0xAA || resp[1] != 0xFF {
+		return "", fmt.Errorf("unexpected mdc wifi mac header: % x", resp)
+	}
+	switch resp[4] {
+	case 'A':
+	case 'N':
+		return "", fmt.Errorf("mdc wifi mac NAK")
+	default:
+		return "", fmt.Errorf("mdc wifi mac ack 0x%02x", resp[4])
+	}
+	if resp[5] != mdcCmdBattery || resp[6] != mdcSubCmdWifiMAC {
+		return "", fmt.Errorf("mdc wifi mac cmd mismatch: % x", resp[5:7])
+	}
+	payload := resp[7 : len(resp)-1]
+	return parseMDCWifiMACPayload(payload)
 }
 
 func parseMDCBatteryResponse(resp []byte) (int, string, error) {

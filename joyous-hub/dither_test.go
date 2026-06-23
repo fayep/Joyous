@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"image"
 	"image/color"
+	"image/png"
 	"math/rand"
 	"testing"
 )
@@ -191,6 +193,32 @@ func TestStuckiTwoPaletteUsesDisplay(t *testing.T) {
 	s := PaletteSamsungSend[2]
 	if uint8(r>>8) != uint8(s[0]) || uint8(g>>8) != uint8(s[1]) || uint8(b>>8) != uint8(s[2]) {
 		t.Fatalf("P1 output rgb=%d,%d,%d want %v", r>>8, g>>8, b>>8, s)
+	}
+}
+
+func TestRemapSamsungSendPNGToDisplay(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	s := PaletteSamsungSend[2]
+	img.Set(0, 0, color.RGBA{uint8(s[0]), uint8(s[1]), uint8(s[2]), 255})
+	img.Set(1, 0, color.RGBA{255, 255, 255, 255})
+	p1 := encodePNG(img)
+	p2, err := RemapSamsungSendPNGToDisplay(p1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := png.Decode(bytes.NewReader(p2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, g, b, _ := out.At(0, 0).RGBA()
+	d := PaletteSamsungDisplay[2]
+	if uint8(r>>8) != uint8(d[0]) || uint8(g>>8) != uint8(d[1]) || uint8(b>>8) != uint8(d[2]) {
+		t.Fatalf("yellow pixel rgb=%d,%d,%d want P2 %v", r>>8, g>>8, b>>8, d)
+	}
+	r, g, b, _ = out.At(1, 0).RGBA()
+	w := PaletteSamsungDisplay[1]
+	if uint8(r>>8) != uint8(w[0]) || uint8(g>>8) != uint8(w[1]) || uint8(b>>8) != uint8(w[2]) {
+		t.Fatalf("white pixel rgb=%d,%d,%d want P2 %v", r>>8, g>>8, b>>8, w)
 	}
 }
 

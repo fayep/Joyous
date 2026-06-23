@@ -175,6 +175,16 @@ func (s *SamsungStore) PNGInfo(frameID string) (etag string, mod time.Time, ok b
 	return hex.EncodeToString(sum[:8]), fi.ModTime(), true
 }
 
+// samsungStoreMetadataIDs are non-frame JSON files kept in the samsung data dir.
+var samsungStoreMetadataIDs = map[string]struct{}{
+	"aliases": {},
+}
+
+func samsungStoreMetadataID(id string) bool {
+	_, ok := samsungStoreMetadataIDs[id]
+	return ok
+}
+
 // ListFrames returns frame IDs discovered from *.json and *.png in the samsung dir.
 func (s *SamsungStore) ListFrames() ([]string, error) {
 	entries, err := os.ReadDir(s.dir)
@@ -196,7 +206,7 @@ func (s *SamsungStore) ListFrames() ([]string, error) {
 		default:
 			continue
 		}
-		if validFrameID(id) {
+		if validFrameID(id) && !samsungStoreMetadataID(id) {
 			seen[id] = struct{}{}
 		}
 	}
@@ -409,14 +419,18 @@ type samsungStatusResponse struct {
 }
 
 func (h *Hub) noteSamsungFrameSeen(r *http.Request, frameID, action string) {
-	frameIP := frameIDToIP(frameID)
-	if frameIP == "" {
-		return
+	clientIP := requestClientIP(r)
+	frameID = h.resolveSamsungFrameID(frameID)
+	dev := h.samsungDeviceByFrameID(frameID)
+	if dev != nil && dev.IP != "" {
+		if clientIP == dev.IP || frameIDIsMAC(frameID) {
+			h.devices.TouchSamsung(dev.IP, action)
+			return
+		}
 	}
-	if requestClientIP(r) != frameIP {
-		return
+	if ip := frameIDToIP(frameID); ip != "" && clientIP == ip {
+		h.devices.TouchSamsung(ip, action)
 	}
-	h.devices.TouchSamsung(frameIP, action)
 }
 
 func (h *Hub) handleSamsungStatus(w http.ResponseWriter, r *http.Request, frameID string) {
@@ -424,6 +438,7 @@ func (h *Hub) handleSamsungStatus(w http.ResponseWriter, r *http.Request, frameI
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
 	}
+	frameID = h.resolveSamsungFrameID(frameID)
 	cfg, err := h.samsung.LoadConfig(frameID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -459,6 +474,7 @@ func (h *Hub) handleSamsungPNG(w http.ResponseWriter, r *http.Request, frameID s
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
 	}
+	frameID = h.resolveSamsungFrameID(frameID)
 	if h.samsung.IsLocked(frameID) {
 		http.Error(w, "image locked", http.StatusLocked)
 		return
@@ -486,6 +502,7 @@ func (h *Hub) handleSamsungContentJSON(w http.ResponseWriter, r *http.Request, f
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
 	}
+	frameID = h.resolveSamsungFrameID(frameID)
 	if h.samsung.IsLocked(frameID) {
 		http.Error(w, "image locked", http.StatusLocked)
 		return
@@ -506,6 +523,9 @@ func (h *Hub) handleSamsungContentJSON(w http.ResponseWriter, r *http.Request, f
 		fileID = frameID
 	}
 	frameIP := frameIDToIP(frameID)
+	if dev := h.samsungDeviceByFrameID(frameID); dev != nil && dev.IP != "" {
+		frameIP = dev.IP
+	}
 	imageURL := samsungImageURL(addr, frameIP, frameID)
 	manifest := buildContentJSON(imageURL, fileID, len(data))
 	w.Header().Set("Content-Type", "application/json")
@@ -517,11 +537,45 @@ func (h *Hub) handleSamsungImage(w http.ResponseWriter, r *http.Request, frameID
 	h.handleSamsungPNG(w, r, frameID)
 }
 
+func (h *Hub) handleSamsungPreview(w http.ResponseWriter, r *http.Request, frameID string) {
+	if !validFrameID(frameID) {
+		http.Error(w, "invalid frame id", http.StatusBadRequest)
+		return
+	}
+	frameID = h.resolveSamsungFrameID(frameID)
+	if h.samsung.IsLocked(frameID) {
+		http.Error(w, "image locked", http.StatusLocked)
+		return
+	}
+	path := h.samsung.pngPath(frameID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	preview, err := RemapSamsungSendPNGToDisplay(data)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	etag, _, _ := h.samsung.PNGInfo(frameID)
+	previewETag := etag + "-p2"
+	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == `"`+previewETag+`"` {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("ETag", `"`+previewETag+`"`)
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(preview)
+}
+
 func (h *Hub) handleSamsungLock(w http.ResponseWriter, r *http.Request, frameID string) {
 	if !validFrameID(frameID) {
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
 	}
+	frameID = h.resolveSamsungFrameID(frameID)
 	if !h.samsung.IsLocked(frameID) {
 		http.NotFound(w, r)
 		return
@@ -534,6 +588,7 @@ func (h *Hub) handleSamsungConfigPut(w http.ResponseWriter, r *http.Request, fra
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
 	}
+	frameID = h.resolveSamsungFrameID(frameID)
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
@@ -587,15 +642,22 @@ func (h *Hub) handleSamsungConfigPut(w http.ResponseWriter, r *http.Request, fra
 }
 
 func (h *Hub) samsungDeviceByFrameID(frameID string) *Device {
-	ip := frameIDToIP(frameID)
-	if ip == "" {
-		return nil
+	if h.samsungAliases != nil {
+		if c := h.samsungAliases.canonical(frameID); c != frameID {
+			frameID = c
+		}
 	}
-	d, ok := h.devices.Get(samsungID(ip))
-	if !ok {
-		return nil
+	if mac, ok := normalizeSamsungMAC(frameID); ok {
+		if d := h.devices.FindSamsungByMAC(mac); d != nil {
+			return d
+		}
 	}
-	return d
+	if ip := frameIDToIP(frameID); ip != "" {
+		if d := h.devices.FindSamsungByIP(ip); d != nil {
+			return d
+		}
+	}
+	return nil
 }
 
 func (h *Hub) samsungWakeMAC(frameID string, dev *Device) string {
@@ -610,12 +672,26 @@ func (h *Hub) samsungWakeMAC(frameID string, dev *Device) string {
 }
 
 func (h *Hub) syncSamsungWakeMAC(frameID, mac string) {
-	ip := frameIDToIP(frameID)
-	if ip == "" {
+	mac = strings.TrimSpace(mac)
+	dev := h.samsungDeviceByFrameID(frameID)
+	if dev != nil {
+		if h.devices.SetMDCMAC(dev.ID, mac) {
+			_ = h.devices.Save()
+		}
+		if dev.IP != "" {
+			if norm, ok := normalizeSamsungMAC(mac); ok {
+				h.applySamsungMAC(dev.IP, norm)
+			}
+		}
 		return
 	}
-	if h.devices.SetMDCMAC(samsungID(ip), strings.TrimSpace(mac)) {
-		_ = h.devices.Save()
+	if ip := frameIDToIP(frameID); ip != "" {
+		if h.devices.SetMDCMAC(samsungID(ip), mac) {
+			_ = h.devices.Save()
+		}
+		if norm, ok := normalizeSamsungMAC(mac); ok {
+			h.applySamsungMAC(ip, norm)
+		}
 	}
 }
 
@@ -624,7 +700,10 @@ func (h *Hub) recordSamsungBattery(ip string, percent int, powerSource, source s
 	if !h.devices.UpdateSamsungBattery(ip, percent, powerSource) {
 		return
 	}
-	id := samsungID(ip)
+	id := samsungProvisionalRegistryID(ip)
+	if dev := h.devices.FindSamsungByIP(ip); dev != nil {
+		id = samsungDeviceRegistryID(dev)
+	}
 	if h.samsungBattery != nil {
 		h.samsungBattery.Record(id, percent, powerSource, source)
 		_ = h.samsungBattery.Save()
@@ -654,6 +733,7 @@ func (h *Hub) handleSamsungSleep(w http.ResponseWriter, r *http.Request, frameID
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
 	}
+	frameID = h.resolveSamsungFrameID(frameID)
 	dev := h.samsungDeviceByFrameID(frameID)
 	if dev == nil || dev.IP == "" {
 		http.Error(w, "frame not registered on hub", http.StatusNotFound)
@@ -669,6 +749,11 @@ func (h *Hub) handleSamsungSleep(w http.ResponseWriter, r *http.Request, frameID
 
 // pushSamsungFrame MDC-pushes the frame's current PNG (wake → content.json → optional sleep).
 func (h *Hub) pushSamsungFrame(frameID string, dev *Device) error {
+	h.ensureSamsungMAC(dev.IP, dev.MDCPin)
+	frameID = h.resolveSamsungFrameID(frameID)
+	if dev2 := h.samsungDeviceByFrameID(frameID); dev2 != nil {
+		dev = dev2
+	}
 	if _, _, ok := h.samsung.PNGInfo(frameID); !ok {
 		return fmt.Errorf("no image for frame %s", frameID)
 	}
@@ -700,6 +785,7 @@ func (h *Hub) handleSamsungPush(w http.ResponseWriter, r *http.Request, frameID 
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
 	}
+	frameID = h.resolveSamsungFrameID(frameID)
 	dev := h.samsungDeviceByFrameID(frameID)
 	if dev == nil || dev.IP == "" {
 		http.Error(w, "frame not registered on hub", http.StatusNotFound)
@@ -725,6 +811,7 @@ func (h *Hub) handleSamsungWake(w http.ResponseWriter, r *http.Request, frameID 
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
 	}
+	frameID = h.resolveSamsungFrameID(frameID)
 	dev := h.samsungDeviceByFrameID(frameID)
 	if dev == nil || dev.IP == "" {
 		http.Error(w, "frame not registered on hub", http.StatusNotFound)
@@ -747,11 +834,11 @@ func (h *Hub) handleSamsungWake(w http.ResponseWriter, r *http.Request, frameID 
 
 // syncSamsungDeviceName copies the saved Samsung friendly name into the device registry.
 func (h *Hub) syncSamsungDeviceName(frameID, name string) {
-	ip := frameIDToIP(frameID)
-	if ip == "" {
+	dev := h.samsungDeviceByFrameID(frameID)
+	if dev == nil {
 		return
 	}
-	if h.devices.SetName(samsungID(ip), strings.TrimSpace(name)) {
+	if h.devices.SetName(dev.ID, strings.TrimSpace(name)) {
 		_ = h.devices.Save()
 	}
 }
@@ -779,6 +866,7 @@ func (h *Hub) handleSamsungImageUpload(w http.ResponseWriter, r *http.Request, f
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
 	}
+	frameID = h.resolveSamsungFrameID(frameID)
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
 		http.Error(w, "parse form: "+err.Error(), http.StatusBadRequest)
 		return
@@ -795,8 +883,8 @@ func (h *Hub) handleSamsungImageUpload(w http.ResponseWriter, r *http.Request, f
 		return
 	}
 	var dev *Device
-	if ip := frameIDToIP(frameID); ip != "" {
-		dev, _ = h.devices.Get(samsungID(ip))
+	if d := h.samsungDeviceByFrameID(frameID); d != nil {
+		dev = d
 	}
 	profile := h.samsungDisplayProfile(dev, frameID)
 	var storeErr error
@@ -959,6 +1047,7 @@ func (h *Hub) handleSamsungPoll(w http.ResponseWriter, r *http.Request) {
 			res, err := QueryMDCBatteryLevel(ip, pin)
 			if res.SessionOK {
 				h.devices.TouchSamsung(ip, "mdc_session")
+				h.ensureSamsungMAC(ip, pin)
 				mu.Lock()
 				awake++
 				mu.Unlock()

@@ -36,6 +36,10 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("GET /images/{id}/preview", func(w http.ResponseWriter, r *http.Request) {
 		hub.images.ServePreviewHTTP(w, r, r.PathValue("id"))
 	})
+	mux.HandleFunc("GET /images/{id}/frame-preview", func(w http.ResponseWriter, r *http.Request) {
+		portrait := r.URL.Query().Get("portrait") == "1"
+		hub.images.ServeInkJoyFramePreviewHTTP(w, r, r.PathValue("id"), portrait)
+	})
 	mux.HandleFunc("POST /api/images/{id}/crop", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSaveCrop(w, r, r.PathValue("id"))
 	})
@@ -71,6 +75,9 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	})
 	mux.HandleFunc("POST /api/samsung/{frameId}/image", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungImageUpload(w, r, r.PathValue("frameId"))
+	})
+	mux.HandleFunc("GET /api/samsung/{frameId}/preview", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleSamsungPreview(w, r, r.PathValue("frameId"))
 	})
 	mux.HandleFunc("GET /samsung/{frameId}/content.json", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungContentJSON(w, r, r.PathValue("frameId"))

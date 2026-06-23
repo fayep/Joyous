@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -165,6 +166,7 @@ func main() {
 	hub := &Hub{
 		devices:        devices,
 		samsungBattery: samsungBattery,
+		samsungAliases: loadSamsungFrameAliases(filepath.Join(*dataDir, "samsung")),
 		images:         imageStore,
 		displayPreview: displayPreview,
 		samsung:        samsungStore,
@@ -175,6 +177,7 @@ func main() {
 		mqttLog:        mqttLog,
 	}
 	bridges.onExternalPlay = hub.handleExternalPlay
+	hub.migrateSamsungFramesOnStartup()
 
 	mux := http.NewServeMux()
 	registerRoutes(mux, hub)

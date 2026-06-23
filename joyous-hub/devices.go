@@ -73,7 +73,58 @@ func NewDeviceRegistry(dir string) *DeviceRegistry {
 
 func inkjoyID(mac string) string { return mac }
 
-func samsungID(ip string) string { return "samsung:" + ip }
+func samsungID(ip string) string { return samsungProvisionalRegistryID(ip) }
+
+func (r *DeviceRegistry) findSamsungByIPLocked(ip string) *Device {
+	if ip == "" {
+		return nil
+	}
+	if d, ok := r.m[samsungProvisionalRegistryID(ip)]; ok {
+		return d
+	}
+	for _, d := range r.m {
+		if d.Type == DeviceTypeSamsung && d.IP == ip {
+			return d
+		}
+	}
+	return nil
+}
+
+// FindSamsungByIP returns a Samsung device currently at the given IP.
+func (r *DeviceRegistry) FindSamsungByIP(ip string) *Device {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	d := r.findSamsungByIPLocked(ip)
+	if d == nil {
+		return nil
+	}
+	cp := *d
+	return &cp
+}
+
+// FindSamsungByMAC returns a Samsung device with the given WiFi MAC.
+func (r *DeviceRegistry) FindSamsungByMAC(mac string) *Device {
+	norm, ok := normalizeSamsungMAC(mac)
+	if !ok {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if d, ok := r.m[samsungRegistryID(norm)]; ok {
+		cp := *d
+		return &cp
+	}
+	for _, d := range r.m {
+		if d.Type != DeviceTypeSamsung {
+			continue
+		}
+		if m, ok := samsungDeviceMAC(d); ok && m == norm {
+			cp := *d
+			return &cp
+		}
+	}
+	return nil
+}
 
 // SamsungRecentlySeen reports whether the frame contacted the hub within SamsungRecentWindow.
 func SamsungRecentlySeen(lastSeen time.Time) bool {
@@ -237,9 +288,9 @@ func (r *DeviceRegistry) SetPortrait(id string, portrait bool) bool {
 func (r *DeviceRegistry) UpsertSamsung(found SSDPDevice) *Device {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	id := samsungID(found.IP)
-	d, ok := r.m[id]
-	if !ok {
+	d := r.findSamsungByIPLocked(found.IP)
+	if d == nil {
+		id := samsungProvisionalRegistryID(found.IP)
 		d = &Device{
 			ID:   id,
 			Type: DeviceTypeSamsung,
@@ -256,6 +307,132 @@ func (r *DeviceRegistry) UpsertSamsung(found SSDPDevice) *Device {
 	return d
 }
 
+// SetSamsungMAC stores the canonical WiFi MAC on a Samsung device.
+func (r *DeviceRegistry) SetSamsungMAC(id, mac string) bool {
+	norm, ok := normalizeSamsungMAC(mac)
+	if !ok {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok {
+		return false
+	}
+	d.MDCMAC = norm
+	d.MAC = norm
+	return true
+}
+
+// UpdateSamsungIP updates the reachable IP for a Samsung device.
+func (r *DeviceRegistry) UpdateSamsungIP(id, ip string) bool {
+	if ip == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok || d.Type != DeviceTypeSamsung {
+		return false
+	}
+	d.IP = ip
+	return true
+}
+
+// RemoveProvisionalSamsung drops an IP-keyed registry entry without a learned MAC.
+func (r *DeviceRegistry) RemoveProvisionalSamsung(ip string) {
+	if ip == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pid := samsungProvisionalRegistryID(ip)
+	d, ok := r.m[pid]
+	if !ok {
+		return
+	}
+	if _, hasMAC := samsungDeviceMAC(d); !hasMAC {
+		delete(r.m, pid)
+	}
+}
+
+// MigrateSamsungToMAC re-keys a Samsung device from IP-based id to MAC-based id.
+func (r *DeviceRegistry) MigrateSamsungToMAC(oldID, mac string) *Device {
+	norm, ok := normalizeSamsungMAC(mac)
+	if !ok {
+		return nil
+	}
+	newID := samsungRegistryID(norm)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	old := r.m[oldID]
+	if old == nil {
+		if ip := strings.TrimPrefix(oldID, "samsung:"); strings.Contains(ip, ".") {
+			old = r.findSamsungByIPLocked(ip)
+		}
+	}
+	if old == nil {
+		for _, d := range r.m {
+			if d.Type == DeviceTypeSamsung {
+				if m, ok := samsungDeviceMAC(d); ok && m == norm {
+					old = d
+					break
+				}
+			}
+		}
+	}
+	if old == nil {
+		return nil
+	}
+
+	if oldID == newID || old.ID == newID {
+		old.MDCMAC = norm
+		old.MAC = norm
+		return old
+	}
+
+	var merged Device
+	if existing, ok := r.m[newID]; ok {
+		merged = *existing
+	} else {
+		merged = *old
+	}
+	if merged.IP == "" {
+		merged.IP = old.IP
+	}
+	if merged.Name == "" {
+		merged.Name = old.Name
+	}
+	if merged.MDCPin == "" {
+		merged.MDCPin = old.MDCPin
+	}
+	if merged.USN == "" {
+		merged.USN = old.USN
+	}
+	if merged.Location == "" {
+		merged.Location = old.Location
+	}
+	if merged.LastSeen.Before(old.LastSeen) {
+		merged.LastSeen = old.LastSeen
+	}
+	if merged.Battery == 0 && old.Battery > 0 {
+		merged.Battery = old.Battery
+		merged.PowerSource = old.PowerSource
+	}
+	merged.ID = newID
+	merged.Type = DeviceTypeSamsung
+	merged.MDCMAC = norm
+	merged.MAC = norm
+
+	delete(r.m, old.ID)
+	if oldID != old.ID {
+		delete(r.m, oldID)
+	}
+	r.m[newID] = &merged
+	return &merged
+}
+
 // SetMDCMAC stores the WiFi MAC used for Samsung WoL / magic wake.
 func (r *DeviceRegistry) SetMDCMAC(id, mac string) bool {
 	r.mu.Lock()
@@ -264,7 +441,12 @@ func (r *DeviceRegistry) SetMDCMAC(id, mac string) bool {
 	if !ok {
 		return false
 	}
-	d.MDCMAC = strings.TrimSpace(mac)
+	if norm, ok := normalizeSamsungMAC(mac); ok {
+		d.MDCMAC = norm
+		d.MAC = norm
+	} else {
+		d.MDCMAC = strings.TrimSpace(mac)
+	}
 	return true
 }
 
@@ -273,11 +455,10 @@ func (r *DeviceRegistry) NoteSamsungSlept(ip string) bool {
 	if ip == "" {
 		return false
 	}
-	id := samsungID(ip)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	d, ok := r.m[id]
-	if !ok {
+	d := r.findSamsungByIPLocked(ip)
+	if d == nil {
 		return false
 	}
 	d.LastAction = "mdc_sleep"
@@ -289,11 +470,10 @@ func (r *DeviceRegistry) TouchSamsung(ip, action string) bool {
 	if ip == "" {
 		return false
 	}
-	id := samsungID(ip)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	d, ok := r.m[id]
-	if !ok {
+	d := r.findSamsungByIPLocked(ip)
+	if d == nil {
 		return false
 	}
 	d.LastSeen = time.Now()
@@ -311,11 +491,10 @@ func (r *DeviceRegistry) UpdateSamsungBattery(ip string, percent int, powerSourc
 	} else if percent > 100 {
 		percent = 100
 	}
-	id := samsungID(ip)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	d, ok := r.m[id]
-	if !ok {
+	d := r.findSamsungByIPLocked(ip)
+	if d == nil {
 		return false
 	}
 	d.Battery = percent
@@ -420,8 +599,14 @@ func migrateDevice(d *Device) {
 	if d.Type == "" {
 		if strings.HasPrefix(d.ID, "samsung:") {
 			d.Type = DeviceTypeSamsung
+			suffix := strings.TrimPrefix(d.ID, "samsung:")
 			if d.IP == "" {
-				d.IP = strings.TrimPrefix(d.ID, "samsung:")
+				if mac, ok := normalizeSamsungMAC(suffix); ok {
+					d.MDCMAC = mac
+					d.MAC = mac
+				} else if strings.Contains(suffix, ".") {
+					d.IP = suffix
+				}
 			}
 		} else {
 			d.Type = DeviceTypeInkJoy
@@ -442,10 +627,13 @@ func (r *DeviceRegistry) getOrCreateInkJoy(mac string) *Device {
 	return d
 }
 
-// SamsungFrameID returns the samsung store key for a device (IP-based).
+// SamsungFrameID returns the samsung store key for a device (MAC when known, else legacy IP dash form).
 func SamsungFrameID(dev *Device) string {
+	if mac, ok := samsungDeviceMAC(dev); ok {
+		return samsungMACFrameID(mac)
+	}
 	if dev.IP != "" {
-		return strings.ReplaceAll(dev.IP, ".", "-")
+		return ipToLegacyFrameID(dev.IP)
 	}
 	return strings.TrimPrefix(dev.ID, "samsung:")
 }

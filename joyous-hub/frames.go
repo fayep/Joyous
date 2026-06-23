@@ -160,6 +160,9 @@ func (h *Hub) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	log.Printf("discover: ssdp=%d frames=%d", ssdpSeen, len(added))
 	for _, d := range added {
 		logOutbound("discover found type=%s id=%s ip=%s", d.Type, d.ID, d.IP)
+		ip := d.IP
+		pin := d.MDCPin
+		go h.ensureSamsungMAC(ip, pin)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{

@@ -18,6 +18,7 @@ type MQTTPublisher interface {
 type Hub struct {
 	devices        *DeviceRegistry
 	samsungBattery *SamsungBatteryStore
+	samsungAliases *samsungFrameAliases
 	images         *ImageStore
 	displayPreview *DisplayPreviewStore
 	samsung        *SamsungStore
@@ -1065,7 +1066,10 @@ function ijPreviewSpec(d){
 }
 
 function ijPreviewURL(d){
-  if(d.last_image_id) return '/images/'+encodeURIComponent(d.last_image_id)+'/thumb';
+  if(d.last_image_id){
+    const q=d.portrait?'?portrait=1':'';
+    return '/images/'+encodeURIComponent(d.last_image_id)+'/frame-preview'+q;
+  }
   if(d.display_preview_at){
     return '/api/devices/'+encodeURIComponent(d.id)+'/display-preview?t='+encodeURIComponent(d.display_preview_at);
   }
@@ -1308,9 +1312,22 @@ function samsungDeviceForFrame(frameId){
 }
 
 function samsungFrameIDFromDevice(d){
+  if(d.mdc_mac){
+    const m=d.mdc_mac.replace(/[:\-\.]/g,'').toUpperCase();
+    if(/^[0-9A-F]{12}$/.test(m)) return m;
+  }
+  if(d.mac){
+    const m=d.mac.replace(/[:\-\.]/g,'').toUpperCase();
+    if(/^[0-9A-F]{12}$/.test(m)) return m;
+  }
   if(d.ip) return d.ip.replace(/\./g,'-');
   const id=d.id||'';
-  if(id.startsWith('samsung:')) return id.slice(8).replace(/\./g,'-');
+  if(id.startsWith('samsung:')){
+    const suffix=id.slice(8);
+    const m=suffix.replace(/[:\-\.]/g,'').toUpperCase();
+    if(/^[0-9A-F]{12}$/.test(m)) return m;
+    return suffix.replace(/\./g,'-');
+  }
   return id.replace(/\./g,'-');
 }
 
@@ -1504,7 +1521,7 @@ function updateSamsungEditorStatus(d,rec,s){
   const wrap=document.getElementById('samsung-preview-wrap');
   const key=samsungPreviewSpec(s);
   if(key.startsWith('img:')){
-    const url='/samsung/'+encodeURIComponent(samsungCurrentId)+'.png';
+    const url='/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/preview';
     const img=document.getElementById('samsung-preview');
     if(!img||img.parentElement!==wrap){
       wrap.innerHTML='<img class="last-image-preview" id="samsung-preview" src="'+url+'" alt="current image">';
@@ -1906,7 +1923,7 @@ function refreshThumb(id){
 function refreshSamsungPreview(){
   const t=document.getElementById('samsung-preview');
   if(!t||!samsungCurrentId) return;
-  const url='/samsung/'+encodeURIComponent(samsungCurrentId)+'.png';
+  const url='/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/preview';
   t.src='';
   t.src=url;
 }

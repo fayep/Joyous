@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -173,6 +174,9 @@ func TestSamsungListFrames(t *testing.T) {
 	s := NewSamsungStore(dir)
 	s.SaveConfig(SamsungFrameConfig{FrameID: "a", PollIntervalMinutes: 30})
 	s.writePNGLocked("b", testPNG())
+	if err := os.WriteFile(filepath.Join(dir, "aliases.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	frames, err := s.ListFrames()
 	if err != nil {

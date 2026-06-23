@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"image"
 	"image/color"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -104,6 +106,55 @@ func TestFetchDisplayPreview(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "display", mac+".jpg")); err != nil {
 		t.Fatalf("jpeg not saved: %v", err)
+	}
+}
+
+func TestResizeBilinearHalvesCheckerboard(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	black := color.RGBA{0, 0, 0, 255}
+	white := color.RGBA{255, 255, 255, 255}
+	img.Set(0, 0, black)
+	img.Set(1, 0, white)
+	img.Set(0, 1, white)
+	img.Set(1, 1, black)
+
+	out := resizeBilinear(img, 1, 1)
+	r, g, b, _ := out.At(0, 0).RGBA()
+	if uint8(r>>8) != 127 && uint8(r>>8) != 128 {
+		t.Fatalf("expected ~50%% gray, got rgb=%d,%d,%d", r>>8, g>>8, b>>8)
+	}
+	if uint8(g>>8) != uint8(r>>8) || uint8(b>>8) != uint8(r>>8) {
+		t.Fatalf("expected neutral gray, got rgb=%d,%d,%d", r>>8, g>>8, b>>8)
+	}
+}
+
+func TestBinToDisplayPreviewJPEGScale(t *testing.T) {
+	jpegData, err := binToDisplayPreviewJPEG(makeSolidBin(0x02), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(jpegData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantW := int(float64(frameW) * inkjoyDisplayPreviewScale)
+	wantH := int(float64(frameH) * inkjoyDisplayPreviewScale)
+	if img.Bounds().Dx() != wantW || img.Bounds().Dy() != wantH {
+		t.Fatalf("landscape preview %dx%d want %dx%d", img.Bounds().Dx(), img.Bounds().Dy(), wantW, wantH)
+	}
+
+	jpegDataP, err := binToDisplayPreviewJPEG(makeSolidBin(0x02), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imgP, err := jpeg.Decode(bytes.NewReader(jpegDataP))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPW := int(float64(frameH) * inkjoyDisplayPreviewScale)
+	wantPH := int(float64(frameW) * inkjoyDisplayPreviewScale)
+	if imgP.Bounds().Dx() != wantPW || imgP.Bounds().Dy() != wantPH {
+		t.Fatalf("portrait preview %dx%d want %dx%d", imgP.Bounds().Dx(), imgP.Bounds().Dy(), wantPW, wantPH)
 	}
 }
 
