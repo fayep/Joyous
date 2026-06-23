@@ -21,6 +21,11 @@ InkJoy/com.inkjoyframe.domus/
 InkJoy/inkjoy-0.*
 InkJoy/firmware*
 Samsung/epaper-decompiled
+# Generated calibration binaries (see Samsung/gen_color_*.py)
+Samsung/color-guesses*.bin
+Samsung/color-primaries*.bin
+# Python
+__pycache__/
 Reflection/ReflectionFrame_*
 # Logs
 *.log
