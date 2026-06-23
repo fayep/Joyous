@@ -250,7 +250,8 @@ func (s *SamsungStore) StorePNG(frameID string, pngData []byte) error {
 	return s.writePNGLocked(frameID, pngData)
 }
 
-// convertToSamsungPNG applies saved crop metadata (or center-crops) then dithers to PaletteSamsung.
+// convertToSamsungPNG applies saved crop metadata (or center-crops), then two-palette
+// Stucki: dither in PaletteSamsungDisplay (P2) space, write PaletteSamsungSend (P1) RGB.
 func convertToSamsungPNG(raw []byte, profile SamsungDisplayProfile, crop CropRect, hasCrop bool) ([]byte, error) {
 	tw, th := profile.Width, profile.Height
 	if tw <= 0 || th <= 0 {
@@ -266,14 +267,8 @@ func convertToSamsungPNG(raw []byte, profile SamsungDisplayProfile, crop CropRec
 		img = centerCropToSize(img, tw, th)
 	}
 	img = resizeTo(img, tw, th)
-	n := UniqueColors(img)
-	var out image.Image
-	if n <= 6 {
-		out = renderIndicesToRGB(StuckiDither(img, PaletteSamsung), PaletteSamsung)
-	} else {
-		enhanced := LABEnhance(img, 1.0)
-		out = renderIndicesToRGB(StuckiDither(enhanced, PaletteSamsung), PaletteSamsung)
-	}
+	indices := StuckiTwoPalette(img, PaletteSamsungDisplay, UniqueColors(img) > 6)
+	out := RenderIndicesToRGB(indices, PaletteSamsungSend)
 	return encodePNG(out), nil
 }
 
@@ -726,7 +721,7 @@ func (h *Hub) handleSamsungImageUpload(w http.ResponseWriter, r *http.Request, f
 		http.Error(w, "parse form: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	file, _, err := r.FormFile("file")
+	file, header, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, "file field required", http.StatusBadRequest)
 		return
@@ -742,8 +737,14 @@ func (h *Hub) handleSamsungImageUpload(w http.ResponseWriter, r *http.Request, f
 		dev, _ = h.devices.Get(samsungID(ip))
 	}
 	profile := h.samsungDisplayProfile(dev, frameID)
-	if err := h.samsung.StoreUpload(frameID, raw, profile); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	var storeErr error
+	if isFlatCalibrationName(header.Filename) {
+		storeErr = h.samsung.StorePNG(frameID, raw)
+	} else {
+		storeErr = h.samsung.StoreUpload(frameID, raw, profile)
+	}
+	if storeErr != nil {
+		http.Error(w, storeErr.Error(), http.StatusBadRequest)
 		return
 	}
 	etag, _, _ := h.samsung.PNGInfo(frameID)

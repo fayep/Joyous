@@ -1,0 +1,166 @@
+{
+  "photo": "/Users/faye/.cursor/projects/Volumes-CaseSensitive-PhotoFrames/assets/IMG_0103-3e0db3ef-8d08-4c2a-a50a-01c70ee308e2.png",
+  "layout": "2560x1440",
+  "bounds": [
+    52,
+    142,
+    991,
+    645
+  ],
+  "p1_primary": {
+    "black": [
+      0,
+      0,
+      0
+    ],
+    "white": [
+      255,
+      255,
+      255
+    ],
+    "yellow": [
+      255,
+      255,
+      0
+    ],
+    "red": [
+      255,
+      0,
+      0
+    ],
+    "blue": [
+      0,
+      0,
+      255
+    ],
+    "green": [
+      0,
+      255,
+      0
+    ]
+  },
+  "swatches": [
+    {
+      "color": "black",
+      "p1_rgb": [
+        0,
+        0,
+        0
+      ],
+      "p2_rgb": [
+        47,
+        45,
+        58
+      ],
+      "dither": 0.97,
+      "swatch_label": "hub #000"
+    },
+    {
+      "color": "white",
+      "p1_rgb": [
+        255,
+        255,
+        255
+      ],
+      "p2_rgb": [
+        193,
+        203,
+        212
+      ],
+      "dither": 0.54,
+      "swatch_label": "hub #FFF"
+    },
+    {
+      "color": "yellow",
+      "p1_rgb": [
+        255,
+        255,
+        0
+      ],
+      "p2_rgb": [
+        215,
+        201,
+        38
+      ],
+      "dither": 0.63,
+      "swatch_label": "#FFFF00"
+    },
+    {
+      "color": "red",
+      "p1_rgb": [
+        255,
+        0,
+        0
+      ],
+      "p2_rgb": [
+        148,
+        35,
+        31
+      ],
+      "dither": 1.29,
+      "swatch_label": "#FF0000"
+    },
+    {
+      "color": "blue",
+      "p1_rgb": [
+        0,
+        0,
+        255
+      ],
+      "p2_rgb": [
+        5,
+        87,
+        183
+      ],
+      "dither": 0.83,
+      "swatch_label": "#0000FF"
+    },
+    {
+      "color": "green",
+      "p1_rgb": [
+        0,
+        255,
+        0
+      ],
+      "p2_rgb": [
+        65,
+        121,
+        118
+      ],
+      "dither": 0.73,
+      "swatch_label": "#00FF00"
+    }
+  ],
+  "palette_display": [
+    [
+      47,
+      45,
+      58
+    ],
+    [
+      193,
+      203,
+      212
+    ],
+    [
+      215,
+      201,
+      38
+    ],
+    [
+      148,
+      35,
+      31
+    ],
+    [
+      5,
+      87,
+      183
+    ],
+    [
+      65,
+      121,
+      118
+    ]
+  ]
+}

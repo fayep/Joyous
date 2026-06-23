@@ -34,44 +34,51 @@ import math
 import numpy as np
 from PIL import Image
 
-# Palette order: black, white, yellow, red, blue, green
-# InkJoy: muted physical pigment colors (reverse-engineered from ISFR-lite.exe BGR values)
-PALETTE_INKJOY = np.array([
-    [ 30,  30,  30],   # black
-    [149, 162, 165],   # white
-    [166, 165,  17],   # yellow
-    [121,  23,  17],   # red
-    [  0,  76, 136],   # blue
-    [ 46,  91,  65],   # green
+# Two-palette encode: Stucki in P2 (display), output mapped to P1 (send) for Samsung PNG preview.
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "Samsung"))
+from samsung_palettes import (  # noqa: E402
+    PALETTE_INKJOY_DISPLAY,
+    PALETTE_INKJOY_SEND,
+    PALETTE_SAMSUNG_DISPLAY,
+    PALETTE_SAMSUNG_SEND,
+)
+
+# Legacy single-palette (reflection / fallback)
+PALETTE_INKJOY_LEGACY = np.array([
+    [ 30,  30,  30],
+    [149, 162, 165],
+    [166, 165,  17],
+    [121,  23,  17],
+    [  0,  76, 136],
+    [ 46,  91,  65],
 ], dtype=np.float64)
 
-# Samsung EM32DX: sRGB monitor equivalents from official spec sheet
-PALETTE_SAMSUNG = np.array([
-    [  0,   0,   0],   # black  #000000
-    [255, 255, 255],   # white  #FFFFFF
-    [255, 235,   0],   # yellow #FFEB00
-    [154,   0,   0],   # red    #9A0000
-    [  0,  36, 154],   # blue   #00249A
-    [ 20,  85,  16],   # green  #145510
-], dtype=np.float64)
-
-# Reflection Frame: Spectra 6 palette from LUT header (BGR→RGB)
-# Sourced from Spectra6_Render_LUT_Default_v2.bin embedded in com.feibi.frame APK.
-# These are E Ink spec values — display may appear more muted in practice.
 PALETTE_REFLECTION = np.array([
-    [  8,   0,   0],   # black
-    [239, 255, 255],   # white
-    [255, 215,   0],   # yellow
-    [134,   0,   0],   # red
-    [  0,  28, 138],   # blue
-    [ 20,  93,  20],   # green
+    [  8,   0,   0],
+    [239, 255, 255],
+    [255, 215,   0],
+    [134,   0,   0],
+    [  0,  28, 138],
+    [ 20,  93,  20],
 ], dtype=np.float64)
 
-PALETTES = {
-    'inkjoy':     PALETTE_INKJOY,
-    'samsung':    PALETTE_SAMSUNG,
-    'reflection': PALETTE_REFLECTION,
+# P2 — dither in this perceptual/on-panel space (matches joyous-hub StuckiTwoPalette).
+DISPLAY_PALETTES = {
+    "inkjoy": PALETTE_INKJOY_DISPLAY,
+    "samsung": PALETTE_SAMSUNG_DISPLAY,
+    "reflection": PALETTE_REFLECTION,
 }
+
+# P1 — Samsung PNG send values after dither (InkJoy uses hi bytes, not RGB).
+SEND_PALETTES = {
+    "inkjoy": PALETTE_INKJOY_SEND,
+    "samsung": PALETTE_SAMSUNG_SEND,
+}
+
+PALETTES = DISPLAY_PALETTES  # --palette override selects P2 space
 
 HI_BYTES = [0x01, 0x02, 0x03, 0x04, 0x06, 0x07]
 
@@ -304,7 +311,8 @@ def encode(img_path: str, out_path: str, lo_template: str | None = None,
         print(f"Rotated 90° CCW for portrait display → {img.size}")
     img = img.resize((tw, th), Image.LANCZOS)
 
-    palette = PALETTES.get(palette_name, PALETTE_INKJOY)
+    palette = PALETTES.get(palette_name, PALETTE_INKJOY_DISPLAY)
+    send_palette = SEND_PALETTES.get(palette_name)
     if palette_override:
         print(f"Palette override: {palette_override} (resolution from --target {target})")
 
@@ -319,7 +327,7 @@ def encode(img_path: str, out_path: str, lo_template: str | None = None,
         img_np = apply_lut(img_np, lut_path)
         print(f"Applied 3D LUT: {lut_path}")
 
-    print(f"Dithering {tw}×{th} image with Stucki in RGB space...", flush=True)
+    print(f"Dithering {tw}×{th} with Stucki in P2 display space...", flush=True)
     indices = stucki_dither(img_np, palette)
 
     if lo_template:
@@ -338,11 +346,11 @@ def encode(img_path: str, out_path: str, lo_template: str | None = None,
         print(f"Written native PNG to {native_path} ({os.path.getsize(native_path)} bytes)")
 
     if is_png:
-        # Save RGB preview using the palette so the image is actually visible
-        pal_arr = palette.astype(np.uint8)
-        rgb = pal_arr[indices]
+        # Samsung: remap dither indices → P1 send RGB for PNG preview.
+        out_pal = send_palette if send_palette is not None else palette
+        rgb = out_pal.astype(np.uint8)[indices]
         Image.fromarray(rgb, 'RGB').save(out_path, format='PNG')
-        print(f"Written preview PNG to {out_path} ({os.path.getsize(out_path)} bytes)")
+        print(f"Written P1 preview PNG to {out_path} ({os.path.getsize(out_path)} bytes)")
     else:
         hi_flip = hi[::-1, :]
         lo_flip = lo[::-1, :]
@@ -362,7 +370,7 @@ def encode(img_path: str, out_path: str, lo_template: str | None = None,
 
 def compose(dithered_path: str, transition_path: str, out_path: str, target: str = 'inkjoy'):
     """Combine a pre-dithered RGB PNG + greyscale transition PNG into a .bin."""
-    palette = PALETTES.get(target, PALETTE_INKJOY)
+    palette = PALETTES.get(target, PALETTE_INKJOY_DISPLAY)
 
     dithered = np.array(Image.open(dithered_path).convert('RGB'), dtype=np.float64)
     h, w = dithered.shape[:2]

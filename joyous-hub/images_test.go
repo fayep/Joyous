@@ -170,6 +170,46 @@ func TestServeBinFromPNG(t *testing.T) {
 	}
 }
 
+func TestFlatCalibrationNameDetection(t *testing.T) {
+	if !isFlatCalibrationName("color-guesses-1600x1200.png") {
+		t.Error("color-guesses should be flat calibration")
+	}
+	if !isFlatCalibrationName("color-primaries-1600x1200.bin") {
+		t.Error("color-primaries should be flat calibration")
+	}
+	if isFlatCalibrationName("sunset.jpg") {
+		t.Error("normal photo should not be flat calibration")
+	}
+}
+
+func TestColorGuessesPNGUsesFlatSnap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping in short mode")
+	}
+	dir := t.TempDir()
+	store := NewImageStore(dir)
+
+	raw, err := os.ReadFile(filepath.Join("..", "Samsung", "color-guesses-1600x1200.png"))
+	if err != nil {
+		t.Skip("color-guesses PNG not generated:", err)
+	}
+	id, err := store.Store(bytes.NewReader(raw), "color-guesses-1600x1200.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := store.readMeta(id)
+	if err != nil || !meta.FlatRGB {
+		t.Fatalf("FlatRGB meta: %+v err=%v", meta, err)
+	}
+	bin, err := store.ServeBin(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bin) != frameW*frameH*2 {
+		t.Fatalf("bin size %d", len(bin))
+	}
+}
+
 // TestDeleteCrop: DeleteCrop removes a stored crop from metadata.
 func TestDeleteCrop(t *testing.T) {
 	store := NewImageStore(t.TempDir())

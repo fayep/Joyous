@@ -139,6 +139,61 @@ func TestUniqueColorsPhoto(t *testing.T) {
 	}
 }
 
+// TestSamsungTwoPaletteEncode: PNG output uses send palette, not display palette.
+func TestSamsungTwoPaletteEncode(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 4, 1))
+	for i := range 4 {
+		img.SetRGBA(i, 0, color.RGBA{uint8(i * 60), 128, 64, 255})
+	}
+	indices := StuckiDither(img, PaletteSamsungDisplay)
+	out := RenderIndicesToRGB(indices, PaletteSamsungSend)
+	for y := 0; y < out.Bounds().Dy(); y++ {
+		for x := 0; x < out.Bounds().Dx(); x++ {
+			r, g, b, _ := out.At(x, y).RGBA()
+			r8, g8, b8 := uint8(r>>8), uint8(g>>8), uint8(b>>8)
+			found := false
+			for _, c := range PaletteSamsungSend {
+				if r8 == uint8(c[0]) && g8 == uint8(c[1]) && b8 == uint8(c[2]) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("pixel (%d,%d) rgb=%d,%d,%d not in PaletteSamsungSend", x, y, r8, g8, b8)
+			}
+		}
+	}
+	// Panel white (P2) must not appear in PNG when send white is #FFFFFF.
+	r, g, b, _ := out.At(0, 0).RGBA()
+	if uint8(r>>8) == 169 && uint8(g>>8) == 175 {
+		t.Error("output used display palette white (#A9AFAF) instead of send white")
+	}
+	_ = b
+}
+
+// TestStuckiTwoPaletteUsesDisplay: dither targets P2, output uses P1 send RGB.
+func TestStuckiTwoPaletteUsesDisplay(t *testing.T) {
+	// Solid panel-yellow in P2 space should pick yellow ink index.
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	y := PaletteSamsungDisplay[2]
+	img.Set(0, 0, color.RGBA{uint8(y[0]), uint8(y[1]), uint8(y[2]), 255})
+	for x := 1; x < 8; x++ {
+		for yp := 0; yp < 8; yp++ {
+			img.Set(x, yp, color.RGBA{uint8(y[0]), uint8(y[1]), uint8(y[2]), 255})
+		}
+	}
+	indices := StuckiTwoPalette(img, PaletteSamsungDisplay, false)
+	if indices[4][4] != 2 {
+		t.Fatalf("expected yellow index 2, got %d", indices[4][4])
+	}
+	out := RenderIndicesToRGB(indices, PaletteSamsungSend)
+	r, g, b, _ := out.At(4, 4).RGBA()
+	s := PaletteSamsungSend[2]
+	if uint8(r>>8) != uint8(s[0]) || uint8(g>>8) != uint8(s[1]) || uint8(b>>8) != uint8(s[2]) {
+		t.Fatalf("P1 output rgb=%d,%d,%d want %v", r>>8, g>>8, b>>8, s)
+	}
+}
+
 // TestStuckiOutputRange: dither output indices are all in [0,5].
 func TestStuckiOutputRange(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 32, 24))

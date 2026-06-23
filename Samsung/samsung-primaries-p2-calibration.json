@@ -1,0 +1,166 @@
+{
+  "photo": "/Users/faye/.cursor/projects/Volumes-CaseSensitive-PhotoFrames/assets/IMG_0111_2-6a4131e8-6807-4440-8af6-6af6af3621ad.png",
+  "layout": "samsung-primaries",
+  "bounds": [
+    61,
+    128,
+    963,
+    665
+  ],
+  "p1_primary": {
+    "black": [
+      0,
+      0,
+      0
+    ],
+    "white": [
+      255,
+      255,
+      255
+    ],
+    "yellow": [
+      255,
+      255,
+      0
+    ],
+    "red": [
+      255,
+      0,
+      0
+    ],
+    "blue": [
+      0,
+      0,
+      255
+    ],
+    "green": [
+      0,
+      255,
+      0
+    ]
+  },
+  "swatches": [
+    {
+      "color": "black",
+      "p1_rgb": [
+        0,
+        0,
+        0
+      ],
+      "p2_rgb": [
+        35,
+        35,
+        45
+      ],
+      "dither": 0.52,
+      "swatch_label": "#000000"
+    },
+    {
+      "color": "white",
+      "p1_rgb": [
+        255,
+        255,
+        255
+      ],
+      "p2_rgb": [
+        176,
+        186,
+        195
+      ],
+      "dither": 0.38,
+      "swatch_label": "#FFFFFF"
+    },
+    {
+      "color": "yellow",
+      "p1_rgb": [
+        255,
+        255,
+        0
+      ],
+      "p2_rgb": [
+        195,
+        183,
+        12
+      ],
+      "dither": 0.53,
+      "swatch_label": "#FFFF00"
+    },
+    {
+      "color": "red",
+      "p1_rgb": [
+        255,
+        0,
+        0
+      ],
+      "p2_rgb": [
+        121,
+        6,
+        0
+      ],
+      "dither": 0.57,
+      "swatch_label": "#FF0000"
+    },
+    {
+      "color": "blue",
+      "p1_rgb": [
+        0,
+        0,
+        255
+      ],
+      "p2_rgb": [
+        0,
+        74,
+        159
+      ],
+      "dither": 0.2,
+      "swatch_label": "#0000FF"
+    },
+    {
+      "color": "green",
+      "p1_rgb": [
+        0,
+        255,
+        0
+      ],
+      "p2_rgb": [
+        49,
+        104,
+        99
+      ],
+      "dither": 0.53,
+      "swatch_label": "#00FF00"
+    }
+  ],
+  "palette_display": [
+    [
+      35,
+      35,
+      45
+    ],
+    [
+      176,
+      186,
+      195
+    ],
+    [
+      195,
+      183,
+      12
+    ],
+    [
+      121,
+      6,
+      0
+    ],
+    [
+      0,
+      74,
+      159
+    ],
+    [
+      49,
+      104,
+      99
+    ]
+  ]
+}

@@ -8,7 +8,7 @@ import (
 	"bytes"
 )
 
-// PaletteInkJoy holds the 6 InkJoy ink colors in RGB float64 (reverse-engineered from ISFR-lite).
+// PaletteInkJoy holds legacy physical ink RGB (use PaletteInkJoyDisplay for dither).
 var PaletteInkJoy = [6][3]float64{
 	{30, 30, 30},
 	{149, 162, 165},
@@ -18,15 +18,48 @@ var PaletteInkJoy = [6][3]float64{
 	{46, 91, 65},
 }
 
-// PaletteSamsung holds sRGB monitor equivalents for Samsung EM32DX (2560×1440).
-var PaletteSamsung = [6][3]float64{
+// PaletteInkJoySend (P1) — pure sRGB primaries (verify on frame).
+var PaletteInkJoySend = [6][3]float64{
 	{0, 0, 0},
 	{255, 255, 255},
-	{255, 235, 0},
-	{154, 0, 0},
-	{0, 36, 154},
-	{20, 85, 16},
+	{255, 255, 0},
+	{255, 0, 0},
+	{0, 0, 255},
+	{0, 255, 0},
 }
+
+// PaletteInkJoyDisplay (P2) — on-panel Stucki targets (IMG_0110 primaries, left sample).
+var PaletteInkJoyDisplay = [6][3]float64{
+	{71, 38, 47},
+	{214, 215, 201},
+	{222, 205, 0},
+	{164, 15, 5},
+	{30, 106, 188},
+	{104, 150, 102},
+}
+
+// PaletteSamsungSend (P1) — pure sRGB primaries written to PNG.
+var PaletteSamsungSend = [6][3]float64{
+	{0, 0, 0},         // #000000 black
+	{255, 255, 255},   // #FFFFFF white
+	{255, 255, 0},     // #FFFF00 yellow
+	{255, 0, 0},       // #FF0000 red
+	{0, 0, 255},       // #0000FF blue
+	{0, 255, 0},       // #00FF00 green
+}
+
+// PaletteSamsungDisplay (P2) — on-panel Stucki targets (IMG_0111 primaries, right sample).
+var PaletteSamsungDisplay = [6][3]float64{
+	{35, 35, 45},
+	{176, 186, 195},
+	{195, 183, 12},
+	{121, 6, 0},
+	{0, 74, 159},
+	{49, 104, 99},
+}
+
+// PaletteSamsung is the send palette (alias kept for callers that only need P1).
+var PaletteSamsung = PaletteSamsungSend
 
 const samsungW, samsungH = 2560, 1440
 
@@ -251,6 +284,21 @@ func StuckiDither(img image.Image, palette [6][3]float64) [][]byte {
 		}
 	}
 	return out
+}
+
+// StuckiTwoPalette runs Stucki error diffusion in displayPalette (P2) space.
+// Map indices to send values with RenderIndicesToRGB (Samsung P1) or indicesToHi (InkJoy).
+func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, labEnhance bool) [][]byte {
+	src := img
+	if labEnhance {
+		src = LABEnhance(img, 1.0)
+	}
+	return StuckiDither(src, displayPalette)
+}
+
+// RenderIndicesToRGB writes sendPalette (P1) RGB for each ink index.
+func RenderIndicesToRGB(indices [][]byte, sendPalette [6][3]float64) image.Image {
+	return renderIndicesToRGB(indices, sendPalette)
 }
 
 // LABEnhance applies LAB chroma boost and highlight rolloff before dithering.

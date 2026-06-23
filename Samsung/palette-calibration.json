@@ -1,0 +1,158 @@
+{
+  "photo": "/Users/faye/.cursor/projects/Volumes-CaseSensitive-PhotoFrames/assets/IMG_0101-38ce4909-f764-47e9-82e4-f6f4ead8bcc5.png",
+  "photo_size": [
+    1024,
+    549
+  ],
+  "calibration_row": "Samsung (hub)",
+  "layout": "cropped",
+  "patch_frac": 0.045,
+  "swatches": [
+    {
+      "color": "black",
+      "target_rgb": [
+        0,
+        0,
+        0
+      ],
+      "measured_rgb": [
+        38,
+        39,
+        57
+      ],
+      "delta_e": 78.83,
+      "compensated_rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "color": "white",
+      "target_rgb": [
+        255,
+        255,
+        255
+      ],
+      "measured_rgb": [
+        208,
+        216,
+        218
+      ],
+      "delta_e": 71.41,
+      "compensated_rgb": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "color": "yellow",
+      "target_rgb": [
+        255,
+        235,
+        0
+      ],
+      "measured_rgb": [
+        226,
+        198,
+        4
+      ],
+      "delta_e": 47.18,
+      "compensated_rgb": [
+        255,
+        255,
+        0
+      ]
+    },
+    {
+      "color": "red",
+      "target_rgb": [
+        154,
+        0,
+        0
+      ],
+      "measured_rgb": [
+        143,
+        42,
+        22
+      ],
+      "delta_e": 48.67,
+      "compensated_rgb": [
+        166,
+        0,
+        0
+      ]
+    },
+    {
+      "color": "blue",
+      "target_rgb": [
+        0,
+        36,
+        154
+      ],
+      "measured_rgb": [
+        22,
+        75,
+        144
+      ],
+      "delta_e": 45.88,
+      "compensated_rgb": [
+        0,
+        17,
+        165
+      ]
+    },
+    {
+      "color": "green",
+      "target_rgb": [
+        20,
+        85,
+        16
+      ],
+      "measured_rgb": [
+        55,
+        70,
+        65
+      ],
+      "delta_e": 62.06,
+      "compensated_rgb": [
+        7,
+        103,
+        4
+      ]
+    }
+  ],
+  "palette_samsung_compensated": [
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      255,
+      255,
+      255
+    ],
+    [
+      255,
+      255,
+      0
+    ],
+    [
+      166,
+      0,
+      0
+    ],
+    [
+      0,
+      17,
+      165
+    ],
+    [
+      7,
+      103,
+      4
+    ]
+  ]
+}

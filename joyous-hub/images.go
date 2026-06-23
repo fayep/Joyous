@@ -35,10 +35,11 @@ type CropRect struct {
 
 // ImageMeta holds persisted metadata for a stored image.
 type ImageMeta struct {
-	ID    string               `json:"id"`
-	Name  string               `json:"name"`
-	Size  int64                `json:"size"`
-	Crops map[string]CropRect  `json:"crops,omitempty"`
+	ID      string              `json:"id"`
+	Name    string              `json:"name"`
+	Size    int64               `json:"size"`
+	Crops   map[string]CropRect `json:"crops,omitempty"`
+	FlatRGB bool                `json:"flat_rgb,omitempty"` // calibration PNG: per-pixel snap, no Stucki/LAB
 }
 
 // ImageStore manages raw image storage and a bounded converted-bin cache.
@@ -79,7 +80,7 @@ func (s *ImageStore) Store(r io.Reader, name string) (string, error) {
 	if err := os.WriteFile(s.rawPath(id), data, 0644); err != nil {
 		return "", err
 	}
-	meta := ImageMeta{ID: id, Name: name, Size: int64(len(data))}
+	meta := ImageMeta{ID: id, Name: name, Size: int64(len(data)), FlatRGB: isFlatCalibrationName(name)}
 	b, _ := json.Marshal(meta)
 	os.WriteFile(s.metaPath(id), b, 0644)
 	return id, nil
@@ -577,7 +578,12 @@ func (s *ImageStore) convertToBinOrientation(id string, portrait bool) ([]byte, 
 	if portrait {
 		cropKey = "3:4"
 	}
-	return convertImageWithCrop(raw, meta.Crops[cropKey], portrait)
+	return convertImageWithCrop(raw, meta.Crops[cropKey], portrait, meta.FlatRGB)
+}
+
+func isFlatCalibrationName(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "color-guesses") || strings.Contains(lower, "color-primaries")
 }
 
 func convertBin(raw []byte) ([]byte, error) {
@@ -587,7 +593,7 @@ func convertBin(raw []byte) ([]byte, error) {
 	return raw, nil
 }
 
-func convertImageWithCrop(raw []byte, crop CropRect, portrait bool) ([]byte, error) {
+func convertImageWithCrop(raw []byte, crop CropRect, portrait bool, flatRGB bool) ([]byte, error) {
 	img, err := decodeAnyImage(raw)
 	if err != nil {
 		return nil, err
@@ -603,13 +609,12 @@ func convertImageWithCrop(raw []byte, crop CropRect, portrait bool) ([]byte, err
 	} else {
 		img = resizeToFrame(img)
 	}
-	n := UniqueColors(img)
 	var hi, lo [][]byte
-	if n <= 6 {
+	if flatRGB {
+		// Calibration swatches: flat per-pixel snap (no LAB/Stucki). Matches pre-built .bin.
 		hi, lo = snapToPalette(img)
 	} else {
-		enhanced := LABEnhance(img, 1.0)
-		indices := StuckiDither(enhanced, PaletteInkJoy)
+		indices := StuckiTwoPalette(img, PaletteInkJoyDisplay, UniqueColors(img) > 6)
 		hi = indicesToHi(indices)
 		lo = randomWipeGrid()
 	}
@@ -711,7 +716,7 @@ func snapToPalette(img image.Image) (hi, lo [][]byte) {
 		hi[y] = make([]byte, w)
 		for x := range w {
 			r, g, bv, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
-			idx := nearestColor([3]float64{float64(r >> 8), float64(g >> 8), float64(bv >> 8)}, PaletteInkJoy)
+			idx := nearestColor([3]float64{float64(r >> 8), float64(g >> 8), float64(bv >> 8)}, PaletteInkJoySend)
 			hi[y][x] = hiBytes[idx]
 		}
 		lo[y] = wipe[y]
