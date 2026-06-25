@@ -39,6 +39,8 @@ type SamsungFrameConfig struct {
 	OvernightDeepSleep    *bool  `json:"overnight_deep_sleep,omitempty"`
 	DeepSleepActive       bool   `json:"deep_sleep_active,omitempty"`
 	OvernightDeepSleepAt  time.Time `json:"overnight_deep_sleep_at,omitempty"`
+	DailyRefreshTime      string `json:"daily_refresh_time,omitempty"` // HH:MM on frame
+	MorningStandbyRestoredAt time.Time `json:"morning_standby_restored_at,omitempty"`
 }
 
 // SamsungStore manages Samsung EM32DX frame images and config on disk.
@@ -416,6 +418,7 @@ type samsungStatusResponse struct {
 	SleepAfterPushSeconds int       `json:"sleep_after_push_seconds"`
 	OvernightDeepSleep    bool      `json:"overnight_deep_sleep"`
 	DeepSleepActive       bool      `json:"deep_sleep_active"`
+	DailyRefreshTime      string    `json:"daily_refresh_time,omitempty"`
 }
 
 func (h *Hub) noteSamsungFrameSeen(r *http.Request, frameID, action string) {
@@ -461,6 +464,7 @@ func (h *Hub) handleSamsungStatus(w http.ResponseWriter, r *http.Request, frameI
 		SleepAfterPushSeconds: samsungSleepAfterPushSec(cfg),
 		OvernightDeepSleep:    samsungOvernightDeepSleepEnabled(cfg),
 		DeepSleepActive:       cfg.DeepSleepActive,
+		DailyRefreshTime:      cfg.DailyRefreshTime,
 	}
 	if hasImage {
 		resp.Modified = mod
@@ -625,6 +629,12 @@ func (h *Hub) handleSamsungConfigPut(w http.ResponseWriter, r *http.Request, fra
 	}
 	if _, has := raw["overnight_deep_sleep_at"]; !has {
 		body.OvernightDeepSleepAt = existing.OvernightDeepSleepAt
+	}
+	if _, has := raw["daily_refresh_time"]; !has {
+		body.DailyRefreshTime = existing.DailyRefreshTime
+	}
+	if _, has := raw["morning_standby_restored_at"]; !has {
+		body.MorningStandbyRestoredAt = existing.MorningStandbyRestoredAt
 	}
 	body.FrameID = frameID
 	if body.PollIntervalMinutes <= 0 {

@@ -73,6 +73,15 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("PUT /api/samsung/{frameId}/config", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungConfigPut(w, r, r.PathValue("frameId"))
 	})
+	mux.HandleFunc("GET /api/samsung/{frameId}/daily-refresh", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleSamsungDailyRefreshGet(w, r, r.PathValue("frameId"))
+	})
+	mux.HandleFunc("PUT /api/samsung/{frameId}/daily-refresh", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleSamsungDailyRefreshPut(w, r, r.PathValue("frameId"))
+	})
+	mux.HandleFunc("POST /api/samsung/{frameId}/daily-refresh/sync-inactive", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleSamsungDailyRefreshSyncInactive(w, r, r.PathValue("frameId"))
+	})
 	mux.HandleFunc("POST /api/samsung/{frameId}/image", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungImageUpload(w, r, r.PathValue("frameId"))
 	})

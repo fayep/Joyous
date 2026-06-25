@@ -750,6 +750,9 @@ const indexHTML = `<!DOCTYPE html>
             <label style="font-size:.9rem">Poll interval (min)<br><input type="number" id="samsung-poll" min="1" value="60" style="width:5rem;padding:.3rem;margin-top:.25rem"></label>
             <label style="font-size:.9rem">Inactive begin<br><input type="time" id="samsung-inactive-begin" style="padding:.3rem;margin-top:.25rem"></label>
             <label style="font-size:.9rem">Inactive end<br><input type="time" id="samsung-inactive-end" style="padding:.3rem;margin-top:.25rem"></label>
+            <label style="font-size:.9rem">Daily refresh<br><input type="time" id="samsung-daily-refresh" style="padding:.3rem;margin-top:.25rem" title="Frame e-ink refresh time"></label>
+            <button type="button" class="btn btn-sm" id="samsung-daily-refresh-sync" onclick="samsungSyncDailyRefresh()" title="Set frame daily refresh to inactive end">Sync to inactive end</button>
+            <span id="samsung-daily-refresh-status" style="font-size:.8rem;color:#666;align-self:end;padding-bottom:.3rem"></span>
             <label style="display:flex;align-items:center;gap:.4rem;font-size:.9rem;cursor:pointer;padding-bottom:.3rem">
               <input type="checkbox" id="samsung-overnight-deep-sleep" checked>
               Overnight deep sleep
@@ -769,6 +772,7 @@ const indexHTML = `<!DOCTYPE html>
           </div>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">The frame should stay <strong>asleep</strong> between pushes. On send: wake → deliver image → sleep (after delay). WiFi MAC required for remote wake. Moon/power are for manual override only.</p>
           <p style="font-size:.8rem;color:#888;margin:.75rem 0 0"><strong>Overnight deep sleep:</strong> at inactive begin the hub wakes the frame, turns off network standby, and sleeps it (lower battery drain). A send during inactive hours needs a <strong>3s power-button wake</strong> and returns to deep sleep after; outside those hours the hub restores network standby for remote wake.</p>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0"><strong>Daily refresh:</strong> the frame wakes briefly for its scheduled e-ink refresh. Sync to <em>inactive end</em> so the hub can reconnect and turn network standby back on each morning.</p>
         </div>
         <div class="card" style="border:1px solid #f5c6cb">
           <div class="section-label" style="margin-top:0;color:#dc3545">Danger zone</div>
@@ -1669,6 +1673,7 @@ async function openSamsungFrame(frameId){
     return;
   }
   renderSamsungEditor(d,samsungStatusCache,samsungFrameRecord(frameId));
+  samsungLoadDailyRefresh();
 }
 
 function renderSamsungEditor(d,s,rec){
@@ -1678,6 +1683,10 @@ function renderSamsungEditor(d,s,rec){
   document.getElementById('samsung-poll').value=(s&&s.poll_interval_minutes)||60;
   document.getElementById('samsung-inactive-begin').value=(s&&s.inactive_begin)||'';
   document.getElementById('samsung-inactive-end').value=(s&&s.inactive_end)||'';
+  const dr=document.getElementById('samsung-daily-refresh');
+  if(dr) dr.value=(s&&s.daily_refresh_time)||'';
+  const drs=document.getElementById('samsung-daily-refresh-status');
+  if(drs) drs.textContent='';
   const ods=document.getElementById('samsung-overnight-deep-sleep');
   if(ods) ods.checked=(s&&s.overnight_deep_sleep!==false);
   const fmt=(s&&s.crop_format)||'16:9';
@@ -1720,6 +1729,7 @@ function updateSamsungEditorStatus(d,rec,s){
     (history&&history.length?('<span class="label">History</span><span>'+samsungBatteryHistoryHTML(history)+'</span>'):'')+
     '<span class="label">Crop</span><span>'+((s&&s.crop_format)||(rec&&rec.crop_format)||'—')+((s&&s.display_width)?(' · '+s.display_width+'×'+s.display_height):'')+'</span>'+
     '<span class="label">Poll</span><span>'+((s&&s.poll_interval_minutes)?(s.poll_interval_minutes+' min'):((rec&&rec.poll_interval_minutes)?(rec.poll_interval_minutes+' min'):'—'))+'</span>'+
+    (s&&s.daily_refresh_time?('<span class="label">Daily refresh</span><span>'+s.daily_refresh_time+'</span>'):'')+
     '<span class="label">Last seen</span><span>'+ago+'</span>'+
     '<span class="label">Last action</span><span>'+lastAction+'</span>';
   const wrap=document.getElementById('samsung-preview-wrap');
@@ -1826,6 +1836,41 @@ async function saveSamsungConfig(){
   if(!r.ok){alert('Save failed: '+(await r.text()));return;}
   await reloadSamsungFrame();
   await loadDevicesInner();
+}
+
+async function samsungLoadDailyRefresh(){
+  if(!samsungCurrentId) return;
+  const st=document.getElementById('samsung-daily-refresh-status');
+  try{
+    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/daily-refresh');
+    if(!r.ok) throw new Error(await r.text());
+    const j=await r.json();
+    const dr=document.getElementById('samsung-daily-refresh');
+    if(dr&&j.daily_refresh_time) dr.value=j.daily_refresh_time;
+    if(st) st.textContent=j.query_error?('query: '+j.query_error):'';
+    if(samsungStatusCache) samsungStatusCache.daily_refresh_time=j.daily_refresh_time||'';
+  }catch(e){
+    if(st) st.textContent='load failed';
+  }
+}
+
+async function samsungSyncDailyRefresh(){
+  if(!samsungCurrentId) return;
+  const st=document.getElementById('samsung-daily-refresh-status');
+  if(st) st.textContent='Syncing…';
+  try{
+    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/daily-refresh/sync-inactive',{method:'POST'});
+    if(!r.ok) throw new Error(await r.text());
+    const j=await r.json();
+    const dr=document.getElementById('samsung-daily-refresh');
+    if(dr&&j.daily_refresh_time) dr.value=j.daily_refresh_time;
+    if(st) st.textContent='Synced to inactive end';
+    if(samsungStatusCache) samsungStatusCache.daily_refresh_time=j.daily_refresh_time||'';
+    await reloadSamsungFrame();
+  }catch(e){
+    alert('Sync failed: '+e.message);
+    if(st) st.textContent='';
+  }
 }
 
 async function samsungWake(){

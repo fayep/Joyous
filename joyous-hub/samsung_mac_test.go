@@ -122,3 +122,67 @@ func TestMigrateSamsungRegistryToMAC(t *testing.T) {
 		t.Fatalf("expected 1 device, got %d", len(devs))
 	}
 }
+
+func TestReconcileSamsungRegistryMACBatteryHistory(t *testing.T) {
+	dir := t.TempDir()
+	h := &Hub{
+		devices:        NewDeviceRegistry(dir),
+		samsungBattery: NewSamsungBatteryStore(dir),
+		samsung:        NewSamsungStore(dir),
+		samsungAliases: loadSamsungFrameAliases(dir),
+	}
+	d := h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	if !h.devices.SetSamsungMAC(d.ID, "B0F2F657D5CD") {
+		t.Fatal("SetSamsungMAC")
+	}
+	macRegistryID := "samsung:B0F2F657D5CD"
+
+	h.samsungBattery.Record(macRegistryID, 92, "usb", samsungBatteryPreSleep)
+	_ = h.samsungBattery.Save()
+
+	if sum := h.samsungBatterySummary(d.ID, 5); sum.Samples != 0 {
+		t.Fatalf("legacy id samples before reconcile: %d", sum.Samples)
+	}
+
+	dev, ok := h.devices.Get(d.ID)
+	if !ok {
+		t.Fatal("device not found")
+	}
+	if !h.reconcileSamsungRegistryMAC(*dev) {
+		t.Fatal("expected reconcile")
+	}
+	merged, ok := h.devices.Get(macRegistryID)
+	if !ok {
+		t.Fatal("expected MAC registry id")
+	}
+	if sum := h.samsungBatterySummary(merged.ID, 5); sum.Samples != 1 {
+		t.Fatalf("samples after reconcile: %d want 1", sum.Samples)
+	}
+}
+
+func TestStartupMigrationReconcilesBatteryHistory(t *testing.T) {
+	dir := t.TempDir()
+	h := &Hub{
+		devices:        NewDeviceRegistry(dir),
+		samsungBattery: NewSamsungBatteryStore(dir),
+		samsung:        NewSamsungStore(dir),
+		samsungAliases: loadSamsungFrameAliases(dir),
+	}
+	d := h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	h.devices.SetSamsungMAC(d.ID, "B0F2F657D5CD")
+
+	h.samsungBattery.Record(d.ID, 88, "usb", samsungBatteryPreSleep)
+	h.samsungBattery.Record(d.ID, 85, "usb", samsungBatteryPreSleep)
+	_ = h.samsungBattery.Save()
+
+	h.migrateSamsungFramesOnStartup()
+
+	macRegistryID := "samsung:B0F2F657D5CD"
+	sum := h.samsungBatterySummary(macRegistryID, 5)
+	if sum.Samples != 2 {
+		t.Fatalf("samples: got %d want 2", sum.Samples)
+	}
+	if sum := h.samsungBatterySummary(d.ID, 5); sum.Samples != 0 {
+		t.Fatalf("legacy key still has %d samples", sum.Samples)
+	}
+}

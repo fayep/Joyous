@@ -98,6 +98,10 @@ func (h *Hub) syncSamsungDeepSleepDevice(frameID string, active bool) {
 }
 
 func (h *Hub) runSamsungOvernightDeepSleep(frameID string) {
+	cfg, err := h.samsung.LoadConfig(frameID)
+	if err == nil && !shouldTriggerOvernightDeepSleep(cfg, time.Now()) {
+		return
+	}
 	dev := h.samsungDeviceByFrameID(frameID)
 	if dev == nil || dev.IP == "" {
 		return
@@ -107,7 +111,7 @@ func (h *Hub) runSamsungOvernightDeepSleep(frameID string) {
 		log.Printf("samsung overnight: skip %s — wifi MAC required", frameID)
 		return
 	}
-	err := EnterSamsungDeepSleep(dev.IP, dev.MDCPin, mac, h.sleepSamsungDeepDisplay)
+	err = EnterSamsungDeepSleep(dev.IP, dev.MDCPin, mac, h.sleepSamsungDeepDisplay)
 	if err != nil {
 		log.Printf("samsung overnight deep sleep %s: %v", frameID, err)
 		logOutbound("mdc overnight deep sleep fail ip=%s err=%v", dev.IP, err)
@@ -147,6 +151,9 @@ func (h *Hub) checkSamsungOvernightSchedules() {
 		if shouldTriggerOvernightDeepSleep(cfg, now) {
 			h.runSamsungOvernightDeepSleep(frameID)
 		}
+		if shouldTriggerMorningStandbyRestore(cfg, now) {
+			h.runSamsungMorningStandbyRestore(frameID)
+		}
 	}
 	for _, frameID := range mustSamsungFrameIDs(h) {
 		if _, ok := seen[frameID]; ok {
@@ -158,6 +165,9 @@ func (h *Hub) checkSamsungOvernightSchedules() {
 		}
 		if shouldTriggerOvernightDeepSleep(cfg, now) {
 			h.runSamsungOvernightDeepSleep(frameID)
+		}
+		if shouldTriggerMorningStandbyRestore(cfg, now) {
+			h.runSamsungMorningStandbyRestore(frameID)
 		}
 	}
 }

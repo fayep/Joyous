@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 var (
@@ -116,6 +115,41 @@ func (s *SamsungStore) migrateFrameFiles(oldID, newID string) error {
 	return nil
 }
 
+func (h *Hub) migrateSamsungBatteryRegistryIDs(macRegistryID string, oldIDs ...string) {
+	if h == nil || h.samsungBattery == nil || macRegistryID == "" {
+		return
+	}
+	for _, oldID := range oldIDs {
+		if oldID != "" && oldID != macRegistryID {
+			h.samsungBattery.MigrateDeviceID(oldID, macRegistryID)
+		}
+	}
+}
+
+// reconcileSamsungRegistryMAC re-keys a Samsung device and its battery history to the MAC-based registry id.
+func (h *Hub) reconcileSamsungRegistryMAC(dev Device) bool {
+	if dev.Type != DeviceTypeSamsung {
+		return false
+	}
+	mac, ok := samsungDeviceMAC(&dev)
+	if !ok {
+		return false
+	}
+	macRegistryID := samsungRegistryID(mac)
+	if macRegistryID == "" || dev.ID == macRegistryID {
+		return false
+	}
+	oldID := dev.ID
+	merged := h.devices.MigrateSamsungToMAC(oldID, mac)
+	if merged == nil {
+		return false
+	}
+	h.migrateSamsungBatteryRegistryIDs(macRegistryID, oldID, samsungProvisionalRegistryID(dev.IP), samsungProvisionalRegistryID(merged.IP))
+	_ = h.samsungBattery.Save()
+	_ = h.devices.Save()
+	return true
+}
+
 func (h *Hub) migrateSamsungFrameStore(oldFrameID, macFrameID, mac string) error {
 	if oldFrameID == "" || macFrameID == "" || oldFrameID == macFrameID {
 		return nil
@@ -156,8 +190,15 @@ func (h *Hub) applySamsungMAC(ip, mac string) {
 	}
 
 	if frameIDIsMAC(oldFrameID) && oldFrameID == macFrameID {
-		h.devices.SetSamsungMAC(oldRegistryID, norm)
-		if ip != "" {
+		if oldRegistryID != macRegistryID {
+			merged := h.devices.MigrateSamsungToMAC(oldRegistryID, norm)
+			if merged != nil && ip != "" {
+				h.devices.UpdateSamsungIP(merged.ID, ip)
+				h.devices.RemoveProvisionalSamsung(ip)
+			}
+			h.migrateSamsungBatteryRegistryIDs(macRegistryID, oldRegistryID, samsungProvisionalRegistryID(ip))
+			_ = h.samsungBattery.Save()
+		} else if ip != "" {
 			h.devices.UpdateSamsungIP(oldRegistryID, ip)
 			h.devices.RemoveProvisionalSamsung(ip)
 		}
@@ -188,14 +229,8 @@ func (h *Hub) applySamsungMAC(ip, mac string) {
 		h.devices.RemoveProvisionalSamsung(ip)
 	}
 
-	if h.samsungBattery != nil {
-		for _, oldID := range []string{oldRegistryID, samsungProvisionalRegistryID(ip)} {
-			if oldID != "" && oldID != macRegistryID {
-				h.samsungBattery.MigrateDeviceID(oldID, macRegistryID)
-			}
-		}
-		_ = h.samsungBattery.Save()
-	}
+	h.migrateSamsungBatteryRegistryIDs(macRegistryID, oldRegistryID, samsungProvisionalRegistryID(ip))
+	_ = h.samsungBattery.Save()
 
 	cfg, err := h.samsung.LoadConfig(macFrameID)
 	if err == nil {
@@ -262,18 +297,11 @@ func (h *Hub) migrateSamsungFramesOnStartup() {
 		if !ok {
 			continue
 		}
-		frameID := SamsungFrameID(&d)
-		if frameIDIsMAC(frameID) {
-			continue
-		}
 		macID := samsungMACFrameID(mac)
-		if macID == frameID {
-			continue
+		frameID := SamsungFrameID(&d)
+		if !frameIDIsMAC(frameID) && macID != frameID {
+			_ = h.migrateSamsungFrameStore(frameID, macID, mac)
 		}
-		_ = h.migrateSamsungFrameStore(frameID, macID, mac)
-		if strings.Contains(d.ID, ".") {
-			h.devices.MigrateSamsungToMAC(d.ID, mac)
-			_ = h.devices.Save()
-		}
+		h.reconcileSamsungRegistryMAC(d)
 	}
 }
