@@ -771,6 +771,7 @@ const indexHTML = `<!DOCTYPE html>
             <button class="btn btn-sm btn-primary" onclick="saveSamsungConfig()">Save settings</button>
           </div>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">The frame should stay <strong>asleep</strong> between pushes. On send: wake → deliver image → sleep (after delay). WiFi MAC required for remote wake. Moon/power are for manual override only.</p>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">Set inactive begin and end to the <strong>same time</strong> (e.g. 00:00–00:00) to disable hub-managed network sleep — the frame keeps its current deep sleep or network standby mode.</p>
           <p style="font-size:.8rem;color:#888;margin:.75rem 0 0"><strong>Overnight deep sleep:</strong> at inactive begin the hub wakes the frame, turns off network standby, and sleeps it (lower battery drain). A send during inactive hours needs a <strong>3s power-button wake</strong> and returns to deep sleep after; outside those hours the hub restores network standby for remote wake.</p>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0"><strong>Daily refresh:</strong> the frame wakes briefly for its scheduled e-ink refresh. Sync to <em>inactive end</em> so the hub can reconnect and turn network standby back on each morning.</p>
         </div>
@@ -1676,6 +1677,11 @@ async function openSamsungFrame(frameId){
   samsungLoadDailyRefresh();
 }
 
+function samsungInactiveScheduleEnabled(begin,end){
+  if(!begin||!end) return false;
+  return begin.slice(0,5)!==end.slice(0,5);
+}
+
 function renderSamsungEditor(d,s,rec){
   updateSamsungEditorStatus(d,rec,s);
   document.getElementById('samsung-name-input').value=(s&&s.name)||(rec&&rec.name)||(d&&d.name)||'';
@@ -1751,7 +1757,7 @@ function updateSamsungEditorStatus(d,rec,s){
   const st=document.getElementById('samsung-status');
   if(s){
     st.textContent=(s.has_image?'Image etag '+s.etag:'No image yet')+(s.locked?' (locked)':'');
-    if(s.inactive_begin&&s.inactive_end) st.textContent+=' · inactive '+s.inactive_begin+'–'+s.inactive_end;
+    if(samsungInactiveScheduleEnabled(s.inactive_begin,s.inactive_end)) st.textContent+=' · inactive '+s.inactive_begin+'–'+s.inactive_end;
     if(samsungDeepSleep(d,rec,samsungStatusCache)) st.textContent+=' · deep sleep (button wake)';
   }else{
     st.textContent='';

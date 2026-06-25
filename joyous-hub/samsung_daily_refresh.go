@@ -153,8 +153,8 @@ func (h *Hub) syncSamsungDailyRefreshToInactiveEnd(frameID string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if cfg.InactiveEnd == "" || cfg.InactiveEnd == "00:00" {
-		return "", fmt.Errorf("inactive end not configured")
+	if !InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) {
+		return "", fmt.Errorf("inactive schedule not configured")
 	}
 	if err := h.setSamsungDailyRefresh(frameID, cfg.InactiveEnd); err != nil {
 		return "", err
@@ -173,7 +173,7 @@ func inactiveEndToday(now time.Time, end string) (time.Time, bool) {
 }
 
 func inMorningRestoreWindow(now time.Time, begin, end string, grace time.Duration) bool {
-	if end == "" || end == "00:00" {
+	if !InactiveScheduleEnabled(begin, end) {
 		return false
 	}
 	if InInactiveWindow(now, begin, end) {
@@ -196,7 +196,7 @@ func shouldTriggerMorningStandbyRestore(cfg SamsungFrameConfig, now time.Time) b
 	if !cfg.DeepSleepActive {
 		return false
 	}
-	if cfg.InactiveBegin == "" || cfg.InactiveEnd == "" || cfg.InactiveEnd == "00:00" {
+	if !InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) {
 		return false
 	}
 	if !inMorningRestoreWindow(now, cfg.InactiveBegin, cfg.InactiveEnd, samsungMorningRestoreGrace) {

@@ -33,10 +33,13 @@ func inactiveWindowStart(now time.Time, begin, end string) (time.Time, bool) {
 }
 
 func samsungOvernightDeepSleepEnabled(cfg SamsungFrameConfig) bool {
+	if !InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) {
+		return false
+	}
 	if cfg.OvernightDeepSleep != nil {
 		return *cfg.OvernightDeepSleep
 	}
-	return cfg.InactiveBegin != "" && cfg.InactiveEnd != ""
+	return true
 }
 
 // samsungRestoreNetworkStandbyOnPush reports whether a push from deep sleep should
@@ -46,8 +49,8 @@ func samsungRestoreNetworkStandbyOnPush(cfg SamsungFrameConfig, now time.Time) b
 	if !cfg.DeepSleepActive {
 		return false
 	}
-	if cfg.InactiveBegin == "" || cfg.InactiveEnd == "" {
-		return true
+	if !InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) {
+		return false
 	}
 	return !InInactiveWindow(now, cfg.InactiveBegin, cfg.InactiveEnd)
 }
@@ -56,7 +59,7 @@ func shouldTriggerOvernightDeepSleep(cfg SamsungFrameConfig, now time.Time) bool
 	if !samsungOvernightDeepSleepEnabled(cfg) {
 		return false
 	}
-	if cfg.InactiveBegin == "" || cfg.InactiveEnd == "" {
+	if cfg.InactiveBegin == "" || cfg.InactiveEnd == "" || !InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) {
 		return false
 	}
 	if cfg.DeepSleepActive {

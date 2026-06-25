@@ -347,6 +347,17 @@ func timeFromMinutesSinceMidnight(m int) time.Time {
 	return time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, now.Location())
 }
 
+// InactiveScheduleEnabled reports whether inactive begin/end define a real window.
+// Equal times (e.g. 00:00–00:00) mean the hub should not change network sleep by schedule.
+func InactiveScheduleEnabled(begin, end string) bool {
+	bh, bm, okB := parseHHMM(begin)
+	eh, em, okE := parseHHMM(end)
+	if !okB || !okE {
+		return false
+	}
+	return bh*60+bm != eh*60+em
+}
+
 // InInactiveWindow reports whether t falls inside [begin, end) inactive window.
 // Supports cross-midnight windows (e.g. 22:00–07:00).
 func InInactiveWindow(t time.Time, begin, end string) bool {
@@ -790,10 +801,10 @@ func (h *Hub) pushSamsungFrame(frameID string, dev *Device) error {
 	autoSleep := samsungAutoSleepAfterPush(cfg)
 	sleepAfter := samsungSleepAfterPushSec(cfg)
 	now := time.Now()
-	insideInactive := cfg.InactiveBegin != "" && cfg.InactiveEnd != "" && InInactiveWindow(now, cfg.InactiveBegin, cfg.InactiveEnd)
+	insideInactive := InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) && InInactiveWindow(now, cfg.InactiveBegin, cfg.InactiveEnd)
 	restoreStandby := samsungRestoreNetworkStandbyOnPush(cfg, now)
 	sleepFn := SamsungSleepFunc(h.sleepSamsungDisplay)
-	if cfg.DeepSleepActive && insideInactive {
+	if cfg.DeepSleepActive && (!InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) || insideInactive) {
 		sleepFn = h.sleepSamsungDeepDisplay
 	}
 	err := PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, sleepFn, SamsungPushOptions{

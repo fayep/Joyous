@@ -90,4 +90,29 @@ func TestSamsungRestoreNetworkStandbyOnPush(t *testing.T) {
 	if samsungRestoreNetworkStandbyOnPush(cfg, outside) {
 		t.Fatal("not deep sleep should not restore")
 	}
+	disabled := SamsungFrameConfig{
+		InactiveBegin:   "00:00",
+		InactiveEnd:     "00:00",
+		DeepSleepActive: true,
+	}
+	if samsungRestoreNetworkStandbyOnPush(disabled, outside) {
+		t.Fatal("00:00-00:00 should not restore standby on push")
+	}
+}
+
+func TestOvernightDeepSleepDisabledForEqualTimes(t *testing.T) {
+	on := true
+	cfg := SamsungFrameConfig{
+		InactiveBegin:      "00:00",
+		InactiveEnd:        "00:00",
+		OvernightDeepSleep: &on,
+	}
+	if samsungOvernightDeepSleepEnabled(cfg) {
+		t.Fatal("expected overnight deep sleep disabled for 00:00-00:00")
+	}
+	loc := time.Local
+	now := time.Date(2026, 6, 22, 23, 0, 0, 0, loc)
+	if shouldTriggerOvernightDeepSleep(cfg, now) {
+		t.Fatal("should not trigger overnight deep sleep")
+	}
 }

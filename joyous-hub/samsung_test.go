@@ -142,12 +142,28 @@ func TestInInactiveWindow(t *testing.T) {
 		{time.Date(2024, 6, 15, 10, 0, 0, 0, loc), "09:00", "17:00", true},
 		{time.Date(2024, 6, 15, 18, 0, 0, 0, loc), "09:00", "17:00", false},
 		{time.Date(2024, 6, 15, 12, 0, 0, 0, loc), "", "07:00", false},
+		{time.Date(2024, 6, 15, 12, 0, 0, 0, loc), "00:00", "00:00", false},
 	}
 	for _, c := range cases {
 		got := InInactiveWindow(c.t, c.begin, c.end)
 		if got != c.inside {
 			t.Errorf("InInactiveWindow(%v, %s, %s) = %v, want %v", c.t.Format("15:04"), c.begin, c.end, got, c.inside)
 		}
+	}
+}
+
+func TestInactiveScheduleEnabled(t *testing.T) {
+	if InactiveScheduleEnabled("22:00", "07:00") != true {
+		t.Fatal("expected enabled for real window")
+	}
+	if InactiveScheduleEnabled("00:00", "00:00") != false {
+		t.Fatal("00:00-00:00 should disable schedule")
+	}
+	if InactiveScheduleEnabled("09:00", "09:00") != false {
+		t.Fatal("equal times should disable schedule")
+	}
+	if InactiveScheduleEnabled("", "07:00") != false {
+		t.Fatal("empty begin should disable")
 	}
 }
 
