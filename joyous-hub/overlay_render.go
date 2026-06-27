@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"strings"
 	"sync"
 
 	"golang.org/x/image/font"
@@ -50,21 +51,63 @@ func overlayFacesStandard() (large, medium, small font.Face) {
 	return overlayFace(overlayFontLarge), overlayFace(overlayFontMedium), overlayFace(overlayFontSmall)
 }
 
-func drawWeatherOverlay(src image.Image, cfg OverlayConfig, weather WeatherSnapshot, portrait bool) image.Image {
+func drawWeatherOverlay(src image.Image, cfg OverlayConfig, weather WeatherSnapshot, photoName string, portrait bool) image.Image {
 	lines, err := overlayRenderedLines(cfg, weather)
-	if err != nil || len(lines) == 0 {
+	if err != nil {
+		lines = nil
+	}
+	hasBox := len(lines) > 0
+	hasCaption := cfg.ShowPhotoName && strings.TrimSpace(photoName) != ""
+	if !hasBox && !hasCaption {
 		return imageToRGBA(src)
 	}
 	if portrait {
-		upright := rotate90(src)
-		upright = drawWeatherOverlayBox(upright, lines)
+		upright := imageToRGBA(rotate90(src))
+		upright = drawWeatherOverlayOnImage(upright, cfg, lines, photoName)
 		return rotate90CCW(upright)
 	}
-	return drawWeatherOverlayBox(src, lines)
+	return drawWeatherOverlayOnImage(imageToRGBA(src), cfg, lines, photoName)
 }
 
-func drawWeatherOverlayBox(src image.Image, lines []overlayLine) image.Image {
-	dst := imageToRGBA(src)
+func drawWeatherOverlayOnImage(dst *image.RGBA, cfg OverlayConfig, lines []overlayLine, photoName string) *image.RGBA {
+	if len(lines) > 0 {
+		if overlayWeatherUsesOutline(cfg) {
+			dst = drawWeatherOverlayOutlined(dst, lines)
+		} else {
+			dst = drawWeatherOverlayBox(dst, lines)
+		}
+	}
+	if cfg.ShowPhotoName {
+		drawPhotoNameCaption(dst, photoName, cfg.PhotoNamePosition)
+	}
+	return dst
+}
+
+func drawWeatherOverlayOutlined(dst *image.RGBA, lines []overlayLine) *image.RGBA {
+	b := dst.Bounds()
+	w, h := b.Dx(), b.Dy()
+	marginX := overlayPadForWidth(w)
+	marginY := overlayPadForWidth(h)
+	if marginY < overlayPadMin {
+		marginY = overlayPadMin
+	}
+	x := b.Min.X + marginX
+	y := b.Max.Y - marginY - overlayContentHeight(lines)
+	for i, ln := range lines {
+		if ln.face != nil && ln.text != "" {
+			textW := fontMeasureString(ln.face, ln.text)
+			ascent := ln.face.Metrics().Ascent.Ceil()
+			descent := ln.face.Metrics().Descent.Ceil()
+			fill := overlayContrastingColor(dst, x, y, textW, ascent+descent)
+			fontSize := float64(overlayLineFontSize(i))
+			drawOutlinedOverlayText(dst, ln.text, x, y, ln.face, fill, overlayOutlineColor(fill), fontSize)
+		}
+		y += overlayLineStepAfter(i)
+	}
+	return dst
+}
+
+func drawWeatherOverlayBox(dst *image.RGBA, lines []overlayLine) *image.RGBA {
 	b := dst.Bounds()
 	w, h := b.Dx(), b.Dy()
 
@@ -137,6 +180,60 @@ func blendPixel(dst *image.RGBA, x, y int, c color.RGBA) {
 	dst.Pix[i+1] = uint8(float64(c.G)*a + float64(bgG)*inv)
 	dst.Pix[i+2] = uint8(float64(c.B)*a + float64(bgB)*inv)
 	dst.Pix[i+3] = 255
+}
+
+func drawPlainOverlayText(dst *image.RGBA, text string, x, y int, face font.Face, col color.Color) {
+	if face == nil || text == "" {
+		return
+	}
+	d := &font.Drawer{
+		Dst:  dst,
+		Src:  image.NewUniform(col),
+		Face: face,
+		Dot:  fixed.P(x, y+int(face.Metrics().Ascent.Ceil())),
+	}
+	d.DrawString(text)
+}
+
+func overlayOutlineColor(fill color.Color) color.Color {
+	r, g, b, _ := fill.RGBA()
+	if int(r>>8)+int(g>>8)+int(b>>8) > 128*3 {
+		return color.RGBA{0, 0, 0, 255}
+	}
+	return color.RGBA{255, 255, 255, 255}
+}
+
+func overlayTextOutlineStep(fontSize float64) int {
+	if fontSize >= 58 {
+		return 2
+	}
+	return 1
+}
+
+func drawOutlinedOverlayText(dst *image.RGBA, text string, x, y int, face font.Face, fill, outline color.Color, fontSize float64) {
+	if face == nil || text == "" {
+		return
+	}
+	step := overlayTextOutlineStep(fontSize)
+	baseY := y + int(face.Metrics().Ascent.Ceil())
+	offsets := [][2]int{
+		{-step, 0}, {step, 0}, {0, -step}, {0, step},
+		{-step, -step}, {-step, step}, {step, -step}, {step, step},
+	}
+	for _, off := range offsets {
+		d := &font.Drawer{
+			Dst:  dst,
+			Src:  image.NewUniform(outline),
+			Face: face,
+			Dot:  fixed.P(x+off[0], baseY+off[1]),
+		}
+		d.DrawString(text)
+	}
+	drawPlainOverlayText(dst, text, x, y, face, fill)
+}
+
+func fontMeasureString(face font.Face, text string) int {
+	return font.MeasureString(face, text).Ceil()
 }
 
 func drawOverlayText(dst *image.RGBA, text string, x, y int, face font.Face, col color.Color) {

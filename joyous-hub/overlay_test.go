@@ -64,7 +64,7 @@ func TestDrawWeatherOverlay(t *testing.T) {
 				DisplayDate: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC),
 				Temperature: OverlayTemperature{Current: 20, Min: 14, Max: 22},
 			}
-			out := drawWeatherOverlay(src, cfg, weather, false)
+			out := drawWeatherOverlay(src, cfg, weather, "", false)
 			if similarColor(out.At(100, size.h-50), src.At(100, size.h-50)) {
 				t.Fatal("expected box tint bottom-left")
 			}
@@ -104,6 +104,66 @@ func TestOverlaySendTokenStable(t *testing.T) {
 	if cfg.sendToken(w, true) == cfg.sendToken(w, false) {
 		t.Fatal("portrait should change token")
 	}
+	cfg.WeatherStyle = overlayWeatherStyleOutline
+	if cfg.sendToken(w, false) == a {
+		t.Fatal("weather style should change token")
+	}
+}
+
+func TestNormalizeWeatherStyle(t *testing.T) {
+	if got := normalizeWeatherStyle("outline"); got != overlayWeatherStyleOutline {
+		t.Fatalf("got %q", got)
+	}
+	if got := normalizeWeatherStyle(""); got != overlayWeatherStyleBox {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestDrawWeatherOverlayOutline(t *testing.T) {
+	initOverlayFonts()
+	if overlayFontErr != nil {
+		t.Skip(overlayFontErr)
+	}
+	src := image.NewRGBA(image.Rect(0, 0, 1600, 1200))
+	for y := 0; y < 1200; y++ {
+		for x := 0; x < 1600; x++ {
+			src.Set(x, y, color.RGBA{120, 140, 180, 255})
+		}
+	}
+	weather := WeatherSnapshot{
+		TempC:       20,
+		Condition:   "Clear",
+		City:        "Testville",
+		DisplayDate: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC),
+		Temperature: OverlayTemperature{Current: 20, Min: 14, Max: 22},
+	}
+	boxCfg := defaultOverlayConfig()
+	outBox := drawWeatherOverlay(src, boxCfg, weather, "", false)
+	outlineCfg := defaultOverlayConfig()
+	outlineCfg.WeatherStyle = overlayWeatherStyleOutline
+	outOutline := drawWeatherOverlay(src, outlineCfg, weather, "", false)
+
+	if similarColor(outBox.At(100, 1150), src.At(100, 1150)) {
+		t.Fatal("box mode should tint bottom-left panel area")
+	}
+	if !similarColor(outOutline.At(100, 1150), src.At(100, 1150)) {
+		t.Fatal("outline mode should not paint opaque panel at same coords")
+	}
+	found := false
+	for y := 1000; y < 1200; y++ {
+		for x := 40; x < 500; x++ {
+			if !similarColor(outOutline.At(x, y), src.At(x, y)) {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected outlined weather text pixels")
+	}
 }
 
 func TestFormatOverlayTemp(t *testing.T) {
@@ -112,6 +172,70 @@ func TestFormatOverlayTemp(t *testing.T) {
 	}
 	if got := formatOverlayTemp(20, false); got != "20C" {
 		t.Fatalf("c: %s", got)
+	}
+}
+
+func TestOverlayPhotoNameFromFilename(t *testing.T) {
+	if got := overlayPhotoNameFromFilename("vacation/IMG_1234.JPG"); got != "IMG_1234" {
+		t.Fatalf("got %q", got)
+	}
+	if got := overlayPhotoNameFromFilename("noext"); got != "noext" {
+		t.Fatalf("got %q", got)
+	}
+	if overlayPhotoNameFromFilename("") != "" {
+		t.Fatal("empty")
+	}
+}
+
+func TestOverlayCaveatFace(t *testing.T) {
+	initOverlayCaveatFont()
+	if overlayCaveatErr != nil {
+		t.Fatal(overlayCaveatErr)
+	}
+	face := overlayCaveatFace(48)
+	if face == nil {
+		t.Fatal("expected Caveat face")
+	}
+	if fontMeasureString(face, "Sunset") < 20 {
+		t.Fatal("expected measurable Caveat width")
+	}
+}
+
+func TestOverlayOutlineColor(t *testing.T) {
+	if got := overlayOutlineColor(color.RGBA{255, 255, 255, 255}); got != (color.RGBA{0, 0, 0, 255}) {
+		t.Fatalf("white fill should get black outline")
+	}
+	if got := overlayOutlineColor(color.RGBA{0, 0, 0, 255}); got != (color.RGBA{255, 255, 255, 255}) {
+		t.Fatalf("black fill should get white outline")
+	}
+}
+
+func TestDrawPhotoNameCaption(t *testing.T) {
+	initOverlayFonts()
+	if overlayFontErr != nil {
+		t.Skip(overlayFontErr)
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, 400, 300))
+	for y := 0; y < 300; y++ {
+		for x := 0; x < 400; x++ {
+			dst.Set(x, y, color.RGBA{240, 240, 240, 255})
+		}
+	}
+	drawPhotoNameCaption(dst, "Sunset", overlayPhotoNameBottomRight)
+	found := false
+	for y := 220; y < 300; y++ {
+		for x := 250; x < 400; x++ {
+			if !similarColor(dst.At(x, y), color.RGBA{240, 240, 240, 255}) {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected caption pixels in bottom-right region")
 	}
 }
 

@@ -25,6 +25,7 @@ type OverlayBoxMetrics struct {
 		HeightPx int `json:"height_px"`
 		BorderPx int `json:"border_px"`
 	} `json:"box"`
+	Style string `json:"style,omitempty"`
 	Error string `json:"error,omitempty"`
 }
 
@@ -73,5 +74,12 @@ func overlayMetrics(cfg OverlayConfig, weather WeatherSnapshot) OverlayBoxMetric
 	if err != nil {
 		return OverlayBoxMetrics{Error: err.Error()}
 	}
-	return overlayMetricsForLines(lines)
+	m := overlayMetricsForLines(lines)
+	m.Style = normalizeWeatherStyle(cfg.WeatherStyle)
+	if m.Style == overlayWeatherStyleOutline {
+		m.Box.WidthPx = m.Content.WidthPx
+		m.Box.HeightPx = m.Content.HeightPx
+		m.Box.BorderPx = 0
+	}
+	return m
 }

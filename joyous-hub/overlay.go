@@ -35,8 +35,27 @@ type OverlayConfig struct {
 	Location      string  `json:"location"`
 	Latitude      float64 `json:"latitude,omitempty"`
 	Longitude     float64 `json:"longitude,omitempty"`
-	Timezone      string  `json:"timezone,omitempty"`
-	Template      string  `json:"template,omitempty"` // Go text/template; see OverlayTemplateData
+	Timezone          string  `json:"timezone,omitempty"`
+	Template          string  `json:"template,omitempty"` // Go text/template; see OverlayTemplateData
+	ShowPhotoName     bool    `json:"show_photo_name"`
+	PhotoNamePosition string  `json:"photo_name_position"` // bottom_right, bottom_center
+	WeatherStyle      string  `json:"weather_style"`       // box, outline
+}
+
+const (
+	overlayWeatherStyleBox     = "box"
+	overlayWeatherStyleOutline = "outline"
+)
+
+func normalizeWeatherStyle(s string) string {
+	if strings.TrimSpace(s) == overlayWeatherStyleOutline {
+		return overlayWeatherStyleOutline
+	}
+	return overlayWeatherStyleBox
+}
+
+func overlayWeatherUsesOutline(cfg OverlayConfig) bool {
+	return normalizeWeatherStyle(cfg.WeatherStyle) == overlayWeatherStyleOutline
 }
 
 func defaultOverlayConfig() OverlayConfig {
@@ -49,7 +68,9 @@ func defaultOverlayConfig() OverlayConfig {
 		ShowCity:      true,
 		UseFahrenheit: true,
 		DateStyle:     1,
-		Template:      defaultOverlayTemplate(),
+		Template:          defaultOverlayTemplate(),
+		PhotoNamePosition: overlayPhotoNameBottomRight,
+		WeatherStyle:      overlayWeatherStyleBox,
 	}
 }
 
@@ -103,6 +124,8 @@ func (s *OverlayStore) Save(cfg OverlayConfig) error {
 	if cfg.DateStyle == 0 {
 		cfg.DateStyle = 1
 	}
+	cfg.PhotoNamePosition = normalizePhotoNamePosition(cfg.PhotoNamePosition)
+	cfg.WeatherStyle = normalizeWeatherStyle(cfg.WeatherStyle)
 	if t := strings.TrimSpace(cfg.Template); t != "" {
 		if _, err := executeOverlayTemplate(cfg, WeatherSnapshot{}); err != nil {
 			return err
@@ -126,25 +149,32 @@ func (s *OverlayStore) Active() bool {
 	if !cfg.Enabled || !overlayHasContent(cfg) {
 		return false
 	}
-	if strings.TrimSpace(cfg.Location) == "" && cfg.Latitude == 0 && cfg.Longitude == 0 {
-		return false
+	if overlayNeedsWeather(cfg) {
+		if strings.TrimSpace(cfg.Location) == "" && cfg.Latitude == 0 && cfg.Longitude == 0 {
+			return false
+		}
 	}
 	return true
 }
 
 func overlayHasContent(cfg OverlayConfig) bool {
+	if cfg.ShowPhotoName {
+		return true
+	}
 	return strings.TrimSpace(effectiveOverlayTemplate(cfg)) != ""
 }
 
 func (cfg OverlayConfig) sendToken(weather WeatherSnapshot, portrait bool) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "v2|%t|%s|%t|%d|%s|%.4f|%.4f|%s|%s|%.1f|%.1f|%.1f|%d|%d|%s|%s",
+	fmt.Fprintf(h, "v4|%t|%s|%t|%d|%s|%.4f|%.4f|%s|%s|%.1f|%.1f|%.1f|%d|%d|%s|%s|%t|%s|%s",
 		portrait, cfg.Layout, cfg.UseFahrenheit, cfg.DateStyle,
 		cfg.Location, cfg.Latitude, cfg.Longitude, cfg.Timezone,
 		effectiveOverlayTemplate(cfg),
 		weather.Temperature.Current, weather.Temperature.Min, weather.Temperature.Max,
 		weather.Precipitation.Hour, weather.Precipitation.Max,
-		weather.Condition, weather.DisplayDate.Format("2006-01-02"))
+		weather.Condition, weather.DisplayDate.Format("2006-01-02"),
+		cfg.ShowPhotoName, normalizePhotoNamePosition(cfg.PhotoNamePosition),
+		normalizeWeatherStyle(cfg.WeatherStyle))
 	return hex.EncodeToString(h.Sum(nil))[:10]
 }
 
@@ -369,16 +399,35 @@ func formatOverlayTemp(tempC float64, fahrenheit bool) string {
 }
 
 func (h *Hub) fetchOverlayWeather(ctx context.Context) (WeatherSnapshot, error) {
+	if h.overlay == nil {
+		return WeatherSnapshot{}, nil
+	}
+	cfg := h.overlay.Config()
+	if !overlayNeedsWeather(cfg) {
+		return WeatherSnapshot{}, nil
+	}
 	if h.weather == nil {
 		h.weather = &weatherFetcher{client: &http.Client{Timeout: 12 * time.Second}}
 	}
-	return h.weather.Fetch(ctx, h.overlay.Config())
+	return h.weather.Fetch(ctx, cfg)
+}
+
+func (h *Hub) overlayPhotoName(imageID string, cfg OverlayConfig) string {
+	if !cfg.ShowPhotoName || imageID == "" || h.images == nil {
+		return ""
+	}
+	meta, err := h.images.readMeta(imageID)
+	if err != nil {
+		return ""
+	}
+	return overlayPhotoNameFromFilename(meta.Name)
 }
 
 func (h *Hub) ensureOverlayBin(imageID string, portrait bool, cfg OverlayConfig, weather WeatherSnapshot) (string, error) {
 	token := cfg.sendToken(weather, portrait)
+	photoName := h.overlayPhotoName(imageID, cfg)
 	_, err := h.images.ServeBinOrientationOverlay(imageID, portrait, token, func(img image.Image, flatRGB bool) (image.Image, error) {
-		return drawWeatherOverlay(img, cfg, weather, portrait), nil
+		return drawWeatherOverlay(img, cfg, weather, photoName, portrait), nil
 	})
 	if err != nil {
 		return "", err
@@ -407,6 +456,11 @@ func mergeOverlayConfig(base OverlayConfig, override *OverlayConfig) OverlayConf
 		merged.DateStyle = override.DateStyle
 	}
 	merged.Enabled = override.Enabled
+	merged.ShowPhotoName = override.ShowPhotoName
+	if override.PhotoNamePosition != "" {
+		merged.PhotoNamePosition = override.PhotoNamePosition
+	}
+	merged.WeatherStyle = normalizeWeatherStyle(override.WeatherStyle)
 	return merged
 }
 
@@ -419,9 +473,10 @@ func (h *Hub) renderOverlayPreviewJPEG(ctx context.Context, imageID string, port
 	if err != nil {
 		return nil, err
 	}
+	photoName := h.overlayPhotoName(imageID, cfg)
 	token := cfg.sendToken(weather, portrait)
 	bin, err := h.images.ServeBinOrientationOverlay(imageID, portrait, token, func(img image.Image, flatRGB bool) (image.Image, error) {
-		return drawWeatherOverlay(img, cfg, weather, portrait), nil
+		return drawWeatherOverlay(img, cfg, weather, photoName, portrait), nil
 	})
 	if err != nil {
 		return nil, err

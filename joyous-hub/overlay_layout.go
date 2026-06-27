@@ -8,6 +8,10 @@ const (
 	overlayPadMin     = 24
 	overlayLineStep   = 36
 	overlayDateStep   = 64
+
+	// Photo-name caption uses Caveat (album UI); scaled from InkJoy landscape width.
+	overlayPhotoNameFontRefWidth  = 1600
+	overlayPhotoNameFontSizeAtRef = 52
 )
 
 func overlayPadForWidth(w int) int {
@@ -16,6 +20,17 @@ func overlayPadForWidth(w int) int {
 		pad = overlayPadMin
 	}
 	return pad
+}
+
+func overlayPhotoNameFontSize(frameWidth int) float64 {
+	size := float64(frameWidth) * overlayPhotoNameFontSizeAtRef / overlayPhotoNameFontRefWidth
+	if size < 36 {
+		return 36
+	}
+	if size > 80 {
+		return 80
+	}
+	return size
 }
 
 func overlayInt(v float64) int {

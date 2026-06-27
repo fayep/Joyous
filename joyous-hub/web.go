@@ -653,6 +653,12 @@ const indexHTML = `<!DOCTYPE html>
             <div style="margin-top:.35rem;color:#666">Example: <code>{{fahrenheit .Temperature.Min}}-{{fahrenheit .Temperature.Max}}  {{pct .Precipitation.Max}}</code></div>
           </div>
         </details>
+        <label style="display:block;margin:.75rem 0 .35rem;font-size:.85rem">Weather display
+          <select id="ovl-weather-style" onchange="debouncedOverlayPreview()" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+            <option value="box">Opaque box</option>
+            <option value="outline">Bordered text</option>
+          </select>
+        </label>
         <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-fahrenheit" checked onchange="debouncedOverlayPreview()"> Use Fahrenheit in templates</label>
         <label style="display:block;margin:.75rem 0 .35rem;font-size:.85rem">Date format
           <select id="ovl-date-style" onchange="debouncedOverlayPreview()" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
@@ -661,6 +667,17 @@ const indexHTML = `<!DOCTYPE html>
             <option value="3">June 20 2026</option>
           </select>
         </label>
+        <div class="section-label" style="margin-top:.75rem">Photo name</div>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem">
+          <input type="checkbox" id="ovl-show-photo-name" onchange="debouncedOverlayPreview()"> Show filename (without extension)
+        </label>
+        <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Position
+          <select id="ovl-photo-name-position" onchange="debouncedOverlayPreview()" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+            <option value="bottom_right">Bottom right</option>
+            <option value="bottom_center">Bottom center</option>
+          </select>
+        </label>
+        <p style="font-size:.8rem;color:#666;margin:0 0 .5rem;line-height:1.4">Caveat handwriting (matches album captions), black or white with a thin opposite outline, no background panel.</p>
         <button class="btn btn-primary btn-sm" style="margin-top:.75rem" onclick="saveOverlayConfig()">Save settings</button>
         <div id="ovl-save-status" style="font-size:.85rem;color:#666;margin-top:.5rem"></div>
       </div>
@@ -1681,7 +1698,9 @@ function renderOverlayMetrics(m){
     lines+
     '<div style="margin-top:.55rem;padding:.45rem .55rem;background:#fff;border:1px dashed #ccc;border-radius:4px;line-height:1.5;color:#444">'+
     '<div><b>Content</b> (max line × sum of line heights): ~'+m.content.width_px+' × '+m.content.height_px+' px</div>'+
-    '<div><b>Box</b> (+'+m.box.border_px+' px border each side): '+m.box.width_px+' × '+m.box.height_px+' px on all frames</div>'+
+    (m.style==='outline'
+      ? '<div><b>Style</b> bordered text (no background panel)</div>'
+      : '<div><b>Box</b> (+'+m.box.border_px+' px border each side): '+m.box.width_px+' × '+m.box.height_px+' px on all frames</div>')+
     '</div>';
 }
 
@@ -1714,8 +1733,11 @@ function applyOverlayForm(cfg){
   document.getElementById('ovl-lon').value=cfg.longitude||'';
   document.getElementById('ovl-timezone').value=cfg.timezone||'';
   document.getElementById('ovl-template').value=cfg.template||'';
+  document.getElementById('ovl-weather-style').value=cfg.weather_style||'box';
   document.getElementById('ovl-fahrenheit').checked=cfg.use_fahrenheit!==false;
   document.getElementById('ovl-date-style').value=String(cfg.date_style||1);
+  document.getElementById('ovl-show-photo-name').checked=!!cfg.show_photo_name;
+  document.getElementById('ovl-photo-name-position').value=cfg.photo_name_position||'bottom_right';
 }
 
 function overlayFormValues(){
@@ -1729,8 +1751,11 @@ function overlayFormValues(){
     longitude: Number.isFinite(lon)?lon:0,
     timezone: document.getElementById('ovl-timezone').value.trim(),
     template: document.getElementById('ovl-template').value,
+    weather_style: document.getElementById('ovl-weather-style').value,
     use_fahrenheit: document.getElementById('ovl-fahrenheit').checked,
-    date_style: parseInt(document.getElementById('ovl-date-style').value,10)||1
+    date_style: parseInt(document.getElementById('ovl-date-style').value,10)||1,
+    show_photo_name: document.getElementById('ovl-show-photo-name').checked,
+    photo_name_position: document.getElementById('ovl-photo-name-position').value
   };
 }
 

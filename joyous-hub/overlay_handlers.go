@@ -207,7 +207,7 @@ func (h *Hub) prepareSamsungPNG(imageID, overlayToken string, dev *Device) ([]by
 		if err != nil {
 			return nil, err
 		}
-		img = drawWeatherOverlay(img, cfg, weather, dev.Portrait)
+		img = drawWeatherOverlay(img, cfg, weather, h.overlayPhotoName(imageID, cfg), dev.Portrait)
 	}
 	return encodeSamsungPNGFromRGBA(img, h.colorPipeline())
 }
