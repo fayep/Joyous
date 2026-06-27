@@ -29,15 +29,10 @@ type OverlayBoxMetrics struct {
 	Error string `json:"error,omitempty"`
 }
 
-func overlayLineFontSize(index int) int {
-	switch index {
-	case 0:
-		return overlayFontMedium
-	case 1:
-		return overlayFontLarge
-	default:
-		return overlayFontMedium
-	}
+// OverlayMetricsResponse reports overlay sizing for each frame type.
+type OverlayMetricsResponse struct {
+	Samsung OverlayBoxMetrics `json:"samsung"`
+	InkJoy  OverlayBoxMetrics `json:"inkjoy"`
 }
 
 func overlayLineWidthPx(ln overlayLine) int {
@@ -47,34 +42,30 @@ func overlayLineWidthPx(ln overlayLine) int {
 	return font.MeasureString(ln.face, ln.text).Ceil()
 }
 
-func overlayLineStepPx(index int) int {
-	return overlayLineStepAfter(index)
-}
-
-func overlayMetricsForLines(lines []overlayLine) OverlayBoxMetrics {
+func overlayMetricsForLines(lines []overlayLine, w, h int) OverlayBoxMetrics {
 	var m OverlayBoxMetrics
 	for i, ln := range lines {
 		m.Lines = append(m.Lines, OverlayLineMetrics{
 			Index:    i + 1,
 			Text:     ln.text,
-			FontSize: overlayLineFontSize(i),
+			FontSize: ln.fontPx,
 			WidthPx:  overlayLineWidthPx(ln),
-			StepPx:   overlayLineStepPx(i),
+			StepPx:   ln.stepPx,
 		})
 	}
 	m.Content.WidthPx = overlayContentWidth(lines)
 	m.Content.HeightPx = overlayContentHeight(lines)
-	m.Box.WidthPx, m.Box.HeightPx = overlayBoxSize(lines)
-	m.Box.BorderPx = overlayPadMin
+	m.Box.WidthPx, m.Box.HeightPx = overlayBoxSize(lines, w, h)
+	m.Box.BorderPx = overlayScaledPx(overlayPadMinPt, w, h)
 	return m
 }
 
-func overlayMetrics(cfg OverlayConfig, weather WeatherSnapshot) OverlayBoxMetrics {
-	lines, err := overlayRenderedLines(cfg, weather)
+func overlayMetrics(cfg OverlayConfig, weather WeatherSnapshot, w, h int) OverlayBoxMetrics {
+	lines, err := overlayRenderedLines(cfg, weather, w, h)
 	if err != nil {
 		return OverlayBoxMetrics{Error: err.Error()}
 	}
-	m := overlayMetricsForLines(lines)
+	m := overlayMetricsForLines(lines, w, h)
 	m.Style = normalizeWeatherStyle(cfg.WeatherStyle)
 	if m.Style == overlayWeatherStyleOutline {
 		m.Box.WidthPx = m.Content.WidthPx
@@ -82,4 +73,13 @@ func overlayMetrics(cfg OverlayConfig, weather WeatherSnapshot) OverlayBoxMetric
 		m.Box.BorderPx = 0
 	}
 	return m
+}
+
+func overlayMetricsForDisplays(cfg OverlayConfig, weather WeatherSnapshot, portrait bool) OverlayMetricsResponse {
+	samW, samH := overlayMetricsDimensions(samsungW, samsungH, portrait)
+	ijW, ijH := overlayMetricsDimensions(frameW, frameH, portrait)
+	return OverlayMetricsResponse{
+		Samsung: overlayMetrics(cfg, weather, samW, samH),
+		InkJoy:  overlayMetrics(cfg, weather, ijW, ijH),
+	}
 }

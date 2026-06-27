@@ -1836,37 +1836,43 @@ function debouncedOverlayPreview(){
   }, 400);
 }
 
-function renderOverlayMetrics(m){
-  const el=document.getElementById('ovl-template-metrics');
-  if(!el) return;
+function renderOverlayMetricsBlock(label, m){
   if(m.error){
-    el.innerHTML='<p style="color:#c00;margin:0">'+esc(m.error)+'</p>';
-    return;
+    return '<p style="color:#c00;margin:.35rem 0">'+esc(label)+': '+esc(m.error)+'</p>';
   }
   const lines=(m.lines||[]).map(ln=>
     '<div style="margin:.35rem 0;padding:.4rem .55rem;background:#f6f7f9;border:1px solid #e8eaed;border-radius:4px;font-family:ui-monospace,Menlo,monospace;font-size:.75rem;line-height:1.35">'+
     '<div style="color:#666;margin-bottom:.15rem">Line '+ln.index+' · '+ln.font_size+'px · ~'+ln.width_px+' px wide · +'+ln.step_px+' px tall</div>'+
     '<div style="color:#222">'+esc(ln.text)+'</div></div>'
   ).join('');
-  el.innerHTML=
-    '<div style="margin-bottom:.35rem;color:#666">Rendered lines (approximate, using live weather)</div>'+
+  return '<div style="margin-top:.65rem"><div style="font-weight:600;color:#444;margin-bottom:.25rem">'+esc(label)+'</div>'+
     lines+
     '<div style="margin-top:.55rem;padding:.45rem .55rem;background:#fff;border:1px dashed #ccc;border-radius:4px;line-height:1.5;color:#444">'+
     '<div><b>Content</b> (max line × sum of line heights): ~'+m.content.width_px+' × '+m.content.height_px+' px</div>'+
     (m.style==='outline'
       ? '<div><b>Style</b> white bordered text with light shadow (no background panel)</div>'
-      : '<div><b>Box</b> (+'+m.box.border_px+' px border each side): '+m.box.width_px+' × '+m.box.height_px+' px on all frames</div>')+
-    '</div>';
+      : '<div><b>Box</b> (+'+m.box.border_px+' px border each side): '+m.box.width_px+' × '+m.box.height_px+' px</div>')+
+    '</div></div>';
+}
+
+function renderOverlayMetrics(resp){
+  const el=document.getElementById('ovl-template-metrics');
+  if(!el) return;
+  el.innerHTML=
+    '<div style="margin-bottom:.35rem;color:#666">Rendered lines (approximate, using live weather). Font sizes scale by display diagonal so physical size matches across panels.</div>'+
+    renderOverlayMetricsBlock('Samsung (2560×1440)', resp.samsung||{})+
+    renderOverlayMetricsBlock('InkJoy (1600×1200)', resp.inkjoy||{});
 }
 
 async function refreshOverlayMetrics(){
   const el=document.getElementById('ovl-template-metrics');
   if(!el) return;
   try{
+    const portrait=!!document.getElementById('ovl-preview-portrait')?.checked;
     const r=await fetch('/api/overlay/metrics',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({config:overlayFormValues()})
+      body:JSON.stringify({config:overlayFormValues(), portrait})
     });
     if(!r.ok) throw new Error(await r.text());
     renderOverlayMetrics(await r.json());

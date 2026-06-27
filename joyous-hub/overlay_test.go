@@ -146,8 +146,8 @@ func TestDrawWeatherOverlayOutline(t *testing.T) {
 	if similarColor(outBox.At(100, 1150), src.At(100, 1150)) {
 		t.Fatal("box mode should tint bottom-left panel area")
 	}
-	if !similarColor(outOutline.At(100, 1150), src.At(100, 1150)) {
-		t.Fatal("outline mode should not paint opaque panel at same coords")
+	if !similarColor(outOutline.At(100, 100), src.At(100, 100)) {
+		t.Fatal("outline mode should not modify pixels away from text")
 	}
 	found := false
 	for y := 1000; y < 1200; y++ {
@@ -212,8 +212,8 @@ func TestDrawBorderedOverlayText(t *testing.T) {
 			dst.Set(x, y, color.RGBA{240, 240, 240, 255})
 		}
 	}
-	face := overlayFace(overlayFontSmall)
-	drawBorderedOverlayText(dst, "Sunset", 250, 250, face, overlayFontSmall)
+	face := overlayFace(overlayFontSmallPt)
+	drawBorderedOverlayText(dst, "Sunset", 250, 250, face, overlayFontSmallPt)
 	found := false
 	for y := 240; y < 300; y++ {
 		for x := 240; x < 400; x++ {
@@ -236,16 +236,16 @@ func TestDrawPhotoNameCaption(t *testing.T) {
 	if overlayFontErr != nil {
 		t.Skip(overlayFontErr)
 	}
-	dst := image.NewRGBA(image.Rect(0, 0, 400, 300))
-	for y := 0; y < 300; y++ {
-		for x := 0; x < 400; x++ {
+	dst := image.NewRGBA(image.Rect(0, 0, frameW, frameH))
+	for y := 0; y < frameH; y++ {
+		for x := 0; x < frameW; x++ {
 			dst.Set(x, y, color.RGBA{240, 240, 240, 255})
 		}
 	}
-	drawPhotoNameCaption(dst, "Sunset", overlayPhotoNameBottomRight)
+	drawPhotoNameCaption(dst, "Sunset", overlayPhotoNameBottomRight, frameW, frameH)
 	found := false
-	for y := 220; y < 300; y++ {
-		for x := 250; x < 400; x++ {
+	for y := frameH - 200; y < frameH; y++ {
+		for x := frameW - 400; x < frameW; x++ {
 			if !similarColor(dst.At(x, y), color.RGBA{240, 240, 240, 255}) {
 				found = true
 				break

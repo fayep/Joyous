@@ -35,8 +35,10 @@ type OverlayPrecipitation struct {
 }
 
 type overlayLine struct {
-	text string
-	face font.Face
+	text   string
+	face   font.Face
+	stepPx int
+	fontPx int
 }
 
 func defaultOverlayTemplate() string {
@@ -121,51 +123,40 @@ func executeOverlayTemplate(cfg OverlayConfig, weather WeatherSnapshot) (string,
 	return buf.String(), nil
 }
 
-func overlayRenderedLines(cfg OverlayConfig, weather WeatherSnapshot) ([]overlayLine, error) {
+func overlayRenderedLines(cfg OverlayConfig, weather WeatherSnapshot, w, h int) ([]overlayLine, error) {
 	raw, err := executeOverlayTemplate(cfg, weather)
 	if err != nil {
 		return nil, err
 	}
-	large, medium, _ := overlayFacesStandard()
 	var lines []overlayLine
 	for i, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		face := overlayLineFace(i, line)
+		face := overlayLineFace(i, w, h)
 		if face == nil {
-			switch i {
-			case 0:
-				face = medium
-			case 1:
-				face = large
-			default:
-				face = medium
-			}
+			return nil, fmt.Errorf("overlay font unavailable")
 		}
-		lines = append(lines, overlayLine{text: line, face: face})
+		lines = append(lines, overlayLine{
+			text:   line,
+			face:   face,
+			stepPx: overlayLineStepAfter(i, w, h),
+			fontPx: overlayLineFontSizePx(i, w, h),
+		})
 	}
 	return lines, nil
 }
 
-func overlayLineFace(index int, _ string) font.Face {
-	large, medium, _ := overlayFacesStandard()
+func overlayLineFace(index, w, h int) font.Face {
 	switch index {
 	case 0:
-		return medium
+		return overlayFacePt(overlayFontMediumPt, w, h)
 	case 1:
-		return large
+		return overlayFacePt(overlayFontLargePt, w, h)
 	default:
-		return medium
+		return overlayFacePt(overlayFontMediumPt, w, h)
 	}
-}
-
-func overlayLineStepAfter(index int) int {
-	if index == 1 {
-		return overlayDateStep
-	}
-	return overlayLineStep
 }
 
 // overlayContentWidth is X: the widest rendered line.
@@ -182,17 +173,18 @@ func overlayContentWidth(lines []overlayLine) int {
 // overlayContentHeight is Y: the sum of each line's row height.
 func overlayContentHeight(lines []overlayLine) int {
 	h := 0
-	for i := range lines {
-		h += overlayLineStepAfter(i)
+	for _, ln := range lines {
+		h += ln.stepPx
 	}
 	return h
 }
 
 // overlayBoxSize returns the content box plus a small border on all sides.
-func overlayBoxSize(lines []overlayLine) (width, height int) {
+func overlayBoxSize(lines []overlayLine, w, h int) (width, height int) {
+	pad := overlayScaledPx(overlayPadMinPt, w, h)
 	if len(lines) == 0 {
-		return overlayPadMin * 2, overlayPadMin * 2
+		return pad * 2, pad * 2
 	}
-	return overlayContentWidth(lines) + 2*overlayPadMin,
-		overlayContentHeight(lines) + 2*overlayPadMin
+	return overlayContentWidth(lines) + 2*pad,
+		overlayContentHeight(lines) + 2*pad
 }

@@ -47,12 +47,13 @@ func overlayFace(size float64) font.Face {
 	return face
 }
 
-func overlayFacesStandard() (large, medium, small font.Face) {
-	return overlayFace(overlayFontLarge), overlayFace(overlayFontMedium), overlayFace(overlayFontSmall)
+func overlayFacePt(basePt float64, w, h int) font.Face {
+	return overlayFace(overlayScaledFontPt(basePt, w, h))
 }
 
 func drawWeatherOverlay(src image.Image, cfg OverlayConfig, weather WeatherSnapshot, photoName string, portrait bool) image.Image {
-	lines, err := overlayRenderedLines(cfg, weather)
+	dw, dh := overlayDrawDimensions(src, portrait)
+	lines, err := overlayRenderedLines(cfg, weather, dw, dh)
 	if err != nil {
 		lines = nil
 	}
@@ -63,57 +64,47 @@ func drawWeatherOverlay(src image.Image, cfg OverlayConfig, weather WeatherSnaps
 	}
 	if portrait {
 		upright := imageToRGBA(rotate90(src))
-		upright = drawWeatherOverlayOnImage(upright, cfg, lines, photoName)
+		upright = drawWeatherOverlayOnImage(upright, cfg, lines, photoName, dw, dh)
 		return rotate90CCW(upright)
 	}
-	return drawWeatherOverlayOnImage(imageToRGBA(src), cfg, lines, photoName)
+	return drawWeatherOverlayOnImage(imageToRGBA(src), cfg, lines, photoName, dw, dh)
 }
 
-func drawWeatherOverlayOnImage(dst *image.RGBA, cfg OverlayConfig, lines []overlayLine, photoName string) *image.RGBA {
+func drawWeatherOverlayOnImage(dst *image.RGBA, cfg OverlayConfig, lines []overlayLine, photoName string, dw, dh int) *image.RGBA {
 	if len(lines) > 0 {
 		if overlayWeatherUsesOutline(cfg) {
-			dst = drawWeatherOverlayOutlined(dst, lines)
+			dst = drawWeatherOverlayOutlined(dst, lines, dw, dh)
 		} else {
-			dst = drawWeatherOverlayBox(dst, lines)
+			dst = drawWeatherOverlayBox(dst, lines, dw, dh)
 		}
 	}
 	if cfg.ShowPhotoName {
-		drawPhotoNameCaption(dst, photoName, cfg.PhotoNamePosition)
+		drawPhotoNameCaption(dst, photoName, cfg.PhotoNamePosition, dw, dh)
 	}
 	return dst
 }
 
-func drawWeatherOverlayOutlined(dst *image.RGBA, lines []overlayLine) *image.RGBA {
+func drawWeatherOverlayOutlined(dst *image.RGBA, lines []overlayLine, dw, dh int) *image.RGBA {
 	b := dst.Bounds()
-	w, h := b.Dx(), b.Dy()
-	marginX := overlayPadForWidth(w)
-	marginY := overlayPadForWidth(h)
-	if marginY < overlayPadMin {
-		marginY = overlayPadMin
-	}
+	marginX := overlayPadForDimension(b.Dx(), dw, dh)
+	marginY := overlayPadForDimension(b.Dy(), dw, dh)
 	x := b.Min.X + marginX
 	y := b.Max.Y - marginY - overlayContentHeight(lines)
-	for i, ln := range lines {
+	for _, ln := range lines {
 		if ln.face != nil && ln.text != "" {
-			fontSize := float64(overlayLineFontSize(i))
-			drawBorderedOverlayText(dst, ln.text, x, y, ln.face, fontSize)
+			drawBorderedOverlayText(dst, ln.text, x, y, ln.face, float64(ln.fontPx))
 		}
-		y += overlayLineStepAfter(i)
+		y += ln.stepPx
 	}
 	return dst
 }
 
-func drawWeatherOverlayBox(dst *image.RGBA, lines []overlayLine) *image.RGBA {
+func drawWeatherOverlayBox(dst *image.RGBA, lines []overlayLine, dw, dh int) *image.RGBA {
 	b := dst.Bounds()
-	w, h := b.Dx(), b.Dy()
-
-	marginX := overlayPadForWidth(w)
-	marginY := overlayPadForWidth(h)
-	if marginY < overlayPadMin {
-		marginY = overlayPadMin
-	}
-	pad := overlayPadMin
-	boxW, boxH := overlayBoxSize(lines)
+	marginX := overlayPadForDimension(b.Dx(), dw, dh)
+	marginY := overlayPadForDimension(b.Dy(), dw, dh)
+	pad := overlayScaledPx(overlayPadMinPt, dw, dh)
+	boxW, boxH := overlayBoxSize(lines, dw, dh)
 
 	x0 := b.Min.X + marginX
 	y0 := b.Max.Y - marginY - boxH
@@ -128,7 +119,7 @@ func drawWeatherOverlayBox(dst *image.RGBA, lines []overlayLine) *image.RGBA {
 func drawOverlayLines(dst *image.RGBA, x, y int, lines []overlayLine) {
 	for i, ln := range lines {
 		drawOverlayText(dst, ln.text, x, y, ln.face, overlayLineColor(i))
-		y += overlayLineStepAfter(i)
+		y += ln.stepPx
 	}
 }
 

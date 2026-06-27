@@ -73,7 +73,8 @@ func (h *Hub) handleOverlayMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Config *OverlayConfig `json:"config,omitempty"`
+		Config   *OverlayConfig `json:"config,omitempty"`
+		Portrait bool           `json:"portrait,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -85,7 +86,7 @@ func (h *Hub) handleOverlayMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	m := overlayMetrics(cfg, weather)
+	m := overlayMetricsForDisplays(cfg, weather, body.Portrait)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(m)
 }

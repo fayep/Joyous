@@ -38,33 +38,30 @@ func overlayNeedsWeather(cfg OverlayConfig) bool {
 	return cfg.ShowCity || cfg.ShowDate || cfg.ShowTemp || cfg.ShowCondition
 }
 
-func drawPhotoNameCaption(dst *image.RGBA, text, position string) {
+func drawPhotoNameCaption(dst *image.RGBA, text, position string, dw, dh int) {
 	if text == "" {
 		return
 	}
 	b := dst.Bounds()
 	w, h := b.Dx(), b.Dy()
-	face := overlayCaveatFace(overlayPhotoNameFontSize(w))
+	fontSize := overlayPhotoNameFontSize(dw, dh)
+	face := overlayCaveatFace(fontSize)
 	if face == nil {
-		face = overlayFace(overlayFontSmall)
+		face = overlayFacePt(overlayFontSmallPt, dw, dh)
 	}
 	if face == nil {
 		return
 	}
-	margin := overlayPadForWidth(w)
-	if marginY := overlayPadForWidth(h); marginY < overlayPadMin {
-		if margin < marginY {
-			margin = marginY
-		}
-	}
+	marginX := overlayPadForDimension(w, dw, dh)
+	marginY := overlayPadForDimension(h, dw, dh)
 	textW := fontMeasureString(face, text)
 	ascent := face.Metrics().Ascent.Ceil()
 	descent := face.Metrics().Descent.Ceil()
 	lineH := ascent + descent
-	yTop := b.Max.Y - margin - lineH
-	x := b.Max.X - margin - textW
+	yTop := b.Max.Y - marginY - lineH
+	x := b.Max.X - marginX - textW
 	if normalizePhotoNamePosition(position) == overlayPhotoNameBottomCenter {
 		x = b.Min.X + (w-textW)/2
 	}
-	drawBorderedOverlayText(dst, text, x, yTop, face, overlayPhotoNameFontSize(w))
+	drawBorderedOverlayText(dst, text, x, yTop, face, fontSize)
 }
