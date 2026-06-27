@@ -5,13 +5,18 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
 const (
-	mdcSubCmdDailyRefresh     = 0xB0
-	samsungMorningRestoreGrace = 20 * time.Minute
+	mdcSubCmdDailyRefresh        = 0xB0
+	samsungMorningRestoreLead    = 2 * time.Minute  // probe before inactive end / daily refresh
+	samsungMorningRestoreGrace   = 20 * time.Minute // keep trying after inactive end
+	samsungMorningRestorePoll    = 5 * time.Second
 )
+
+var samsungMorningRestoreActive sync.Map // frameID -> struct{}
 
 // QueryMDCDailyRefreshTime reads the frame's scheduled daily refresh time (HH:MM).
 func QueryMDCDailyRefreshTime(ip, pin string) (hour, minute int, err error) {
@@ -172,24 +177,41 @@ func inactiveEndToday(now time.Time, end string) (time.Time, bool) {
 	return endAt, true
 }
 
-func inMorningRestoreWindow(now time.Time, begin, end string, grace time.Duration) bool {
+// inactiveEndForMorning returns the inactive-end instant for the current wake window.
+// Unlike grace/idempotency helpers, this keeps today's upcoming end before it passes
+// (e.g. 06:59 → 07:00 today, not yesterday).
+func inactiveEndForMorning(now time.Time, end string) (time.Time, bool) {
+	return inactiveEndToday(now, end)
+}
+
+func inMorningRestoreWindow(now time.Time, begin, end string) bool {
 	if !InactiveScheduleEnabled(begin, end) {
 		return false
 	}
-	if InInactiveWindow(now, begin, end) {
-		return false
-	}
-	endAt, ok := inactiveEndToday(now, end)
+	endAt, ok := inactiveEndForMorning(now, end)
 	if !ok {
 		return false
 	}
-	if now.Before(endAt) {
-		endAt = endAt.Add(-24 * time.Hour)
-	}
-	if now.Before(endAt) {
+	windowStart := endAt.Add(-samsungMorningRestoreLead)
+	if now.Before(windowStart) {
 		return false
 	}
-	return now.Sub(endAt) <= grace
+	if now.After(endAt.Add(samsungMorningRestoreGrace)) {
+		return false
+	}
+	if InInactiveWindow(now, begin, end) {
+		// Only the tail of the inactive window — daily refresh fires near inactive end.
+		return !now.Before(windowStart) && now.Before(endAt)
+	}
+	return true
+}
+
+func morningRestoreDeadline(now time.Time, end string) time.Time {
+	endAt, ok := inactiveEndForMorning(now, end)
+	if !ok {
+		return now
+	}
+	return endAt.Add(samsungMorningRestoreGrace)
 }
 
 func shouldTriggerMorningStandbyRestore(cfg SamsungFrameConfig, now time.Time) bool {
@@ -199,15 +221,12 @@ func shouldTriggerMorningStandbyRestore(cfg SamsungFrameConfig, now time.Time) b
 	if !InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) {
 		return false
 	}
-	if !inMorningRestoreWindow(now, cfg.InactiveBegin, cfg.InactiveEnd, samsungMorningRestoreGrace) {
+	if !inMorningRestoreWindow(now, cfg.InactiveBegin, cfg.InactiveEnd) {
 		return false
 	}
-	endAt, ok := inactiveEndToday(now, cfg.InactiveEnd)
+	endAt, ok := inactiveEndForMorning(now, cfg.InactiveEnd)
 	if !ok {
 		return false
-	}
-	if now.Before(endAt) {
-		endAt = endAt.Add(-24 * time.Hour)
 	}
 	if !cfg.MorningStandbyRestoredAt.IsZero() && !cfg.MorningStandbyRestoredAt.Before(endAt) {
 		return false
@@ -226,37 +245,67 @@ func (h *Hub) setMorningStandbyRestored(frameID string, at time.Time) {
 
 func (h *Hub) runSamsungMorningStandbyRestore(frameID string) {
 	cfg, err := h.samsung.LoadConfig(frameID)
-	if err == nil && !shouldTriggerMorningStandbyRestore(cfg, time.Now()) {
+	if err != nil || !shouldTriggerMorningStandbyRestore(cfg, time.Now()) {
 		return
 	}
+	if _, loaded := samsungMorningRestoreActive.LoadOrStore(frameID, struct{}{}); loaded {
+		return
+	}
+	go func() {
+		defer samsungMorningRestoreActive.Delete(frameID)
+		h.morningStandbyRestoreLoop(frameID)
+	}()
+}
+
+func (h *Hub) morningStandbyRestoreLoop(frameID string) {
 	dev := h.samsungDeviceByFrameID(frameID)
 	if dev == nil || dev.IP == "" {
 		return
 	}
 	ip, pin := dev.IP, dev.MDCPin
-	logOutbound("samsung morning standby restore start ip=%s frame=%s", ip, frameID)
-
-	restored := false
-	if mdcSessionOK(ip, pin) {
-		restored = SendMDCNetworkStandby(ip, pin, true) == nil
-	} else {
-		mac := h.samsungWakeMAC(frameID, dev)
-		if mac != "" {
-			_ = WakeSamsungDisplay(ip, pin, mac)
-		}
-		if mdcSessionOK(ip, pin) {
-			restored = SendMDCNetworkStandby(ip, pin, true) == nil
-		}
-	}
-	if !restored {
-		log.Printf("samsung morning standby restore: frame %s not reachable yet", frameID)
-		logOutbound("samsung morning standby restore skip ip=%s (not reachable)", ip)
+	cfg, err := h.samsung.LoadConfig(frameID)
+	if err != nil {
 		return
 	}
-	h.clearSamsungDeepSleepAfterPush(frameID)
-	h.setMorningStandbyRestored(frameID, time.Now())
-	log.Printf("samsung morning standby restore ok: %s", frameID)
-	logOutbound("samsung morning standby restore ok ip=%s", ip)
+	deadline := morningRestoreDeadline(time.Now(), cfg.InactiveEnd)
+	logOutbound("samsung morning standby restore start ip=%s frame=%s until=%s", ip, frameID, deadline.Format(time.RFC3339))
+
+	attempt := func() bool {
+		if !mdcSessionOK(ip, pin) {
+			return false
+		}
+		if err := SendMDCNetworkStandby(ip, pin, true); err != nil {
+			logOutbound("samsung morning standby restore network standby fail ip=%s err=%v", ip, err)
+			return false
+		}
+		h.clearSamsungDeepSleepAfterPush(frameID)
+		h.setMorningStandbyRestored(frameID, time.Now())
+		log.Printf("samsung morning standby restore ok: %s", frameID)
+		logOutbound("samsung morning standby restore ok ip=%s", ip)
+		return true
+	}
+
+	if attempt() {
+		return
+	}
+
+	ticker := time.NewTicker(samsungMorningRestorePoll)
+	defer ticker.Stop()
+	for {
+		if time.Now().After(deadline) {
+			log.Printf("samsung morning standby restore: frame %s not reachable before %s", frameID, deadline.Format("15:04"))
+			logOutbound("samsung morning standby restore gave up ip=%s", ip)
+			return
+		}
+		cfg, err := h.samsung.LoadConfig(frameID)
+		if err != nil || !cfg.DeepSleepActive {
+			return
+		}
+		<-ticker.C
+		if attempt() {
+			return
+		}
+	}
 }
 
 func (h *Hub) handleSamsungDailyRefreshGet(w http.ResponseWriter, r *http.Request, frameID string) {

@@ -773,7 +773,7 @@ const indexHTML = `<!DOCTYPE html>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">The frame should stay <strong>asleep</strong> between pushes. On send: wake → deliver image → sleep (after delay). WiFi MAC required for remote wake. Moon/power are for manual override only.</p>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">Set inactive begin and end to the <strong>same time</strong> (e.g. 00:00–00:00) to disable hub-managed network sleep — the frame keeps its current deep sleep or network standby mode.</p>
           <p style="font-size:.8rem;color:#888;margin:.75rem 0 0"><strong>Overnight deep sleep:</strong> at inactive begin the hub wakes the frame, turns off network standby, and sleeps it (lower battery drain). A send during inactive hours needs a <strong>3s power-button wake</strong> and returns to deep sleep after; outside those hours the hub restores network standby for remote wake.</p>
-          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0"><strong>Daily refresh:</strong> the frame wakes briefly for its scheduled e-ink refresh. Sync to <em>inactive end</em> so the hub can reconnect and turn network standby back on each morning.</p>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0"><strong>Daily refresh:</strong> the frame wakes briefly for its scheduled e-ink refresh (network standby is off during deep sleep, so WoL cannot reach it). Sync to <em>inactive end</em>; the hub polls MDC every 5s from 2 minutes before through 20 minutes after inactive end.</p>
         </div>
         <div class="card" style="border:1px solid #f5c6cb">
           <div class="section-label" style="margin-top:0;color:#dc3545">Danger zone</div>
@@ -796,7 +796,7 @@ function showTab(name,btn){
   stopTabRefresh();
   if(name==='devices') startTabRefresh(5000, refreshDevicesTab);
   else if(name==='inkjoy') startTabRefresh(5000, refreshInkjoyTab);
-  else if(name==='samsung') startTabRefresh(30000, refreshSamsungTab);
+  else if(name==='samsung') startTabRefresh(60000, refreshSamsungTab);
   else if(name==='album') loadImages();
   if(name==='mqtt') startMQTTLogPoll();
   else stopMQTTLogPoll();
@@ -860,14 +860,31 @@ async function loadMQTTLogs(){
 }
 
 let tabRefreshTimer=null;
+let tabRefreshFn=null;
+let tabRefreshIntervalMs=0;
 function startTabRefresh(intervalMs, fn){
-  stopTabRefresh();
-  fn();
-  tabRefreshTimer=setInterval(fn, intervalMs);
+  tabRefreshFn=fn;
+  tabRefreshIntervalMs=intervalMs;
+  resumeTabRefresh();
+}
+function resumeTabRefresh(){
+  if(tabRefreshTimer){ clearInterval(tabRefreshTimer); tabRefreshTimer=null; }
+  if(!tabRefreshFn||document.hidden) return;
+  tabRefreshFn();
+  tabRefreshTimer=setInterval(tabRefreshFn, tabRefreshIntervalMs);
 }
 function stopTabRefresh(){
   if(tabRefreshTimer){ clearInterval(tabRefreshTimer); tabRefreshTimer=null; }
+  tabRefreshFn=null;
+  tabRefreshIntervalMs=0;
 }
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){
+    if(tabRefreshTimer){ clearInterval(tabRefreshTimer); tabRefreshTimer=null; }
+  }else{
+    resumeTabRefresh();
+  }
+});
 
 async function refreshDevicesTab(){
   await loadDevicesInner();
@@ -879,7 +896,6 @@ async function refreshInkjoyTab(){
 }
 
 async function refreshSamsungTab(){
-  await loadDevicesInner();
   await loadSamsungFrames();
 }
 
@@ -1633,8 +1649,7 @@ async function loadSamsungFrames(){
   }
   if(samsungCurrentId){
     const rec=samsungFrameRecord(samsungCurrentId);
-    const d=samsungDeviceForFrame(samsungCurrentId);
-    if(rec||d) updateSamsungEditorStatus(d,rec,samsungStatusCache);
+    if(rec) updateSamsungEditorStatus(null,rec,samsungStatusCache);
     else if(samsungStatusCache) updateSamsungEditorStatus(null,null,samsungStatusCache);
   }
 }

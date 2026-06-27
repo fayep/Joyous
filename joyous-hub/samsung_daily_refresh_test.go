@@ -52,18 +52,25 @@ func TestInMorningRestoreWindow(t *testing.T) {
 	loc := time.FixedZone("test", 0)
 	end := "07:00"
 	begin := "22:00"
-	grace := 20 * time.Minute
 
+	beforeLead := time.Date(2026, 6, 20, 6, 57, 0, 0, loc)
+	if inMorningRestoreWindow(beforeLead, begin, end) {
+		t.Fatal("expected false before lead window")
+	}
+	inLead := time.Date(2026, 6, 20, 6, 59, 0, 0, loc)
+	if !inMorningRestoreWindow(inLead, begin, end) {
+		t.Fatal("expected inside lead window before inactive end")
+	}
 	atEnd := time.Date(2026, 6, 20, 7, 5, 0, 0, loc)
-	if !inMorningRestoreWindow(atEnd, begin, end, grace) {
+	if !inMorningRestoreWindow(atEnd, begin, end) {
 		t.Fatal("expected inside grace after inactive end")
 	}
-	tooLate := time.Date(2026, 6, 20, 7, 25, 0, 0, loc)
-	if inMorningRestoreWindow(tooLate, begin, end, grace) {
+	tooLate := time.Date(2026, 6, 20, 7, 21, 0, 0, loc)
+	if inMorningRestoreWindow(tooLate, begin, end) {
 		t.Fatal("expected outside grace")
 	}
 	duringInactive := time.Date(2026, 6, 20, 23, 0, 0, 0, loc)
-	if inMorningRestoreWindow(duringInactive, begin, end, grace) {
+	if inMorningRestoreWindow(duringInactive, begin, end) {
 		t.Fatal("expected false during inactive window")
 	}
 }
