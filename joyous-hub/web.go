@@ -230,6 +230,13 @@ func (h *Hub) handleImages(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(imgs)
 }
 
+// handleImagesRevision serves GET /api/images/revision — cheap poll for album changes.
+func (h *Hub) handleImagesRevision(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+	json.NewEncoder(w).Encode(map[string]string{"revision": h.images.AlbumRevision()})
+}
+
 // handleImageUpload serves POST /api/images.
 func (h *Hub) handleImageUpload(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
@@ -625,8 +632,8 @@ const indexHTML = `<!DOCTYPE html>
 <header>
   <h1>Joyous</h1>
   <nav>
-    <button class="active" onclick="showTab('devices',this)">Devices</button>
-    <button onclick="showTab('album',this)">Album</button>
+    <button onclick="showTab('devices',this)">Devices</button>
+    <button class="active" onclick="showTab('album',this)">Album</button>
     <button onclick="showTab('overlays',this)">Overlays</button>
     <button onclick="showTab('color',this)">Color</button>
     <button onclick="showTab('inkjoy',this)">InkJoy</button>
@@ -636,14 +643,14 @@ const indexHTML = `<!DOCTYPE html>
 </header>
 <div id="send-picker"></div>
 <main>
-  <div id="tab-devices">
+  <div id="tab-devices" style="display:none">
     <div style="margin-bottom:1rem">
       <button class="btn btn-primary btn-sm" id="discover-btn" onclick="discoverFrames()">Discover photo frames</button>
       <span id="discover-status" style="margin-left:.75rem;color:#666;font-size:.9rem"></span>
     </div>
     <div id="device-list"><p>Loading…</p></div>
   </div>
-  <div id="tab-album" class="album-wall" style="display:none">
+  <div id="tab-album" class="album-wall">
     <div class="album-upload-wrap">
       <div id="upload-zone" class="album-upload" onclick="document.getElementById('file-input').click()">
         Drop images here or click to upload <span class="album-upload-mono">(.bin, .png, .jpg)</span>
@@ -745,7 +752,7 @@ const indexHTML = `<!DOCTYPE html>
         <span id="clr-lab-chroma-strength-val" style="font-family:monospace">1</span>
       </label>
       <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
-        <input type="checkbox" id="clr-lab-highlight"> Highlight rolloff (L channel — tames near-whites)
+        <input type="checkbox" id="clr-lab-highlight"> Highlight rolloff (targets bright blue sky/water; leaves neutral snow and clouds mostly alone)
       </label>
       <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Highlight strength
         <input type="range" id="clr-lab-highlight-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-highlight-strength-val').textContent=this.value">
@@ -981,7 +988,7 @@ document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible') checkJoyousUIRevision();
 });
 
-let devices=[], images=[], activeTab='devices';
+let devices=[], images=[], activeTab='album';
 
 function showTab(name,btn){
   activeTab=name;
@@ -993,7 +1000,7 @@ function showTab(name,btn){
   if(name==='devices') startTabRefresh(5000, refreshDevicesTab);
   else if(name==='inkjoy') startTabRefresh(5000, refreshInkjoyTab);
   else if(name==='samsung') startTabRefresh(60000, refreshSamsungTab);
-  else if(name==='album') loadImages();
+  else if(name==='album') startTabRefresh(5000, refreshAlbumTab);
   else if(name==='overlays') loadOverlaysTab();
   else if(name==='color') loadColorTab();
   if(name==='mqtt') startMQTTLogPoll();
@@ -1095,6 +1102,32 @@ async function refreshInkjoyTab(){
 
 async function refreshSamsungTab(){
   await loadSamsungFrames();
+}
+
+let albumRevision=null;
+async function refreshAlbumTab(){
+  if(albumCaptionEditingId) return;
+  const m=document.getElementById('crop-modal');
+  if(m&&m.classList.contains('open')) return;
+  try{
+    const r=await fetch('/api/images/revision',{cache:'no-store'});
+    if(!r.ok) return;
+    const j=await r.json();
+    if(!j.revision) return;
+    if(!albumRevision||j.revision!==albumRevision){
+      albumRevision=j.revision;
+      await loadImages();
+    }
+  }catch(e){}
+}
+
+async function syncAlbumRevision(){
+  try{
+    const r=await fetch('/api/images/revision',{cache:'no-store'});
+    if(!r.ok) return;
+    const j=await r.json();
+    if(j.revision) albumRevision=j.revision;
+  }catch(e){}
 }
 
 async function ensureDevicesForSend(){
@@ -1343,6 +1376,7 @@ async function loadImages(){
       albumSelectedId=null;
     }
   }
+  await syncAlbumRevision();
 }
 
 const sendPicker=document.getElementById('send-picker');
@@ -1821,8 +1855,7 @@ async function loadDevicesInner(){
   }).join('');
 }
 
-loadImages();
-showTab('devices', document.querySelector('nav button.active'));
+showTab('album', document.querySelector('nav button.active'));
 
 // ── Overlays tab ────────────────────────────────────────────────────────────
 let overlayConfig=null;

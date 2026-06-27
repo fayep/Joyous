@@ -21,6 +21,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("POST /api/devices/discover", hub.handleDiscover)
 	mux.HandleFunc("GET /api/ui/revision", hub.handleUIRevision)
 	mux.HandleFunc("GET /api/images", hub.handleImages)
+	mux.HandleFunc("GET /api/images/revision", hub.handleImagesRevision)
 	mux.HandleFunc("POST /api/images", hub.handleImageUpload)
 	mux.HandleFunc("DELETE /api/images/{id}", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleImageDelete(w, r, r.PathValue("id"))

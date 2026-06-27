@@ -231,6 +231,32 @@ func TestRenameImage(t *testing.T) {
 	}
 }
 
+func TestAlbumRevision(t *testing.T) {
+	store := NewImageStore(t.TempDir())
+	if rev := store.AlbumRevision(); rev != "empty" {
+		t.Fatalf("empty store: %q", rev)
+	}
+	id1, _ := store.Store(bytes.NewReader([]byte{1}), "a.jpg")
+	rev1 := store.AlbumRevision()
+	id2, _ := store.Store(bytes.NewReader([]byte{2, 3}), "b.jpg")
+	rev2 := store.AlbumRevision()
+	if rev1 == rev2 {
+		t.Fatal("revision should change after upload")
+	}
+	if _, err := store.Rename(id1, "renamed.jpg"); err != nil {
+		t.Fatal(err)
+	}
+	rev3 := store.AlbumRevision()
+	if rev3 == rev2 {
+		t.Fatal("revision should change after rename")
+	}
+	store.DeleteImage(id2)
+	rev4 := store.AlbumRevision()
+	if rev4 == rev3 {
+		t.Fatal("revision should change after delete")
+	}
+}
+
 // TestDeleteCrop: DeleteCrop removes a stored crop from metadata.
 func TestDeleteCrop(t *testing.T) {
 	store := NewImageStore(t.TempDir())

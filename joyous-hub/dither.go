@@ -349,15 +349,7 @@ func ApplyLABProcessing(img image.Image, pipe ColorPipeline) image.Image {
 			}
 
 			if pipe.LABHighlightEnabled && pipe.LABHighlightStrength > 0 {
-				L := lab[0]
-				t := (L - 75.0) / 25.0
-				if t < 0 {
-					t = 0
-				} else if t > 1 {
-					t = 1
-				}
-				rolloff := t * t * (3.0 - 2.0*t)
-				lab[0] = L - rolloff*20.0*pipe.LABHighlightStrength
+				lab[0] = applyLABHighlightTone(lab, pipe.LABHighlightStrength)
 			}
 
 			if pipe.LABShadowEnabled && pipe.LABShadowStrength > 0 {
@@ -382,6 +374,119 @@ func ApplyLABProcessing(img image.Image, pipe ColorPipeline) image.Image {
 		}
 	}
 	return out
+}
+
+// applyLABHighlightTone compresses bright blue skies so they dither with color instead
+// of blowing to white, then darkens blue reflections slightly. Neutral or mid-bright
+// highlights (snow, mountain rock) are left alone — only L≥58 blues get sky compression.
+func applyLABHighlightTone(lab [3]float64, strength float64) float64 {
+	if strength <= 0 {
+		return lab[0]
+	}
+	out := lab[0]
+	orig := lab[0]
+
+	if sky := highlightSkyWeight(lab); sky > 0 {
+		effective := strength * sky
+		const knee = 48.0
+		if out > knee {
+			excess := out - knee
+			keep := 1.0 - 1.0*effective
+			if keep < 0.08 {
+				keep = 0.08
+			}
+			out = knee + excess*keep
+		}
+		if orig > 58 {
+			t := (orig - 58.0) / 36.0
+			if t > 1 {
+				t = 1
+			}
+			shade := t * t * (3.0 - 2.0*t)
+			out -= shade * 11.0 * effective
+		}
+	}
+
+	if water := highlightWaterWeight(lab); water > 0 {
+		effective := strength * water
+		t := (orig - 34.0) / 18.0
+		if t > 1 {
+			t = 1
+		}
+		reflShade := t * (1.0 - t) * 4.0
+		out -= reflShade * effective
+	}
+
+	if out < 0 {
+		return 0
+	}
+	return out
+}
+
+// highlightSkyWeight selects bright blue sky (high L, strong negative b*).
+func highlightSkyWeight(lab [3]float64) float64 {
+	L, a, b := lab[0], lab[1], lab[2]
+	if L < 58 {
+		return 0
+	}
+	chroma := math.Hypot(a, b)
+	if chroma < 8 || b >= -10 {
+		return 0
+	}
+	blue := -b / 30.0
+	if blue > 1 {
+		blue = 1
+	}
+	warm := a / 25.0
+	if warm < 0 {
+		warm = 0
+	}
+	if warm > 1 {
+		warm = 1
+	}
+	w := blue * (1.0 - warm*0.5)
+	chromaW := (chroma - 8.0) / 30.0
+	if chromaW > 1 {
+		chromaW = 1
+	}
+	w *= chromaW
+	if w < 0 {
+		return 0
+	}
+	if w > 1 {
+		return 1
+	}
+	return w
+}
+
+// highlightWaterWeight selects blue reflections and lower sky tones (L≈34–52).
+func highlightWaterWeight(lab [3]float64) float64 {
+	L, a, b := lab[0], lab[1], lab[2]
+	if L < 34 || L > 52 {
+		return 0
+	}
+	if b >= -5 {
+		return 0
+	}
+	chroma := math.Hypot(a, b)
+	if chroma < 8 {
+		return 0
+	}
+	blue := -b / 25.0
+	if blue > 1 {
+		blue = 1
+	}
+	return blue * 0.85
+}
+
+// skyBlueWeight is the max of sky and water weights (for analysis/logging).
+func skyBlueWeight(lab [3]float64) float64 {
+	s := highlightSkyWeight(lab)
+	w := highlightWaterWeight(lab)
+	if w > s {
+		return w
+	}
+	return s
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

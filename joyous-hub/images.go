@@ -214,6 +214,35 @@ func (s *ImageStore) ListImages() ([]ImageMeta, error) {
 	return out, nil
 }
 
+// AlbumRevision returns a short hash that changes when images are added, removed, or renamed.
+func (s *ImageStore) AlbumRevision() string {
+	imgs, err := s.ListImages()
+	if err != nil {
+		return ""
+	}
+	if len(imgs) == 0 {
+		return "empty"
+	}
+	sort.Slice(imgs, func(i, j int) bool { return imgs[i].ID < imgs[j].ID })
+	h := sha256.New()
+	for _, m := range imgs {
+		fmt.Fprintf(h, "%s|%s|%d|", m.ID, m.Name, m.Size)
+		if len(m.Crops) > 0 {
+			keys := make([]string, 0, len(m.Crops))
+			for k := range m.Crops {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				c := m.Crops[k]
+				fmt.Fprintf(h, "%s:%g,%g,%g,%g;", k, c.X, c.Y, c.W, c.H)
+			}
+		}
+		h.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
 // SetCrop stores a crop rect for the given aspect ratio key (e.g. "4:3") and
 // invalidates the thumbnail so it regenerates with the new crop applied.
 func (s *ImageStore) SetCrop(id, format string, rect CropRect) error {

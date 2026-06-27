@@ -84,11 +84,19 @@ func TestLABProcessingChromaOnly(t *testing.T) {
 	highlight := ApplyLABProcessing(img, ColorPipeline{LABHighlightEnabled: true, LABHighlightStrength: 1})
 	cr, _, _, _ := chroma.At(0, 0).RGBA()
 	hr, _, _, _ := highlight.At(0, 0).RGBA()
-	if hr>>8 >= 238 {
-		t.Fatalf("highlight should compress bright pixel, got %d", hr>>8)
+	if hr>>8 < 238 {
+		t.Fatalf("highlight should leave neutral snow alone, got %d", hr>>8)
 	}
-	if abs(int(cr>>8)-240) >= abs(int(hr>>8)-240) {
-		t.Fatalf("highlight should change neutral bright pixel more than chroma: chroma=%d highlight=%d", cr>>8, hr>>8)
+	if abs(int(cr>>8)-240) > 2 {
+		t.Fatalf("chroma should barely move neutral grey, got %d", cr>>8)
+	}
+
+	blueSky := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	blueSky.Set(0, 0, color.RGBA{151, 182, 240, 255})
+	compressed := ApplyLABProcessing(blueSky, ColorPipeline{LABHighlightEnabled: true, LABHighlightStrength: 1})
+	br, _, _, _ := compressed.At(0, 0).RGBA()
+	if br>>8 >= 150 {
+		t.Fatalf("highlight should compress bright blue sky, got %d", br>>8)
 	}
 }
 
