@@ -217,7 +217,7 @@ func TestSamsungUploadAPI(t *testing.T) {
 
 func TestConvertToSamsungPNG(t *testing.T) {
 	raw := testPNG()
-	out, err := convertToSamsungPNG(raw, defaultSamsungDisplayProfile(), CropRect{}, false)
+	out, err := convertToSamsungPNG(raw, defaultSamsungDisplayProfile(), CropRect{}, false, defaultColorPipeline())
 	if err != nil {
 		t.Fatal(err)
 	}

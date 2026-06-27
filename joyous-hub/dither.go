@@ -288,10 +288,10 @@ func StuckiDither(img image.Image, palette [6][3]float64) [][]byte {
 
 // StuckiTwoPalette runs Stucki error diffusion in displayPalette (P2) space.
 // Map indices to send values with RenderIndicesToRGB (Samsung P1) or indicesToHi (InkJoy).
-func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, labEnhance bool) [][]byte {
+func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorPipeline, flatRGB bool) [][]byte {
 	src := img
-	if labEnhance {
-		src = LABEnhance(img, 1.0)
+	if shouldApplyLABProcessing(pipe, img, flatRGB) {
+		src = ApplyLABProcessing(img, pipe)
 	}
 	return StuckiDither(src, displayPalette)
 }
@@ -332,9 +332,8 @@ func samsungSendIndexForRGB(r, g, b uint8) int {
 	return nearestColor([3]float64{float64(r), float64(g), float64(b)}, PaletteSamsungSend)
 }
 
-// LABEnhance applies LAB chroma boost and highlight rolloff before dithering.
-// strength=1.0 matches observed server processing (chroma ×1.3, highlight rolloff).
-func LABEnhance(img image.Image, strength float64) image.Image {
+// ApplyLABProcessing applies optional LAB chroma, highlight rolloff, and/or shadow lift before dithering.
+func ApplyLABProcessing(img image.Image, pipe ColorPipeline) image.Image {
 	b := img.Bounds()
 	out := image.NewRGBA(b)
 	for y := b.Min.Y; y < b.Max.Y; y++ {
@@ -343,21 +342,35 @@ func LABEnhance(img image.Image, strength float64) image.Image {
 			rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
 			lab := srgbToLAB(rgb)
 
-			// Chroma boost
-			chroma := 1.0 + 0.3*strength
-			lab[1] *= chroma
-			lab[2] *= chroma
-
-			// Highlight rolloff: smoothstep on L>75
-			L := lab[0]
-			t := (L - 75.0) / 25.0
-			if t < 0 {
-				t = 0
-			} else if t > 1 {
-				t = 1
+			if pipe.LABChromaEnabled && pipe.LABChromaStrength > 0 {
+				chroma := 1.0 + 0.3*pipe.LABChromaStrength
+				lab[1] *= chroma
+				lab[2] *= chroma
 			}
-			rolloff := t * t * (3.0 - 2.0*t)
-			lab[0] = L - rolloff*20.0*strength
+
+			if pipe.LABHighlightEnabled && pipe.LABHighlightStrength > 0 {
+				L := lab[0]
+				t := (L - 75.0) / 25.0
+				if t < 0 {
+					t = 0
+				} else if t > 1 {
+					t = 1
+				}
+				rolloff := t * t * (3.0 - 2.0*t)
+				lab[0] = L - rolloff*20.0*pipe.LABHighlightStrength
+			}
+
+			if pipe.LABShadowEnabled && pipe.LABShadowStrength > 0 {
+				L := lab[0]
+				t := (25.0 - L) / 25.0
+				if t < 0 {
+					t = 0
+				} else if t > 1 {
+					t = 1
+				}
+				lift := t * t * (3.0 - 2.0*t)
+				lab[0] = L + lift*20.0*pipe.LABShadowStrength
+			}
 
 			enhanced := labToSRGB(lab)
 			out.SetRGBA(x, y, color.RGBA{

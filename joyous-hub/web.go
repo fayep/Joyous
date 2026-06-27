@@ -25,6 +25,7 @@ type Hub struct {
 	samsung        *SamsungStore
 	sendDelivery   *SendDeliveryTracker
 	overlay        *OverlayStore
+	color          *ColorStore
 	weather        weatherClient
 	hubIP      string // resolved non-loopback LAN IP, used for play URLs and BLE adoption
 	publisher  MQTTPublisher
@@ -593,6 +594,7 @@ const indexHTML = `<!DOCTYPE html>
     <button class="active" onclick="showTab('devices',this)">Devices</button>
     <button onclick="showTab('album',this)">Album</button>
     <button onclick="showTab('overlays',this)">Overlays</button>
+    <button onclick="showTab('color',this)">Color</button>
     <button onclick="showTab('inkjoy',this)">InkJoy</button>
     <button onclick="showTab('mqtt',this)">MQTT</button>
     <button onclick="showTab('samsung',this)">Samsung</button>
@@ -678,6 +680,51 @@ const indexHTML = `<!DOCTYPE html>
         <p style="font-size:.85rem;color:#666;margin:.25rem 0 .75rem">Re-sends each frame’s current album image with a fresh weather overlay. Album → Send also adds the overlay when enabled.</p>
         <div id="ovl-send-list"><p style="color:#888;font-size:.9rem">Loading frames…</p></div>
       </div>
+    </div>
+  </div>
+  <div id="tab-color" style="display:none">
+    <div class="card" style="max-width:760px">
+      <div class="section-label" style="margin-top:0">Pre-dither LAB processing</div>
+      <p style="font-size:.85rem;color:#666;margin:.25rem 0 .75rem">Optional steps before Stucki dithering (skipped for calibration swatches and ≤6-color images). Chroma, highlight, and shadow are independent.</p>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-chroma"> Chroma boost (pulls neutrals toward their hue)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Chroma strength
+        <input type="range" id="clr-lab-chroma-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-chroma-strength-val').textContent=this.value">
+        <span id="clr-lab-chroma-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-highlight"> Highlight rolloff (L channel — tames near-whites)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Highlight strength
+        <input type="range" id="clr-lab-highlight-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-highlight-strength-val').textContent=this.value">
+        <span id="clr-lab-highlight-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-shadow"> Shadow lift (L channel — brightens dark areas)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Shadow strength
+        <input type="range" id="clr-lab-shadow-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-shadow-strength-val').textContent=this.value">
+        <span id="clr-lab-shadow-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <div class="section-label">InkJoy dither palette (P2)</div>
+      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
+        <select id="clr-inkjoy-display-preset" onchange="onColorPresetChange('inkjoy_display')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
+      </label>
+      <div id="clr-inkjoy-display-swatches"></div>
+      <div class="section-label">Samsung dither palette (P2)</div>
+      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
+        <select id="clr-samsung-display-preset" onchange="onColorPresetChange('samsung_display')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
+      </label>
+      <div id="clr-samsung-display-swatches"></div>
+      <div class="section-label">Samsung send palette (P1 PNG)</div>
+      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
+        <select id="clr-samsung-send-preset" onchange="onColorPresetChange('samsung_send')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
+      </label>
+      <div id="clr-samsung-send-swatches"></div>
+      <button class="btn btn-primary btn-sm" style="margin-top:1rem" onclick="saveColorConfig()">Save color settings</button>
+      <div id="clr-save-status" style="font-size:.85rem;color:#666;margin-top:.5rem"></div>
+      <p style="font-size:.8rem;color:#888;margin-top:.75rem">Saving clears the converted .bin cache. Re-send album images to frames to apply new palettes.</p>
     </div>
   </div>
   <div id="tab-inkjoy" style="display:none">
@@ -869,6 +916,7 @@ function showTab(name,btn){
   else if(name==='samsung') startTabRefresh(60000, refreshSamsungTab);
   else if(name==='album') loadImages();
   else if(name==='overlays') loadOverlaysTab();
+  else if(name==='color') loadColorTab();
   if(name==='mqtt') startMQTTLogPoll();
   else stopMQTTLogPoll();
 }
@@ -1813,6 +1861,169 @@ async function loadOverlaysTab(){
     refreshOverlayPreview();
   }catch(e){
     document.getElementById('ovl-save-status').textContent='Load failed: '+e.message;
+  }
+}
+
+// ── Color tab ───────────────────────────────────────────────────────────────
+let colorConfig=null, colorPresets=null;
+const COLOR_PRESET_LABELS={
+  calibrated:'Calibrated (on-panel P2)',
+  legacy:'Legacy physical ink',
+  srgb:'Pure sRGB primaries',
+  reflection:'Reflection Spectra 6',
+  custom:'Custom'
+};
+const COLOR_GROUPS=[
+  {key:'inkjoy_display',presetId:'clr-inkjoy-display-preset',swatchId:'clr-inkjoy-display-swatches',cfgPreset:'inkjoy_display_preset',cfgRGB:'inkjoy_display'},
+  {key:'samsung_display',presetId:'clr-samsung-display-preset',swatchId:'clr-samsung-display-swatches',cfgPreset:'samsung_display_preset',cfgRGB:'samsung_display'},
+  {key:'samsung_send',presetId:'clr-samsung-send-preset',swatchId:'clr-samsung-send-swatches',cfgPreset:'samsung_send_preset',cfgRGB:'samsung_send'}
+];
+
+function fillColorPresetSelect(sel){
+  sel.innerHTML=Object.entries(COLOR_PRESET_LABELS).map(([v,l])=>'<option value="'+v+'">'+l+'</option>').join('');
+}
+
+function renderColorSwatches(groupKey, containerId){
+  const el=document.getElementById(containerId);
+  const names=colorPresets&&colorPresets.names?colorPresets.names:['black','white','yellow','red','blue','green'];
+  el.innerHTML='<table style="width:100%;font-size:.8rem;border-collapse:collapse;margin:.35rem 0 .75rem"><thead><tr><th style="text-align:left;padding:.2rem 0">Ink</th><th>R</th><th>G</th><th>B</th><th></th></tr></thead><tbody>'+
+    names.map((n,i)=>{
+      const id=groupKey+'-'+i;
+      return '<tr><td style="padding:.2rem .35rem .2rem 0">'+n+'</td>'+
+        '<td><input id="clr-'+id+'-r" type="number" min="0" max="255" style="width:3.2rem;padding:.2rem;border:1px solid #ccc;border-radius:3px"></td>'+
+        '<td><input id="clr-'+id+'-g" type="number" min="0" max="255" style="width:3.2rem;padding:.2rem;border:1px solid #ccc;border-radius:3px"></td>'+
+        '<td><input id="clr-'+id+'-b" type="number" min="0" max="255" style="width:3.2rem;padding:.2rem;border:1px solid #ccc;border-radius:3px"></td>'+
+        '<td><span id="clr-'+id+'-sw" style="display:inline-block;width:1.4rem;height:1.1rem;border:1px solid #ccc;border-radius:3px;vertical-align:middle"></span></td></tr>';
+    }).join('')+'</tbody></table>';
+}
+
+function readPaletteGroup(groupKey){
+  const names=colorPresets&&colorPresets.names?colorPresets.names:[];
+  const out=[];
+  for(let i=0;i<6;i++){
+    const r=parseInt(document.getElementById('clr-'+groupKey+'-'+i+'-r').value,10)||0;
+    const g=parseInt(document.getElementById('clr-'+groupKey+'-'+i+'-g').value,10)||0;
+    const b=parseInt(document.getElementById('clr-'+groupKey+'-'+i+'-b').value,10)||0;
+    out.push([Math.max(0,Math.min(255,r)),Math.max(0,Math.min(255,g)),Math.max(0,Math.min(255,b))]);
+    const sw=document.getElementById('clr-'+groupKey+'-'+i+'-sw');
+    if(sw) sw.style.background='rgb('+out[i].join(',')+')';
+  }
+  return out;
+}
+
+function writePaletteGroup(groupKey, palette){
+  if(!palette) return;
+  for(let i=0;i<6;i++){
+    const rgb=palette[i]||[0,0,0];
+    const r=document.getElementById('clr-'+groupKey+'-'+i+'-r');
+    const g=document.getElementById('clr-'+groupKey+'-'+i+'-g');
+    const b=document.getElementById('clr-'+groupKey+'-'+i+'-b');
+    if(r){r.value=rgb[0];g.value=rgb[1];b.value=rgb[2];}
+  }
+  readPaletteGroup(groupKey);
+}
+
+function onColorPresetChange(groupKey){
+  const g=COLOR_GROUPS.find(x=>x.key===groupKey);
+  if(!g||!colorPresets) return;
+  const preset=document.getElementById(g.presetId).value;
+  if(preset!=='custom'){
+    writePaletteGroup(groupKey, colorPresets.presets[groupKey][preset]);
+  }
+}
+
+function applyColorForm(cfg){
+  document.getElementById('clr-lab-chroma').checked=!!cfg.lab_chroma_enabled;
+  const chromaStrength=cfg.lab_chroma_strength||1;
+  document.getElementById('clr-lab-chroma-strength').value=chromaStrength;
+  document.getElementById('clr-lab-chroma-strength-val').textContent=String(chromaStrength);
+  document.getElementById('clr-lab-highlight').checked=!!cfg.lab_highlight_enabled;
+  const highlightStrength=cfg.lab_highlight_strength||1;
+  document.getElementById('clr-lab-highlight-strength').value=highlightStrength;
+  document.getElementById('clr-lab-highlight-strength-val').textContent=String(highlightStrength);
+  document.getElementById('clr-lab-shadow').checked=!!cfg.lab_shadow_enabled;
+  const shadowStrength=cfg.lab_shadow_strength||1;
+  document.getElementById('clr-lab-shadow-strength').value=shadowStrength;
+  document.getElementById('clr-lab-shadow-strength-val').textContent=String(shadowStrength);
+  for(const g of COLOR_GROUPS){
+    document.getElementById(g.presetId).value=cfg[g.cfgPreset]||'calibrated';
+    const preset=cfg[g.cfgPreset]||'calibrated';
+    const pal=preset==='custom'?cfg[g.cfgRGB]:(colorPresets&&colorPresets.presets[g.key][preset]);
+    writePaletteGroup(g.key, pal);
+  }
+}
+
+function colorFormValues(){
+  const out={
+    lab_chroma_enabled:document.getElementById('clr-lab-chroma').checked,
+    lab_chroma_strength:parseFloat(document.getElementById('clr-lab-chroma-strength').value)||1,
+    lab_highlight_enabled:document.getElementById('clr-lab-highlight').checked,
+    lab_highlight_strength:parseFloat(document.getElementById('clr-lab-highlight-strength').value)||1,
+    lab_shadow_enabled:document.getElementById('clr-lab-shadow').checked,
+    lab_shadow_strength:parseFloat(document.getElementById('clr-lab-shadow-strength').value)||1,
+    inkjoy_display_preset:document.getElementById('clr-inkjoy-display-preset').value,
+    samsung_display_preset:document.getElementById('clr-samsung-display-preset').value,
+    samsung_send_preset:document.getElementById('clr-samsung-send-preset').value
+  };
+  for(const g of COLOR_GROUPS){
+    out[g.cfgRGB]=readPaletteGroup(g.key);
+    if(document.getElementById(g.presetId).value==='custom'){
+      out[g.cfgPreset]='custom';
+    }
+  }
+  return out;
+}
+
+async function loadColorConfig(){
+  const r=await fetch('/api/color');
+  if(!r.ok) throw new Error(await r.text());
+  colorConfig=await r.json();
+}
+
+async function loadColorPresets(){
+  const r=await fetch('/api/color/presets');
+  if(!r.ok) throw new Error(await r.text());
+  colorPresets=await r.json();
+}
+
+async function loadColorTab(){
+  try{
+    if(!colorPresets) await loadColorPresets();
+    for(const g of COLOR_GROUPS){
+      fillColorPresetSelect(document.getElementById(g.presetId));
+      renderColorSwatches(g.key, g.swatchId);
+    }
+    if(!colorConfig) await loadColorConfig();
+    applyColorForm(colorConfig||{});
+  }catch(e){
+    document.getElementById('clr-save-status').textContent='Load failed: '+e.message;
+  }
+}
+
+async function saveColorConfig(){
+  const st=document.getElementById('clr-save-status');
+  st.textContent='Saving…';
+  try{
+    const body=colorFormValues();
+    for(const g of COLOR_GROUPS){
+      if(document.getElementById(g.presetId).value!=='custom'){
+        body[g.cfgPreset]=document.getElementById(g.presetId).value;
+      }else{
+        body[g.cfgPreset]='custom';
+      }
+    }
+    const r=await fetch('/api/color',{
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body)
+    });
+    if(!r.ok) throw new Error(await r.text());
+    colorConfig=body;
+    st.style.color='#28a745';
+    st.textContent='Saved. Bin cache cleared — re-send images to apply.';
+  }catch(e){
+    st.style.color='#dc3545';
+    st.textContent='Save failed: '+e.message;
   }
 }
 

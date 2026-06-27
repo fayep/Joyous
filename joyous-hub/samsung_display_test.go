@@ -31,11 +31,11 @@ func TestConvertToSamsungPNGUsesSavedCrop(t *testing.T) {
 	raw := testPNG()
 	profile := defaultSamsungDisplayProfile()
 	crop := CropRect{X: 0.25, Y: 0.25, W: 0.5, H: 0.5}
-	withCrop, err := convertToSamsungPNG(raw, profile, crop, true)
+	withCrop, err := convertToSamsungPNG(raw, profile, crop, true, defaultColorPipeline())
 	if err != nil {
 		t.Fatal(err)
 	}
-	center, err := convertToSamsungPNG(raw, profile, CropRect{}, false)
+	center, err := convertToSamsungPNG(raw, profile, CropRect{}, false, defaultColorPipeline())
 	if err != nil {
 		t.Fatal(err)
 	}

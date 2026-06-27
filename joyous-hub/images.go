@@ -49,11 +49,39 @@ type ImageMeta struct {
 type ImageStore struct {
 	dir      string
 	CacheMax int64 // max total bytes in cache dir; exported so tests can override
+	colors   *ColorStore
 }
 
 // NewImageStore creates an ImageStore rooted at dir.
 func NewImageStore(dir string) *ImageStore {
 	return &ImageStore{dir: dir, CacheMax: defaultCacheMax}
+}
+
+func (s *ImageStore) SetColorStore(c *ColorStore) { s.colors = c }
+
+func (s *ImageStore) colorPipeline() ColorPipeline {
+	if s.colors != nil {
+		return s.colors.Pipeline()
+	}
+	return defaultColorPipeline()
+}
+
+// ClearBinCache removes converted .bin cache files (e.g. after color pipeline changes).
+func (s *ImageStore) ClearBinCache() error {
+	entries, err := os.ReadDir(s.cacheDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		_ = os.Remove(filepath.Join(s.cacheDir(), e.Name()))
+	}
+	return nil
 }
 
 func (s *ImageStore) rawDir() string   { return filepath.Join(s.dir, "images") }
@@ -686,7 +714,7 @@ func (s *ImageStore) convertToBinOrientation(id string, portrait bool) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	return encodeInkJoyBinFromRGBA(rgba, flatRGB)
+	return encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipeline())
 }
 
 func (s *ImageStore) overlayCacheFile(id, token string, portrait bool) string {
@@ -716,7 +744,7 @@ func (s *ImageStore) ServeBinOrientationOverlay(id string, portrait bool, token 
 			return nil, err
 		}
 	}
-	bin, err := encodeInkJoyBinFromRGBA(rgba, flatRGB)
+	bin, err := encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipeline())
 	if err != nil {
 		return nil, err
 	}
@@ -769,12 +797,12 @@ func prepareInkJoyFrameFromRaw(raw []byte, crop CropRect, portrait bool) (image.
 	return img, false, nil
 }
 
-func encodeInkJoyBinFromRGBA(img image.Image, flatRGB bool) ([]byte, error) {
+func encodeInkJoyBinFromRGBA(img image.Image, flatRGB bool, pipe ColorPipeline) ([]byte, error) {
 	var hi, lo [][]byte
 	if flatRGB {
 		hi, lo = snapToPalette(img)
 	} else {
-		indices := StuckiTwoPalette(img, PaletteInkJoyDisplay, UniqueColors(img) > 6)
+		indices := StuckiTwoPalette(img, pipe.InkJoyDisplay, pipe, flatRGB)
 		hi = indicesToHi(indices)
 		lo = randomWipeGrid()
 	}
@@ -821,7 +849,7 @@ func convertImageWithCrop(raw []byte, crop CropRect, portrait bool, flatRGB bool
 	if err != nil {
 		return nil, err
 	}
-	return encodeInkJoyBinFromRGBA(img, flatRGB)
+	return encodeInkJoyBinFromRGBA(img, flatRGB, defaultColorPipeline())
 }
 
 // applyCrop extracts the crop rect (normalized 0–1) from img.

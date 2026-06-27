@@ -45,12 +45,22 @@ type SamsungFrameConfig struct {
 
 // SamsungStore manages Samsung EM32DX frame images and config on disk.
 type SamsungStore struct {
-	dir string
+	dir    string
+	colors *ColorStore
 }
 
 // NewSamsungStore creates a SamsungStore rooted at dir/samsung.
 func NewSamsungStore(dir string) *SamsungStore {
 	return &SamsungStore{dir: filepath.Join(dir, "samsung")}
+}
+
+func (s *SamsungStore) SetColorStore(c *ColorStore) { s.colors = c }
+
+func (s *SamsungStore) colorPipeline() ColorPipeline {
+	if s.colors != nil {
+		return s.colors.Pipeline()
+	}
+	return defaultColorPipeline()
 }
 
 func (s *SamsungStore) ensureDir() error {
@@ -243,7 +253,7 @@ func (s *SamsungStore) writePNGLocked(frameID string, pngData []byte) error {
 
 // StoreUpload decodes raw image bytes, dithers to Samsung palette, and writes PNG.
 func (s *SamsungStore) StoreUpload(frameID string, raw []byte, profile SamsungDisplayProfile) error {
-	pngData, err := convertToSamsungPNG(raw, profile, CropRect{}, false)
+	pngData, err := convertToSamsungPNG(raw, profile, CropRect{}, false, s.colorPipeline())
 	if err != nil {
 		return err
 	}
@@ -260,7 +270,7 @@ func (s *SamsungStore) StorePNG(frameID string, pngData []byte) error {
 
 // convertToSamsungPNG applies saved crop metadata (or center-crops), then two-palette
 // Stucki: dither in PaletteSamsungDisplay (P2) space, write PaletteSamsungSend (P1) RGB.
-func convertToSamsungPNG(raw []byte, profile SamsungDisplayProfile, crop CropRect, hasCrop bool) ([]byte, error) {
+func convertToSamsungPNG(raw []byte, profile SamsungDisplayProfile, crop CropRect, hasCrop bool, pipe ColorPipeline) ([]byte, error) {
 	tw, th := profile.Width, profile.Height
 	if tw <= 0 || th <= 0 {
 		tw, th = samsungW, samsungH
@@ -275,8 +285,8 @@ func convertToSamsungPNG(raw []byte, profile SamsungDisplayProfile, crop CropRec
 		img = centerCropToSize(img, tw, th)
 	}
 	img = resizeTo(img, tw, th)
-	indices := StuckiTwoPalette(img, PaletteSamsungDisplay, UniqueColors(img) > 6)
-	out := RenderIndicesToRGB(indices, PaletteSamsungSend)
+	indices := StuckiTwoPalette(img, pipe.SamsungDisplay, pipe, false)
+	out := RenderIndicesToRGB(indices, pipe.SamsungSend)
 	return encodePNG(out), nil
 }
 

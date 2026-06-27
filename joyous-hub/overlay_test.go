@@ -110,7 +110,7 @@ func TestFormatOverlayTemp(t *testing.T) {
 	if got := formatOverlayTemp(20, true); got != "68°F" {
 		t.Fatalf("f: %s", got)
 	}
-	if got := formatOverlayTemp(20, false); got != "20°C" {
+	if got := formatOverlayTemp(20, false); got != "20C" {
 		t.Fatalf("c: %s", got)
 	}
 }

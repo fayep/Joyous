@@ -365,7 +365,7 @@ func formatOverlayTemp(tempC float64, fahrenheit bool) string {
 		f := tempC*9/5 + 32
 		return strconv.Itoa(int(f+0.5)) + "°F"
 	}
-	return strconv.Itoa(int(tempC+0.5)) + "°C"
+	return strconv.Itoa(int(tempC+0.5)) + "C"
 }
 
 func (h *Hub) fetchOverlayWeather(ctx context.Context) (WeatherSnapshot, error) {

@@ -184,7 +184,7 @@ func TestStuckiTwoPaletteUsesDisplay(t *testing.T) {
 			img.Set(x, yp, color.RGBA{uint8(y[0]), uint8(y[1]), uint8(y[2]), 255})
 		}
 	}
-	indices := StuckiTwoPalette(img, PaletteSamsungDisplay, false)
+	indices := StuckiTwoPalette(img, PaletteSamsungDisplay, ColorPipeline{}, false)
 	if indices[4][4] != 2 {
 		t.Fatalf("expected yellow index 2, got %d", indices[4][4])
 	}
@@ -254,7 +254,10 @@ func TestLABEnhanceRange(t *testing.T) {
 			})
 		}
 	}
-	out := LABEnhance(img, 1.0)
+	out := ApplyLABProcessing(img, ColorPipeline{
+		LABChromaEnabled: true, LABChromaStrength: 1,
+		LABHighlightEnabled: true, LABHighlightStrength: 1,
+	})
 	bounds := out.Bounds()
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
@@ -271,7 +274,7 @@ func TestLABEnhanceRange(t *testing.T) {
 func TestLABEnhanceChroma(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.SetRGBA(0, 0, color.RGBA{128, 128, 80, 255}) // slightly warm grey
-	out := LABEnhance(img, 1.0)
+	out := ApplyLABProcessing(img, ColorPipeline{LABChromaEnabled: true, LABChromaStrength: 1})
 	r, g, b, _ := out.At(0, 0).RGBA()
 	r8, g8, b8 := int(r>>8), int(g>>8), int(b>>8)
 	// The warm hue should be amplified: R and B channels should differ more

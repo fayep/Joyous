@@ -15,15 +15,21 @@ import (
 func buildTestHub(t *testing.T) *Hub {
 	t.Helper()
 	dir := t.TempDir()
+	colorStore := NewColorStore(dir)
+	images := NewImageStore(dir)
+	images.SetColorStore(colorStore)
+	samsung := NewSamsungStore(dir)
+	samsung.SetColorStore(colorStore)
 	return &Hub{
 		devices:        NewDeviceRegistry(dir),
 		samsungBattery: NewSamsungBatteryStore(dir),
-		images:         NewImageStore(dir),
+		images:         images,
 		displayPreview: NewDisplayPreviewStore(dir),
 		inkjoy:         NewInkJoyCache(dir),
-		samsung:        NewSamsungStore(dir),
+		samsung:        samsung,
 		sendDelivery:   NewSendDeliveryTracker(),
 		overlay:        NewOverlayStore(dir),
+		color:          colorStore,
 		publisher:      &noopPublisher{},
 		mqttLog:        NewMQTTLogBuffer(20),
 	}

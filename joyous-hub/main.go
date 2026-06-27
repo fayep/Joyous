@@ -113,10 +113,13 @@ func main() {
 		log.Printf("warn: load devices: %v", err)
 	}
 	imageStore := NewImageStore(*dataDir)
+	colorStore := NewColorStore(*dataDir)
+	imageStore.SetColorStore(colorStore)
 	displayPreview := NewDisplayPreviewStore(*dataDir)
 	inkjoyCache := NewInkJoyCache(*dataDir)
 	displayPreview.RestoreFromDisk(devices)
 	samsungStore := NewSamsungStore(*dataDir)
+	samsungStore.SetColorStore(colorStore)
 	samsungBattery := NewSamsungBatteryStore(*dataDir)
 	if err := samsungBattery.Load(); err != nil {
 		log.Printf("warn: load samsung battery history: %v", err)
@@ -177,6 +180,7 @@ func main() {
 		samsung:        samsungStore,
 		sendDelivery:   sendDelivery,
 		overlay:        NewOverlayStore(*dataDir),
+		color:          colorStore,
 		publisher:      &brokerPublisher{broker: broker, mqttLog: mqttLog},
 		serverAddr:     addr,
 		mqttPort:       mqttPortNum,
