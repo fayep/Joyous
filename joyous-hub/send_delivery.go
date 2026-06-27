@@ -1,0 +1,247 @@
+package main
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
+)
+
+const sendDeliveryTTL = 10 * time.Minute
+
+type sendStatus string
+
+const (
+	sendStatusPending   sendStatus = "pending"
+	sendStatusDelivered sendStatus = "delivered"
+	sendStatusFailed    sendStatus = "failed"
+)
+
+type sendDelivery struct {
+	ID             string
+	DeviceID       string
+	ImageID        string
+	Status         sendStatus
+	Created        time.Time
+	DeliveredAt    time.Time
+	done           chan struct{}
+	inkjoyMsgID    string
+	samsungFrameID string
+	samsungETag    string
+}
+
+// SendDeliveryTracker tracks hub→frame sends until the frame pulls content.
+type SendDeliveryTracker struct {
+	mu             sync.Mutex
+	byID           map[string]*sendDelivery
+	inkjoyByMsgID  map[string]string
+	samsungByFrame map[string]string
+}
+
+func NewSendDeliveryTracker() *SendDeliveryTracker {
+	return &SendDeliveryTracker{
+		byID:           make(map[string]*sendDelivery),
+		inkjoyByMsgID:  make(map[string]string),
+		samsungByFrame: make(map[string]string),
+	}
+}
+
+func newSendID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+func (t *SendDeliveryTracker) register(d *sendDelivery) *sendDelivery {
+	t.mu.Lock()
+	t.byID[d.ID] = d
+	t.mu.Unlock()
+	time.AfterFunc(sendDeliveryTTL, func() { t.remove(d.ID) })
+	return d
+}
+
+func (t *SendDeliveryTracker) Register(deviceID, imageID string) *sendDelivery {
+	d := &sendDelivery{
+		ID:       newSendID(),
+		DeviceID: deviceID,
+		ImageID:  imageID,
+		Status:   sendStatusPending,
+		Created:  time.Now(),
+		done:     make(chan struct{}),
+	}
+	return t.register(d)
+}
+
+func (t *SendDeliveryTracker) BindSamsung(sendID, frameID, etag string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	d, ok := t.byID[sendID]
+	if !ok || frameID == "" {
+		return
+	}
+	d.samsungFrameID = frameID
+	d.samsungETag = etag
+	t.samsungByFrame[frameID] = sendID
+}
+
+func (t *SendDeliveryTracker) BindInkJoy(sendID, msgid string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	d, ok := t.byID[sendID]
+	if !ok || msgid == "" {
+		return
+	}
+	d.inkjoyMsgID = msgid
+	t.inkjoyByMsgID[msgid] = sendID
+}
+
+func (t *SendDeliveryTracker) Get(sendID string) *sendDelivery {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	d, ok := t.byID[sendID]
+	if !ok {
+		return nil
+	}
+	cp := *d
+	return &cp
+}
+
+func (t *SendDeliveryTracker) finish(d *sendDelivery, status sendStatus) bool {
+	if d == nil || d.Status != sendStatusPending {
+		return false
+	}
+	d.Status = status
+	if status == sendStatusDelivered {
+		d.DeliveredAt = time.Now()
+	}
+	close(d.done)
+	return true
+}
+
+func (t *SendDeliveryTracker) Fail(sendID string) {
+	t.mu.Lock()
+	d, ok := t.byID[sendID]
+	t.mu.Unlock()
+	if !ok {
+		return
+	}
+	t.mu.Lock()
+	t.finish(d, sendStatusFailed)
+	t.mu.Unlock()
+}
+
+func (t *SendDeliveryTracker) CompleteInkJoy(msgid string, ok bool) {
+	t.mu.Lock()
+	sendID, found := t.inkjoyByMsgID[msgid]
+	if !found {
+		t.mu.Unlock()
+		return
+	}
+	d, ok2 := t.byID[sendID]
+	if !ok2 {
+		delete(t.inkjoyByMsgID, msgid)
+		t.mu.Unlock()
+		return
+	}
+	status := sendStatusFailed
+	if ok {
+		status = sendStatusDelivered
+	}
+	if t.finish(d, status) {
+		delete(t.inkjoyByMsgID, msgid)
+	}
+	t.mu.Unlock()
+}
+
+func (t *SendDeliveryTracker) CompleteSamsung(frameID, etag string) {
+	t.mu.Lock()
+	sendID, found := t.samsungByFrame[frameID]
+	if !found {
+		t.mu.Unlock()
+		return
+	}
+	d, ok := t.byID[sendID]
+	if !ok || d.samsungETag != etag {
+		t.mu.Unlock()
+		return
+	}
+	if t.finish(d, sendStatusDelivered) {
+		delete(t.samsungByFrame, frameID)
+		if d.inkjoyMsgID != "" {
+			delete(t.inkjoyByMsgID, d.inkjoyMsgID)
+		}
+	}
+	t.mu.Unlock()
+}
+
+func (t *SendDeliveryTracker) remove(sendID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	d, ok := t.byID[sendID]
+	if !ok {
+		return
+	}
+	if d.inkjoyMsgID != "" {
+		delete(t.inkjoyByMsgID, d.inkjoyMsgID)
+	}
+	if d.samsungFrameID != "" {
+		delete(t.samsungByFrame, d.samsungFrameID)
+	}
+	delete(t.byID, sendID)
+}
+
+func (h *Hub) handleSendStatus(w http.ResponseWriter, r *http.Request, sendID string) {
+	if sendID == "" {
+		http.Error(w, "send id required", http.StatusBadRequest)
+		return
+	}
+	if h.sendDelivery == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	wait := 0
+	if s := r.URL.Query().Get("wait"); s != "" {
+		wait, _ = strconv.Atoi(s)
+	}
+	if wait > 120 {
+		wait = 120
+	}
+	d := h.sendDelivery.Get(sendID)
+	if d == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if wait > 0 && d.Status == sendStatusPending {
+		timer := time.NewTimer(time.Duration(wait) * time.Second)
+		defer timer.Stop()
+		fresh := h.sendDelivery.Get(sendID)
+		if fresh != nil {
+			select {
+			case <-fresh.done:
+			case <-timer.C:
+			case <-r.Context().Done():
+			}
+		}
+		d = h.sendDelivery.Get(sendID)
+		if d == nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+	}
+	out := map[string]any{
+		"send_id":   d.ID,
+		"status":    string(d.Status),
+		"device_id": d.DeviceID,
+	}
+	if d.ImageID != "" {
+		out["image_id"] = d.ImageID
+	}
+	if !d.DeliveredAt.IsZero() {
+		out["delivered_at"] = d.DeliveredAt
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}

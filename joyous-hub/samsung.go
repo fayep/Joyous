@@ -500,8 +500,11 @@ func (h *Hub) handleSamsungPNG(w http.ResponseWriter, r *http.Request, frameID s
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	h.noteSamsungFrameSeen(r, frameID, "png")
 	etag, _, _ := h.samsung.PNGInfo(frameID)
+	h.noteSamsungFrameSeen(r, frameID, "png")
+	if h.sendDelivery != nil {
+		h.sendDelivery.CompleteSamsung(frameID, etag)
+	}
 	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == `"`+etag+`"` {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -831,7 +834,18 @@ func (h *Hub) handleSamsungPush(w http.ResponseWriter, r *http.Request, frameID 
 		http.Error(w, "frame not registered on hub", http.StatusNotFound)
 		return
 	}
+	var sendID string
+	if h.sendDelivery != nil {
+		if etag, _, ok := h.samsung.PNGInfo(frameID); ok {
+			send := h.sendDelivery.Register(dev.ID, "")
+			h.sendDelivery.BindSamsung(send.ID, frameID, etag)
+			sendID = send.ID
+		}
+	}
 	if err := h.pushSamsungFrame(frameID, dev); err != nil {
+		if sendID != "" {
+			h.sendDelivery.Fail(sendID)
+		}
 		code := http.StatusBadGateway
 		if strings.Contains(err.Error(), "no image for frame") {
 			code = http.StatusNotFound
@@ -842,8 +856,12 @@ func (h *Hub) handleSamsungPush(w http.ResponseWriter, r *http.Request, frameID 
 		http.Error(w, err.Error(), code)
 		return
 	}
+	out := map[string]any{"ok": true}
+	if sendID != "" {
+		out["send_id"] = sendID
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	json.NewEncoder(w).Encode(out)
 }
 
 func (h *Hub) handleSamsungWake(w http.ResponseWriter, r *http.Request, frameID string) {

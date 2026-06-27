@@ -21,6 +21,7 @@ func buildTestHub(t *testing.T) *Hub {
 		images:         NewImageStore(dir),
 		displayPreview: NewDisplayPreviewStore(dir),
 		samsung:        NewSamsungStore(dir),
+		sendDelivery:   NewSendDeliveryTracker(),
 		publisher:      &noopPublisher{},
 		mqttLog:        NewMQTTLogBuffer(20),
 	}
@@ -237,6 +238,11 @@ func TestDisplayAction(t *testing.T) {
 	json.Unmarshal(pub.published[0].payload, &msg)
 	if msg["action"] != "play" {
 		t.Errorf("action: got %v", msg["action"])
+	}
+	var out map[string]any
+	json.NewDecoder(rec.Body).Decode(&out)
+	if out["send_id"] == "" {
+		t.Error("expected send_id in response")
 	}
 }
 

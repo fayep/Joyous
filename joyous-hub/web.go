@@ -22,6 +22,7 @@ type Hub struct {
 	images         *ImageStore
 	displayPreview *DisplayPreviewStore
 	samsung        *SamsungStore
+	sendDelivery   *SendDeliveryTracker
 	hubIP      string // resolved non-loopback LAN IP, used for play URLs and BLE adoption
 	publisher  MQTTPublisher
 	serverAddr string // e.g. "192.168.1.5:8080" — used in play URLs
@@ -264,7 +265,8 @@ func (h *Hub) handleDisplay(w http.ResponseWriter, r *http.Request, deviceID str
 		http.Error(w, "image_id required", http.StatusBadRequest)
 		return
 	}
-	if err := h.SendImageToDevice(deviceID, body.ImageID); err != nil {
+	sendID, err := h.SendImageToDevice(deviceID, body.ImageID)
+	if err != nil {
 		code := http.StatusBadRequest
 		if strings.Contains(err.Error(), "frame did not wake") {
 			code = http.StatusGatewayTimeout
@@ -274,7 +276,7 @@ func (h *Hub) handleDisplay(w http.ResponseWriter, r *http.Request, deviceID str
 	}
 	w.WriteHeader(http.StatusAccepted)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "send_id": sendID})
 }
 
 // handleRefresh serves POST /api/devices/{id}/refresh (InkJoy only).
@@ -664,9 +666,9 @@ const indexHTML = `<!DOCTYPE html>
           <div class="section-label" style="margin-top:0">Currently displayed</div>
           <div id="ij-last-image"><p style="color:#888;font-size:.9rem">Nothing sent yet this session.</p></div>
           <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
-            <button class="btn btn-primary btn-sm" onclick="ijSendImage()">Send image from album</button>
             <button class="btn btn-sm" style="background:#6c757d;color:#fff" onclick="ijRefresh()">Refresh display</button>
           </div>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">To send from the shared album, use <strong>Album → Send</strong> and pick this frame.</p>
         </div>
         <div class="card">
           <div class="section-label" style="margin-top:0">Sleep schedule</div>
@@ -735,11 +737,11 @@ const indexHTML = `<!DOCTYPE html>
           <div id="samsung-preview-wrap"><p style="color:#888;font-size:.9rem">No image uploaded yet.</p></div>
           <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
             <button class="btn btn-primary btn-sm" onclick="samsungPushCurrent()">Push to display</button>
-            <button class="btn btn-sm" onclick="samsungSendImage()">Send image from album</button>
           </div>
           <div id="samsung-upload-zone" style="border:2px dashed #ccc;border-radius:8px;padding:1.5rem;text-align:center;cursor:pointer;margin-top:1rem" onclick="document.getElementById('samsung-file-input').click()">
             Drop image to upload for this frame
           </div>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">To send from the shared album, use <strong>Album → Send</strong> and pick this frame.</p>
           <input type="file" id="samsung-file-input" accept=".png,.jpg,.jpeg,.heic" style="display:none">
           <div id="samsung-status" style="font-size:.85rem;color:#666;margin-top:.75rem"></div>
         </div>
@@ -1120,9 +1122,29 @@ async function postDisplay(deviceId,imageId,onLongWait){
       body:JSON.stringify({image_id:imageId})
     });
     if(!r.ok) throw new Error(await r.text());
+    const j=await r.json();
+    return j.send_id||'';
   }finally{
     clearTimeout(hintTimer);
   }
+}
+
+const SEND_DELIVERY_TIMEOUT_MS=180000;
+
+async function waitSendDelivered(sendId,onTick){
+  if(!sendId) return false;
+  const deadline=Date.now()+SEND_DELIVERY_TIMEOUT_MS;
+  while(Date.now()<deadline){
+    const waitSec=Math.min(30, Math.max(1, Math.ceil((deadline-Date.now())/1000)));
+    const r=await fetch('/api/send/'+encodeURIComponent(sendId)+'?wait='+waitSec);
+    if(r.status===404) return false;
+    if(!r.ok) throw new Error(await r.text());
+    const j=await r.json();
+    if(j.status==='delivered') return true;
+    if(j.status==='failed') throw new Error('Frame did not finish downloading');
+    if(onTick) onTick(j);
+  }
+  return false;
 }
 
 async function doSend(imageId, deviceId, feedbackBtn){
@@ -1137,12 +1159,17 @@ async function doSend(imageId, deviceId, feedbackBtn){
     }else if(deepHint){
       alert(deepHint);
     }
-    await postDisplay(deviceId,imageId,()=>{
+    const sendId=await postDisplay(deviceId,imageId,()=>{
       if(dev&&dev.type==='samsung'&&feedbackBtn&&!deepHint){
         feedbackBtn.textContent=SAMSUNG_MANUAL_WAKE_MSG;
       }
     });
-    if(feedbackBtn){feedbackBtn.textContent='✓ Sent';setTimeout(()=>{feedbackBtn.textContent=orig;feedbackBtn.disabled=false;},2000);}
+    if(sendId&&feedbackBtn) feedbackBtn.textContent='Downloading…';
+    const delivered=sendId?await waitSendDelivered(sendId):false;
+    if(feedbackBtn){
+      feedbackBtn.textContent=delivered?'✓ Sent':(sendId?'Sent (unconfirmed)':'✓ Sent');
+      setTimeout(()=>{feedbackBtn.textContent=orig;feedbackBtn.disabled=false;},2000);
+    }
   }catch(e){
     alert('Send failed: '+e.message);
     if(feedbackBtn){feedbackBtn.textContent=orig;feedbackBtn.disabled=false;}
@@ -1440,20 +1467,6 @@ async function saveIJPortrait(){
     method:'PATCH',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({portrait})
   });
-}
-
-async function ijSendImage(){
-  if(!ijCurrentId)return;
-  let imageId=prompt('Image ID from album:\n'+(images.length?images.map(i=>i.id+' '+i.name).join('\n'):'(upload images first)'));
-  if(!imageId)return;
-  imageId=imageId.trim().split(/\s+/)[0];
-  const r=await fetch('/api/devices/'+encodeURIComponent(ijCurrentId)+'/display',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({image_id:imageId})
-  });
-  if(!r.ok){alert('Error: '+(await r.text()));return;}
-  await loadDevicesInner();
-  loadIJFrames();
 }
 
 async function ijRefresh(){
@@ -1937,11 +1950,14 @@ async function samsungPushCurrent(){
   try{
     const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/push',{method:'POST'});
     if(!r.ok) throw new Error(await r.text());
+    const j=await r.json();
+    if(st) st.textContent='Downloading…';
+    const delivered=j.send_id?await waitSendDelivered(j.send_id):false;
     if(document.getElementById('samsung-auto-sleep').checked){
       const delay=parseInt(document.getElementById('samsung-sleep-delay').value,10)||15;
-      if(st) st.textContent='Pushed — frame will sleep in ~'+delay+'s…';
+      if(st) st.textContent=delivered?('✓ Pushed — frame will sleep in ~'+delay+'s…'):'Pushed (unconfirmed)';
     }else if(st){
-      st.textContent='Pushed';
+      st.textContent=delivered?'✓ Pushed':'Pushed (unconfirmed)';
     }
     await loadDevicesInner();
     loadSamsungFrames();
@@ -1950,40 +1966,6 @@ async function samsungPushCurrent(){
     alert('Push failed: '+e.message);
     if(st) st.textContent='';
   }
-}
-
-async function samsungSendImage(){
-  if(!samsungCurrentId)return;
-  const rec=samsungFrameRecord(samsungCurrentId);
-  const dev=samsungDeviceForFrame(samsungCurrentId);
-  const deviceId=(rec&&rec.device_id)||(dev&&dev.id);
-  if(!deviceId){alert('Frame is not registered on the hub — click Discover displays first.');return;}
-  let imageId=prompt('Image ID from album:\n'+(images.length?images.map(i=>i.id+' '+i.name).join('\n'):'(upload images first)'));
-  if(!imageId)return;
-  imageId=imageId.trim().split(/\s+/)[0];
-  const match=images.find(i=>i.id.startsWith(imageId))||images.find(i=>i.name.includes(imageId));
-  if(!match){alert('Image not found');return;}
-  const st=document.getElementById('samsung-status');
-  const deepHint=samsungDeepSleepWakeHint(dev,rec,samsungStatusCache);
-  if(st) st.textContent=deepHint||'Sending…';
-  try{
-    await postDisplay(deviceId,match.id,()=>{
-      if(st&&!deepHint) st.textContent=SAMSUNG_MANUAL_WAKE_MSG+' (retrying every 5s…)';
-    });
-  }catch(e){
-    alert('Send failed: '+e.message);
-    if(st) st.textContent='';
-    return;
-  }
-  if(document.getElementById('samsung-auto-sleep').checked){
-    const delay=parseInt(document.getElementById('samsung-sleep-delay').value,10)||15;
-    if(st) st.textContent='Sent — frame will sleep in ~'+delay+'s…';
-  }else if(st){
-    st.textContent='Sent';
-  }
-  await loadDevicesInner();
-  loadSamsungFrames();
-  await reloadSamsungFrame();
 }
 
 async function samsungDeleteDevice(){

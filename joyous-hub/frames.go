@@ -28,22 +28,33 @@ func isInjectedPlay(ackMsgid string) bool {
 }
 
 // SendImageToDevice pushes an album image to any registered frame type.
-func (h *Hub) SendImageToDevice(deviceID, imageID string) error {
+// Returns a send_id the client can poll until the frame pulls the content.
+func (h *Hub) SendImageToDevice(deviceID, imageID string) (string, error) {
 	dev, ok := h.devices.Get(deviceID)
 	if !ok {
-		return fmt.Errorf("device %q not found", deviceID)
+		return "", fmt.Errorf("device %q not found", deviceID)
 	}
+	if h.sendDelivery == nil {
+		h.sendDelivery = NewSendDeliveryTracker()
+	}
+	send := h.sendDelivery.Register(deviceID, imageID)
+	var err error
 	switch dev.Type {
 	case DeviceTypeInkJoy:
-		return h.sendInkJoyImage(dev, imageID)
+		err = h.sendInkJoyImage(dev, imageID, send.ID)
 	case DeviceTypeSamsung:
-		return h.sendSamsungImage(dev, imageID)
+		err = h.sendSamsungImage(dev, imageID, send.ID)
 	default:
-		return fmt.Errorf("unsupported device type %q", dev.Type)
+		err = fmt.Errorf("unsupported device type %q", dev.Type)
 	}
+	if err != nil {
+		h.sendDelivery.Fail(send.ID)
+		return "", err
+	}
+	return send.ID, nil
 }
 
-func (h *Hub) sendInkJoyImage(dev *Device, imageID string) error {
+func (h *Hub) sendInkJoyImage(dev *Device, imageID, sendID string) error {
 	addr := h.serverAddr
 	if addr == "" {
 		addr = "localhost:8080"
@@ -70,6 +81,9 @@ func (h *Hub) sendInkJoyImage(dev *Device, imageID string) error {
 	}
 	imgURL := fmt.Sprintf("http://%s/images/%s%s", addr, imageID, suffix)
 	payload, msgid := buildPlayPayload(dev.MAC, imgURL)
+	if h.sendDelivery != nil {
+		h.sendDelivery.BindInkJoy(sendID, msgid)
+	}
 	registerInjectedPlay(msgid)
 	topic := "/inkjoyap/" + dev.MAC
 	logOutbound("mqtt publish topic=%s image=%s url=%s portrait=%v", topic, imageID, imgURL, portrait)
@@ -82,7 +96,7 @@ func (h *Hub) sendInkJoyImage(dev *Device, imageID string) error {
 	return err
 }
 
-func (h *Hub) sendSamsungImage(dev *Device, imageID string) error {
+func (h *Hub) sendSamsungImage(dev *Device, imageID, sendID string) error {
 	frameID := SamsungFrameID(dev)
 	meta, err := h.images.readMeta(imageID)
 	if err != nil {
@@ -102,6 +116,10 @@ func (h *Hub) sendSamsungImage(dev *Device, imageID string) error {
 	}
 	if err := h.samsung.writePNGLocked(frameID, pngData); err != nil {
 		return err
+	}
+	etag, _, _ := h.samsung.PNGInfo(frameID)
+	if h.sendDelivery != nil {
+		h.sendDelivery.BindSamsung(sendID, frameID, etag)
 	}
 	_ = meta // name retained for future manifest metadata
 	logOutbound("samsung prepare frame=%s ip=%s png=%dB", frameID, dev.IP, len(pngData))

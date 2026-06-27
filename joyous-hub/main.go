@@ -148,7 +148,9 @@ func main() {
 	}
 
 	// ── broker hooks ────────────────────────────────────────────────────────
-	_ = broker.AddHook(&frameHook{bridges: bridges, devices: devices, upstreamAllow: upstreamAllowList}, nil)
+	sendDelivery := NewSendDeliveryTracker()
+	frameHook := &frameHook{bridges: bridges, devices: devices, upstreamAllow: upstreamAllowList, sendDelivery: sendDelivery}
+	_ = broker.AddHook(frameHook, nil)
 
 	// ── HTTP server ─────────────────────────────────────────────────────────
 	addr := *serverAddr
@@ -170,6 +172,7 @@ func main() {
 		images:         imageStore,
 		displayPreview: displayPreview,
 		samsung:        samsungStore,
+		sendDelivery:   sendDelivery,
 		publisher:      &brokerPublisher{broker: broker, mqttLog: mqttLog},
 		serverAddr:     addr,
 		mqttPort:       mqttPortNum,
@@ -408,6 +411,7 @@ type frameHook struct {
 	bridges       *bridgeSet
 	devices       *DeviceRegistry
 	upstreamAllow AllowList
+	sendDelivery  *SendDeliveryTracker
 }
 
 func (h *frameHook) ID() string { return "frame-hook" }
@@ -470,6 +474,14 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		if isInjectedPlay(ack.Data.AckMsgid) {
 			log.Printf("[%s] play_ack suppressed (hub-initiated, result=%d)", mac, ack.Data.Result)
 			skipUpstream = true
+			if h.sendDelivery != nil {
+				switch ack.Data.Result {
+				case inkjoyAckComplete:
+					h.sendDelivery.CompleteInkJoy(ack.Data.AckMsgid, true)
+				case inkjoyAckInterrupted:
+					h.sendDelivery.CompleteInkJoy(ack.Data.AckMsgid, false)
+				}
+			}
 		}
 		h.devices.MarkConnected(mac)
 	default:

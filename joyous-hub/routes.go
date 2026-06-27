@@ -49,6 +49,9 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("POST /api/devices/{id}/display", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleDisplay(w, r, r.PathValue("id"))
 	})
+	mux.HandleFunc("GET /api/send/{sendId}", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleSendStatus(w, r, r.PathValue("sendId"))
+	})
 	mux.HandleFunc("POST /api/devices/{id}/refresh", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleRefresh(w, r, r.PathValue("id"))
 	})
