@@ -26,9 +26,8 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	})
 	mux.HandleFunc("GET /images/{file}", func(w http.ResponseWriter, r *http.Request) {
 		file := r.PathValue("file")
-		portrait := strings.HasSuffix(file, "-p.bin")
-		id := strings.TrimSuffix(strings.TrimSuffix(file, "-p.bin"), ".bin")
-		hub.images.ServeBinOrientationHTTP(w, r, id, portrait)
+		id, overlayToken, portrait := parseImageBinFilename(file)
+		hub.images.ServeBinOrientationHTTP(w, r, id, portrait, overlayToken)
 	})
 	mux.HandleFunc("GET /images/{id}/thumb", func(w http.ResponseWriter, r *http.Request) {
 		hub.images.ServeThumbHTTP(w, r, r.PathValue("id"))
@@ -38,8 +37,13 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	})
 	mux.HandleFunc("GET /images/{id}/frame-preview", func(w http.ResponseWriter, r *http.Request) {
 		portrait := r.URL.Query().Get("portrait") == "1"
-		hub.images.ServeInkJoyFramePreviewHTTP(w, r, r.PathValue("id"), portrait)
+		overlay := r.URL.Query().Get("overlay")
+		hub.images.ServeInkJoyFramePreviewHTTP(w, r, r.PathValue("id"), portrait, overlay)
 	})
+	mux.HandleFunc("GET /api/overlay", hub.handleOverlayGet)
+	mux.HandleFunc("PUT /api/overlay", hub.handleOverlayPut)
+	mux.HandleFunc("GET /api/overlay/preview", hub.handleOverlayPreview)
+	mux.HandleFunc("POST /api/overlay/send", hub.handleOverlaySend)
 	mux.HandleFunc("POST /api/images/{id}/crop", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSaveCrop(w, r, r.PathValue("id"))
 	})

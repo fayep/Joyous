@@ -173,6 +173,7 @@ func main() {
 		displayPreview: displayPreview,
 		samsung:        samsungStore,
 		sendDelivery:   sendDelivery,
+		overlay:        NewOverlayStore(*dataDir),
 		publisher:      &brokerPublisher{broker: broker, mqttLog: mqttLog},
 		serverAddr:     addr,
 		mqttPort:       mqttPortNum,

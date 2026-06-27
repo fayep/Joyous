@@ -138,12 +138,18 @@ func isStoredBin(name string) bool {
 
 // ServeBinHTTP writes the .bin bytes as an HTTP response.
 func (s *ImageStore) ServeBinHTTP(w http.ResponseWriter, r *http.Request, id string) {
-	s.ServeBinOrientationHTTP(w, r, id, false)
+	s.ServeBinOrientationHTTP(w, r, id, false, "")
 }
 
 // ServeBinOrientationHTTP writes landscape or portrait-rotated .bin as an HTTP response.
-func (s *ImageStore) ServeBinOrientationHTTP(w http.ResponseWriter, r *http.Request, id string, portrait bool) {
-	bin, err := s.ServeBinOrientation(id, portrait)
+func (s *ImageStore) ServeBinOrientationHTTP(w http.ResponseWriter, r *http.Request, id string, portrait bool, overlayToken string) {
+	var bin []byte
+	var err error
+	if overlayToken != "" {
+		bin, err = os.ReadFile(s.overlayCacheFile(id, overlayToken, portrait))
+	} else {
+		bin, err = s.ServeBinOrientation(id, portrait)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -530,15 +536,10 @@ func scaleInkJoyDisplayPreview(img image.Image) image.Image {
 }
 
 // ServeInkJoyFramePreviewHTTP renders the cached send .bin at half resolution for hub UI preview.
-func (s *ImageStore) ServeInkJoyFramePreviewHTTP(w http.ResponseWriter, r *http.Request, id string, portrait bool) {
-	bin, err := s.ServeBinOrientation(id, portrait)
+func (s *ImageStore) ServeInkJoyFramePreviewHTTP(w http.ResponseWriter, r *http.Request, id string, portrait bool, overlayToken string) {
+	jpeg, err := s.framePreviewJPEG(id, portrait, overlayToken)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	jpeg, err := binToDisplayPreviewJPEG(bin, portrait)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
@@ -681,24 +682,126 @@ func (s *ImageStore) readMeta(id string) (ImageMeta, error) {
 }
 
 func (s *ImageStore) convertToBinOrientation(id string, portrait bool) ([]byte, error) {
-	meta, err := s.readMeta(id)
+	rgba, flatRGB, err := s.prepareInkJoyFrameRGBA(id, portrait)
 	if err != nil {
 		return nil, err
 	}
+	return encodeInkJoyBinFromRGBA(rgba, flatRGB)
+}
+
+func (s *ImageStore) overlayCacheFile(id, token string, portrait bool) string {
+	base := filepath.Join(s.cacheDir(), id+"~"+token+".bin")
+	if portrait {
+		return base + ".portrait"
+	}
+	return base
+}
+
+type overlayFrameMutator func(img image.Image, flatRGB bool) (image.Image, error)
+
+// ServeBinOrientationOverlay converts the album image, applies mutate, caches under token.
+func (s *ImageStore) ServeBinOrientationOverlay(id string, portrait bool, token string, mutate overlayFrameMutator) ([]byte, error) {
+	cacheFile := s.overlayCacheFile(id, token, portrait)
+	if bin, err := os.ReadFile(cacheFile); err == nil {
+		s.applyRandomWipeIfConverted(id, bin)
+		return bin, nil
+	}
+	rgba, flatRGB, err := s.prepareInkJoyFrameRGBA(id, portrait)
+	if err != nil {
+		return nil, err
+	}
+	if mutate != nil {
+		rgba, err = mutate(rgba, flatRGB)
+		if err != nil {
+			return nil, err
+		}
+	}
+	bin, err := encodeInkJoyBinFromRGBA(rgba, flatRGB)
+	if err != nil {
+		return nil, err
+	}
+	os.MkdirAll(s.cacheDir(), 0755)
+	os.WriteFile(cacheFile, bin, 0644)
+	s.evictCache()
+	s.applyRandomWipeIfConverted(id, bin)
+	return bin, nil
+}
+
+func (s *ImageStore) prepareInkJoyFrameRGBA(id string, portrait bool) (image.Image, bool, error) {
+	meta, err := s.readMeta(id)
+	if err != nil {
+		return nil, false, err
+	}
 	raw, err := os.ReadFile(s.rawPath(id))
 	if err != nil {
-		return nil, fmt.Errorf("raw file missing for %s", id)
+		return nil, false, fmt.Errorf("raw file missing for %s", id)
 	}
-
 	ext := strings.ToLower(filepath.Ext(meta.Name))
 	if ext == ".bin" {
-		return convertBin(raw)
+		bin, err := convertBin(raw)
+		if err != nil {
+			return nil, false, err
+		}
+		img, err := decodeBinToImage(bin, portrait)
+		return img, meta.FlatRGB, err
 	}
 	cropKey := "4:3"
 	if portrait {
 		cropKey = "3:4"
 	}
-	return convertImageWithCrop(raw, meta.Crops[cropKey], portrait, meta.FlatRGB)
+	return prepareInkJoyFrameFromRaw(raw, meta.Crops[cropKey], portrait)
+}
+
+func prepareInkJoyFrameFromRaw(raw []byte, crop CropRect, portrait bool) (image.Image, bool, error) {
+	img, err := decodeAnyImage(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	if crop.W > 0 && crop.H > 0 {
+		img = applyCrop(img, crop)
+	}
+	if portrait {
+		img = rotate90CCW(img)
+		img = resizeToFrame(img)
+	} else {
+		img = resizeToFrame(img)
+	}
+	return img, false, nil
+}
+
+func encodeInkJoyBinFromRGBA(img image.Image, flatRGB bool) ([]byte, error) {
+	var hi, lo [][]byte
+	if flatRGB {
+		hi, lo = snapToPalette(img)
+	} else {
+		indices := StuckiTwoPalette(img, PaletteInkJoyDisplay, UniqueColors(img) > 6)
+		hi = indicesToHi(indices)
+		lo = randomWipeGrid()
+	}
+	return ToBin(hi, lo), nil
+}
+
+func (s *ImageStore) framePreviewJPEG(id string, portrait bool, overlayToken string) ([]byte, error) {
+	var bin []byte
+	var err error
+	if overlayToken != "" {
+		bin, err = os.ReadFile(s.overlayCacheFile(id, overlayToken, portrait))
+	} else {
+		bin, err = s.ServeBinOrientation(id, portrait)
+	}
+	if err != nil {
+		return nil, err
+	}
+	img, err := decodeBinToImage(bin, portrait)
+	if err != nil {
+		return nil, err
+	}
+	preview := scaleInkJoyDisplayPreview(img)
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, preview, &jpeg.Options{Quality: 85}); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func isFlatCalibrationName(name string) bool {
@@ -714,31 +817,11 @@ func convertBin(raw []byte) ([]byte, error) {
 }
 
 func convertImageWithCrop(raw []byte, crop CropRect, portrait bool, flatRGB bool) ([]byte, error) {
-	img, err := decodeAnyImage(raw)
+	img, _, err := prepareInkJoyFrameFromRaw(raw, crop, portrait)
 	if err != nil {
 		return nil, err
 	}
-	if crop.W > 0 && crop.H > 0 {
-		img = applyCrop(img, crop)
-	}
-	if portrait {
-		// Rotate the 3:4 cropped content 90° CCW, then resize to 1600×1200.
-		// This matches encode_bin.py --portrait: rotate first, then resize to (tw, th).
-		img = rotate90CCW(img)
-		img = resizeToFrame(img)
-	} else {
-		img = resizeToFrame(img)
-	}
-	var hi, lo [][]byte
-	if flatRGB {
-		// Calibration swatches: flat per-pixel snap (no LAB/Stucki). Matches pre-built .bin.
-		hi, lo = snapToPalette(img)
-	} else {
-		indices := StuckiTwoPalette(img, PaletteInkJoyDisplay, UniqueColors(img) > 6)
-		hi = indicesToHi(indices)
-		lo = randomWipeGrid()
-	}
-	return ToBin(hi, lo), nil
+	return encodeInkJoyBinFromRGBA(img, flatRGB)
 }
 
 // applyCrop extracts the crop rect (normalized 0–1) from img.

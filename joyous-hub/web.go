@@ -23,6 +23,8 @@ type Hub struct {
 	displayPreview *DisplayPreviewStore
 	samsung        *SamsungStore
 	sendDelivery   *SendDeliveryTracker
+	overlay        *OverlayStore
+	weather        weatherClient
 	hubIP      string // resolved non-loopback LAN IP, used for play URLs and BLE adoption
 	publisher  MQTTPublisher
 	serverAddr string // e.g. "192.168.1.5:8080" — used in play URLs
@@ -265,7 +267,7 @@ func (h *Hub) handleDisplay(w http.ResponseWriter, r *http.Request, deviceID str
 		http.Error(w, "image_id required", http.StatusBadRequest)
 		return
 	}
-	sendID, err := h.SendImageToDevice(deviceID, body.ImageID)
+	sendID, err := h.sendImageToDeviceAuto(deviceID, body.ImageID)
 	if err != nil {
 		code := http.StatusBadRequest
 		if strings.Contains(err.Error(), "frame did not wake") {
@@ -589,6 +591,7 @@ const indexHTML = `<!DOCTYPE html>
   <nav>
     <button class="active" onclick="showTab('devices',this)">Devices</button>
     <button onclick="showTab('album',this)">Album</button>
+    <button onclick="showTab('overlays',this)">Overlays</button>
     <button onclick="showTab('inkjoy',this)">InkJoy</button>
     <button onclick="showTab('mqtt',this)">MQTT</button>
     <button onclick="showTab('samsung',this)">Samsung</button>
@@ -611,6 +614,61 @@ const indexHTML = `<!DOCTYPE html>
     </div>
     <div id="image-grid" class="album-grid"></div>
     <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg" multiple>
+  </div>
+  <div id="tab-overlays" style="display:none">
+    <div style="display:flex;gap:1.5rem;align-items:flex-start;flex-wrap:wrap">
+      <div class="card" style="flex:1;min-width:280px;max-width:420px">
+        <div class="section-label" style="margin-top:0">Settings</div>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+          <input type="checkbox" id="ovl-enabled"> Enable overlay on send
+        </label>
+        <label style="display:block;margin:.5rem 0;font-size:.85rem">Location (city)
+          <input id="ovl-location" placeholder="Seattle" style="width:100%;box-sizing:border-box;padding:.35rem .5rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin:.5rem 0">
+          <label style="font-size:.85rem">Latitude
+            <input id="ovl-lat" type="number" step="any" placeholder="optional" style="width:100%;box-sizing:border-box;padding:.35rem .5rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+          </label>
+          <label style="font-size:.85rem">Longitude
+            <input id="ovl-lon" type="number" step="any" placeholder="optional" style="width:100%;box-sizing:border-box;padding:.35rem .5rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+          </label>
+        </div>
+        <label style="display:block;margin:.5rem 0;font-size:.85rem">Timezone (optional)
+          <input id="ovl-timezone" placeholder="America/Los_Angeles" style="width:100%;box-sizing:border-box;padding:.35rem .5rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+        </label>
+        <div class="section-label">Show on frame</div>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-show-date" checked> Date</label>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-show-temp" checked> Temperature</label>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-show-condition" checked> Condition</label>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-show-city" checked> City</label>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-fahrenheit" checked> Fahrenheit</label>
+        <label style="display:block;margin:.75rem 0 .35rem;font-size:.85rem">Date format
+          <select id="ovl-date-style" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+            <option value="1">Jun 20, 2026</option>
+            <option value="2">20 Jun 2026</option>
+            <option value="3">June 20 2026</option>
+          </select>
+        </label>
+        <button class="btn btn-primary btn-sm" style="margin-top:.75rem" onclick="saveOverlayConfig()">Save settings</button>
+        <div id="ovl-save-status" style="font-size:.85rem;color:#666;margin-top:.5rem"></div>
+      </div>
+      <div class="card" style="flex:2;min-width:320px">
+        <div class="section-label" style="margin-top:0">Preview</div>
+        <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:center;margin-bottom:.75rem">
+          <label style="font-size:.85rem">Preview image
+            <select id="ovl-preview-image" onchange="refreshOverlayPreview()" style="display:block;min-width:220px;margin-top:.25rem;padding:.35rem;border:1px solid #ccc;border-radius:4px"></select>
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.85rem;margin-top:1.1rem">
+            <input type="checkbox" id="ovl-preview-portrait" onchange="refreshOverlayPreview()"> Portrait
+          </label>
+          <button class="btn btn-sm" style="margin-top:1.1rem" onclick="refreshOverlayPreview()">Refresh preview</button>
+        </div>
+        <div id="ovl-preview-wrap"><p style="color:#888;font-size:.9rem">Pick an album image to preview.</p></div>
+        <div class="section-label">Send with overlay</div>
+        <p style="font-size:.85rem;color:#666;margin:.25rem 0 .75rem">Re-sends each frame’s current album image with a fresh weather overlay. Album → Send also adds the overlay when enabled.</p>
+        <div id="ovl-send-list"><p style="color:#888;font-size:.9rem">Loading frames…</p></div>
+      </div>
+    </div>
   </div>
   <div id="tab-inkjoy" style="display:none">
     <!-- Adopt modal -->
@@ -800,6 +858,7 @@ function showTab(name,btn){
   else if(name==='inkjoy') startTabRefresh(5000, refreshInkjoyTab);
   else if(name==='samsung') startTabRefresh(60000, refreshSamsungTab);
   else if(name==='album') loadImages();
+  else if(name==='overlays') loadOverlaysTab();
   if(name==='mqtt') startMQTTLogPoll();
   else stopMQTTLogPoll();
 }
@@ -1315,8 +1374,11 @@ function ijPreviewSpec(d){
 
 function ijPreviewURL(d){
   if(d.last_image_id){
-    const q=d.portrait?'?portrait=1':'';
-    return '/images/'+encodeURIComponent(d.last_image_id)+'/frame-preview'+q;
+    const q=new URLSearchParams();
+    if(d.portrait) q.set('portrait','1');
+    if(d.last_overlay_hash) q.set('overlay', d.last_overlay_hash);
+    const qs=q.toString();
+    return '/images/'+encodeURIComponent(d.last_image_id)+'/frame-preview'+(qs?'?'+qs:'');
   }
   if(d.display_preview_at){
     return '/api/devices/'+encodeURIComponent(d.id)+'/display-preview?t='+encodeURIComponent(d.display_preview_at);
@@ -1531,6 +1593,171 @@ async function loadDevicesInner(){
 
 loadImages();
 showTab('devices', document.querySelector('nav button.active'));
+
+// ── Overlays tab ────────────────────────────────────────────────────────────
+let overlayConfig=null;
+
+async function loadOverlayConfig(){
+  const r=await fetch('/api/overlay');
+  if(!r.ok) throw new Error(await r.text());
+  overlayConfig=await r.json();
+}
+
+function applyOverlayForm(cfg){
+  document.getElementById('ovl-enabled').checked=!!cfg.enabled;
+  document.getElementById('ovl-location').value=cfg.location||'';
+  document.getElementById('ovl-lat').value=cfg.latitude||'';
+  document.getElementById('ovl-lon').value=cfg.longitude||'';
+  document.getElementById('ovl-timezone').value=cfg.timezone||'';
+  document.getElementById('ovl-show-date').checked=cfg.show_date!==false;
+  document.getElementById('ovl-show-temp').checked=cfg.show_temp!==false;
+  document.getElementById('ovl-show-condition').checked=cfg.show_condition!==false;
+  document.getElementById('ovl-show-city').checked=cfg.show_city!==false;
+  document.getElementById('ovl-fahrenheit').checked=cfg.use_fahrenheit!==false;
+  document.getElementById('ovl-date-style').value=String(cfg.date_style||1);
+}
+
+function overlayFormValues(){
+  const lat=parseFloat(document.getElementById('ovl-lat').value);
+  const lon=parseFloat(document.getElementById('ovl-lon').value);
+  return {
+    enabled: document.getElementById('ovl-enabled').checked,
+    layout: 'bottom_bar',
+    location: document.getElementById('ovl-location').value.trim(),
+    latitude: Number.isFinite(lat)?lat:0,
+    longitude: Number.isFinite(lon)?lon:0,
+    timezone: document.getElementById('ovl-timezone').value.trim(),
+    show_date: document.getElementById('ovl-show-date').checked,
+    show_temp: document.getElementById('ovl-show-temp').checked,
+    show_condition: document.getElementById('ovl-show-condition').checked,
+    show_city: document.getElementById('ovl-show-city').checked,
+    use_fahrenheit: document.getElementById('ovl-fahrenheit').checked,
+    date_style: parseInt(document.getElementById('ovl-date-style').value,10)||1
+  };
+}
+
+async function saveOverlayConfig(){
+  const st=document.getElementById('ovl-save-status');
+  st.textContent='Saving…';
+  try{
+    const r=await fetch('/api/overlay',{
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(overlayFormValues())
+    });
+    if(!r.ok) throw new Error(await r.text());
+    overlayConfig=overlayFormValues();
+    st.style.color='#28a745';
+    st.textContent='Saved.';
+    refreshOverlayPreview();
+    renderOverlaySendList();
+  }catch(e){
+    st.style.color='#dc3545';
+    st.textContent='Save failed: '+e.message;
+  }
+}
+
+function overlayPreviewImageId(){
+  const sel=document.getElementById('ovl-preview-image');
+  return sel&&sel.value?sel.value:'';
+}
+
+async function refreshOverlayPreview(){
+  const wrap=document.getElementById('ovl-preview-wrap');
+  const imageId=overlayPreviewImageId();
+  if(!imageId){
+    wrap.innerHTML='<p style="color:#888;font-size:.9rem">Upload images to the album first.</p>';
+    return;
+  }
+  const portrait=document.getElementById('ovl-preview-portrait').checked;
+  const q=new URLSearchParams({image_id:imageId});
+  if(portrait) q.set('portrait','1');
+  wrap.innerHTML='<p style="color:#888;font-size:.9rem">Loading preview…</p>';
+  try{
+    const r=await fetch('/api/overlay/preview?'+q.toString());
+    if(!r.ok) throw new Error(await r.text());
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    wrap.innerHTML='<img class="last-image-preview" src="'+url+'" alt="overlay preview">';
+  }catch(e){
+    wrap.innerHTML='<p style="color:#c00;font-size:.9rem">Preview failed: '+esc(e.message)+'</p>';
+  }
+}
+
+function overlaySendImageForDevice(d){
+  return d.last_image_id||'';
+}
+
+function renderOverlaySendList(){
+  const el=document.getElementById('ovl-send-list');
+  const frames=devices.filter(d=>d.type==='inkjoy'||d.type==='samsung');
+  if(!frames.length){
+    el.innerHTML='<p style="color:#888;font-size:.9rem">No frames registered yet.</p>';
+    return;
+  }
+  el.innerHTML=frames.map(d=>{
+    const label=d.name||d.mac||d.id;
+    const src=overlaySendImageForDevice(d);
+    const hint=src?'current frame image':'no tracked image — send from Album first';
+    return '<div style="display:flex;align-items:center;gap:.75rem;margin:.5rem 0;flex-wrap:wrap">'+
+      '<span class="badge" style="background:#eee;color:#333">'+d.type+'</span>'+
+      '<strong>'+esc(label)+'</strong>'+
+      '<span style="color:#888;font-size:.85rem">'+esc(hint)+'</span>'+
+      '<button class="btn btn-sm btn-primary" onclick="overlaySend(\''+d.id+'\')"'+(!src?' disabled':'')+'>Send with overlay</button>'+
+      '</div>';
+  }).join('');
+}
+
+async function overlaySend(deviceId){
+  await loadDevicesInner();
+  const d=devices.find(x=>x.id===deviceId);
+  if(!d||!d.last_image_id){
+    alert('No hub-tracked image on this frame. Send a photo from Album first (overlay will apply automatically when enabled).');
+    return;
+  }
+  if(!overlayConfig||!overlayConfig.enabled){
+    alert('Enable overlay in settings first.');
+    return;
+  }
+  const btn=event&&event.target;
+  const orig=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='Sending…';}
+  try{
+    const r=await fetch('/api/overlay/send',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({device_id:deviceId,use_current:true})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    const j=await r.json();
+    if(btn) btn.textContent='Downloading…';
+    const delivered=j.send_id?await waitSendDelivered(j.send_id):false;
+    if(btn){
+      btn.textContent=delivered?'✓ Sent':'Sent (unconfirmed)';
+      setTimeout(()=>{btn.textContent=orig;btn.disabled=false;},2000);
+    }
+    await loadDevicesInner();
+    if(activeTab==='overlays') renderOverlaySendList();
+  }catch(e){
+    alert('Overlay send failed: '+e.message);
+    if(btn){btn.textContent=orig;btn.disabled=false;}
+  }
+}
+
+async function loadOverlaysTab(){
+  try{
+    if(!overlayConfig) await loadOverlayConfig();
+    applyOverlayForm(overlayConfig||{});
+    if(!images.length) await loadImages();
+    const sel=document.getElementById('ovl-preview-image');
+    sel.innerHTML=images.map(i=>'<option value="'+i.id+'">'+esc(i.name||i.id)+'</option>').join('');
+    if(!sel.value&&images.length) sel.selectedIndex=0;
+    renderOverlaySendList();
+    refreshOverlayPreview();
+  }catch(e){
+    document.getElementById('ovl-save-status').textContent='Load failed: '+e.message;
+  }
+}
 
 // ── Samsung tab ─────────────────────────────────────────────────────────────
 let samsungFrames=[], samsungCurrentId=null, samsungStatusCache=null, samsungPreviewKey=null;

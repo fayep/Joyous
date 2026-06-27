@@ -27,34 +27,7 @@ func isInjectedPlay(ackMsgid string) bool {
 	return ok
 }
 
-// SendImageToDevice pushes an album image to any registered frame type.
-// Returns a send_id the client can poll until the frame pulls the content.
-func (h *Hub) SendImageToDevice(deviceID, imageID string) (string, error) {
-	dev, ok := h.devices.Get(deviceID)
-	if !ok {
-		return "", fmt.Errorf("device %q not found", deviceID)
-	}
-	if h.sendDelivery == nil {
-		h.sendDelivery = NewSendDeliveryTracker()
-	}
-	send := h.sendDelivery.Register(deviceID, imageID)
-	var err error
-	switch dev.Type {
-	case DeviceTypeInkJoy:
-		err = h.sendInkJoyImage(dev, imageID, send.ID)
-	case DeviceTypeSamsung:
-		err = h.sendSamsungImage(dev, imageID, send.ID)
-	default:
-		err = fmt.Errorf("unsupported device type %q", dev.Type)
-	}
-	if err != nil {
-		h.sendDelivery.Fail(send.ID)
-		return "", err
-	}
-	return send.ID, nil
-}
-
-func (h *Hub) sendInkJoyImage(dev *Device, imageID, sendID string) error {
+func (h *Hub) sendInkJoyImage(dev *Device, imageID, overlayToken, sendID string) error {
 	addr := h.serverAddr
 	if addr == "" {
 		addr = "localhost:8080"
@@ -63,7 +36,6 @@ func (h *Hub) sendInkJoyImage(dev *Device, imageID, sendID string) error {
 	if port == "" {
 		port = "8080"
 	}
-	// Use the IP from the frame's live MQTT socket; fall back to the startup-resolved LAN IP.
 	ip := dev.HubIP
 	if ip == "" {
 		ip = h.hubIP
@@ -72,45 +44,38 @@ func (h *Hub) sendInkJoyImage(dev *Device, imageID, sendID string) error {
 		addr = net.JoinHostPort(ip, port)
 	}
 	portrait := dev.Portrait
-	if _, err := h.images.ServeBinOrientation(imageID, portrait); err != nil {
+	if overlayToken != "" {
+		if _, err := os.Stat(h.images.overlayCacheFile(imageID, overlayToken, portrait)); err != nil {
+			return fmt.Errorf("overlay bin: %w", err)
+		}
+	} else if _, err := h.images.ServeBinOrientation(imageID, portrait); err != nil {
 		return fmt.Errorf("image convert: %w", err)
 	}
-	suffix := ".bin"
-	if portrait {
-		suffix = "-p.bin"
-	}
-	imgURL := fmt.Sprintf("http://%s/images/%s%s", addr, imageID, suffix)
+	file := imageBinFilename(imageID, overlayToken, portrait)
+	imgURL := fmt.Sprintf("http://%s/images/%s", addr, file)
 	payload, msgid := buildPlayPayload(dev.MAC, imgURL)
 	if h.sendDelivery != nil {
 		h.sendDelivery.BindInkJoy(sendID, msgid)
 	}
 	registerInjectedPlay(msgid)
 	topic := "/inkjoyap/" + dev.MAC
-	logOutbound("mqtt publish topic=%s image=%s url=%s portrait=%v", topic, imageID, imgURL, portrait)
+	logOutbound("mqtt publish topic=%s image=%s url=%s portrait=%v overlay=%s", topic, imageID, imgURL, portrait, overlayToken)
 	err := h.publisher.Publish(topic, payload)
 	logFrameSend(dev.ID, imageID, "inkjoy", err)
 	if err == nil {
 		h.displayPreview.Clear(dev.MAC)
-		h.devices.SetLastImage(dev.MAC, imageID)
+		h.devices.SetLastImage(dev.ID, imageID, overlayToken)
 	}
 	return err
 }
 
-func (h *Hub) sendSamsungImage(dev *Device, imageID, sendID string) error {
+func (h *Hub) sendSamsungImage(dev *Device, imageID, overlayToken, sendID string) error {
 	frameID := SamsungFrameID(dev)
 	meta, err := h.images.readMeta(imageID)
 	if err != nil {
 		return err
 	}
-	raw, err := os.ReadFile(h.images.rawPath(imageID))
-	if err != nil {
-		return fmt.Errorf("read image: %w", err)
-	}
-	profile := h.samsungDisplayProfile(dev, frameID)
-	crops, _ := h.images.GetCrops(imageID)
-	crop, hasCrop := cropForFormat(crops, profile.CropFormat)
-	logOutbound("samsung crop format=%s saved=%t size=%dx%d", profile.CropFormat, hasCrop, profile.Width, profile.Height)
-	pngData, err := convertToSamsungPNG(raw, profile, crop, hasCrop)
+	pngData, err := h.prepareSamsungPNG(imageID, overlayToken, dev)
 	if err != nil {
 		return fmt.Errorf("convert samsung png: %w", err)
 	}
@@ -121,10 +86,13 @@ func (h *Hub) sendSamsungImage(dev *Device, imageID, sendID string) error {
 	if h.sendDelivery != nil {
 		h.sendDelivery.BindSamsung(sendID, frameID, etag)
 	}
-	_ = meta // name retained for future manifest metadata
-	logOutbound("samsung prepare frame=%s ip=%s png=%dB", frameID, dev.IP, len(pngData))
+	_ = meta
+	logOutbound("samsung prepare frame=%s ip=%s png=%dB overlay=%s", frameID, dev.IP, len(pngData), overlayToken)
 	err = h.pushSamsungFrame(frameID, dev)
 	logFrameSend(dev.ID, imageID, "samsung", err)
+	if err == nil {
+		h.devices.SetLastImage(dev.ID, imageID, overlayToken)
+	}
 	return err
 }
 
@@ -146,7 +114,6 @@ func resolvedLANIP(addr string) string {
 			}
 		}
 	}
-	// DNS only returned loopback — scan local interfaces.
 	if ifaces, err := net.InterfaceAddrs(); err == nil {
 		for _, a := range ifaces {
 			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {

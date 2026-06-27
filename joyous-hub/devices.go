@@ -52,6 +52,7 @@ type Device struct {
 	SleepBeginTime string `json:"sleep_begin_time,omitempty"`
 	SleepEndTime   string `json:"sleep_end_time,omitempty"`
 	LastImageID       string    `json:"last_image_id,omitempty"`
+	LastOverlayHash   string    `json:"last_overlay_hash,omitempty"`
 	DisplayPreviewAt  time.Time `json:"display_preview_at,omitempty"`
 	HubIP          string `json:"hub_ip,omitempty"`   // hub's LAN IP as seen via this frame's MQTT socket
 	Portrait       bool   `json:"portrait,omitempty"` // user-set: frame is in portrait orientation
@@ -225,11 +226,15 @@ func (r *DeviceRegistry) UpdateLogin(mac string, info LoginInfo) {
 }
 
 // SetLastImage records the most recently sent image for a device.
-func (r *DeviceRegistry) SetLastImage(mac, imageID string) {
+func (r *DeviceRegistry) SetLastImage(deviceID, imageID, overlayHash string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	d := r.getOrCreateInkJoy(mac)
+	d, ok := r.m[deviceID]
+	if !ok {
+		return
+	}
 	d.LastImageID = imageID
+	d.LastOverlayHash = overlayHash
 	d.DisplayPreviewAt = time.Time{}
 }
 
@@ -240,6 +245,7 @@ func (r *DeviceRegistry) SetDisplayPreview(mac string) {
 	d := r.getOrCreateInkJoy(mac)
 	d.DisplayPreviewAt = time.Now()
 	d.LastImageID = ""
+	d.LastOverlayHash = ""
 }
 
 // SetDisplayPreviewAt restores display preview timestamp from disk cache (startup).

@@ -22,6 +22,7 @@ func buildTestHub(t *testing.T) *Hub {
 		displayPreview: NewDisplayPreviewStore(dir),
 		samsung:        NewSamsungStore(dir),
 		sendDelivery:   NewSendDeliveryTracker(),
+		overlay:        NewOverlayStore(dir),
 		publisher:      &noopPublisher{},
 		mqttLog:        NewMQTTLogBuffer(20),
 	}

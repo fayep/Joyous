@@ -193,7 +193,7 @@ func TestSetLastImageClearsDisplayPreview(t *testing.T) {
 	devices := NewDeviceRegistry(dir)
 	mac := "AA:BB:CC:DD:EE:FF"
 	devices.SetDisplayPreview(mac)
-	devices.SetLastImage(mac, "img123")
+	devices.SetLastImage(inkjoyID(mac), "img123", "")
 	dev, _ := devices.Get(inkjoyID(mac))
 	if dev.LastImageID != "img123" {
 		t.Fatalf("last_image_id=%q", dev.LastImageID)
