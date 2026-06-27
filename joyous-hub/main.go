@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -113,6 +114,7 @@ func main() {
 	}
 	imageStore := NewImageStore(*dataDir)
 	displayPreview := NewDisplayPreviewStore(*dataDir)
+	inkjoyCache := NewInkJoyCache(*dataDir)
 	displayPreview.RestoreFromDisk(devices)
 	samsungStore := NewSamsungStore(*dataDir)
 	samsungBattery := NewSamsungBatteryStore(*dataDir)
@@ -171,6 +173,7 @@ func main() {
 		samsungAliases: loadSamsungFrameAliases(filepath.Join(*dataDir, "samsung")),
 		images:         imageStore,
 		displayPreview: displayPreview,
+		inkjoy:         inkjoyCache,
 		samsung:        samsungStore,
 		sendDelivery:   sendDelivery,
 		overlay:        NewOverlayStore(*dataDir),
@@ -181,6 +184,7 @@ func main() {
 		mqttLog:        mqttLog,
 	}
 	bridges.onExternalPlay = hub.handleExternalPlay
+	bridges.rewritePlay = hub.rewriteExternalPlay
 	hub.migrateSamsungFramesOnStartup()
 
 	mux := http.NewServeMux()
@@ -248,6 +252,7 @@ type bridgeSet struct {
 	broker          *mochi.Server
 	devices         *DeviceRegistry
 	onExternalPlay  func(mac string, payload []byte)
+	rewritePlay     func(mac string, payload []byte) ([]byte, error)
 	m               map[string]*upstreamBridge
 }
 
@@ -360,13 +365,26 @@ func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
 	captureWriteErr("downstream", b.set.capture.RecordDownstream(b.mac, action, payload))
 	b.set.logCloudIn(b.mac, payload, "")
 
+	forwardPayload := payload
+	if action == "play" && b.set.rewritePlay != nil {
+		if rewritten, err := b.set.rewritePlay(b.mac, payload); err != nil {
+			log.Printf("[%s] play relay: %v (forwarding original)", b.mac, err)
+		} else {
+			forwardPayload = rewritten
+		}
+	}
+
 	topic := "/inkjoyap/" + b.mac
 	if b.set.mqttLog != nil {
-		b.set.mqttLog.AddLocal("hub→frame", topic, payload, "")
+		note := ""
+		if action == "play" && !bytes.Equal(forwardPayload, payload) {
+			note = "local relay"
+		}
+		b.set.mqttLog.AddLocal("hub→frame", topic, forwardPayload, note)
 	}
-	b.set.broker.Publish(topic, payload, false, 0)
+	b.set.broker.Publish(topic, forwardPayload, false, 0)
 	if action == "play" && b.set.onExternalPlay != nil {
-		b.set.onExternalPlay(b.mac, payload)
+		b.set.onExternalPlay(b.mac, forwardPayload)
 	}
 }
 

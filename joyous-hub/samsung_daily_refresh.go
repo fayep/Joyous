@@ -10,10 +10,9 @@ import (
 )
 
 const (
-	mdcSubCmdDailyRefresh        = 0xB0
-	samsungMorningRestoreLead    = 2 * time.Minute  // probe before inactive end / daily refresh
-	samsungMorningRestoreGrace   = 20 * time.Minute // keep trying after inactive end
-	samsungMorningRestorePoll    = 5 * time.Second
+	mdcSubCmdDailyRefresh      = 0xB0
+	samsungMorningRestoreLead  = 10 * time.Minute // probe from this long before inactive end
+	samsungMorningRestorePoll  = 5 * time.Second
 )
 
 var samsungMorningRestoreActive sync.Map // frameID -> struct{}
@@ -193,17 +192,7 @@ func inMorningRestoreWindow(now time.Time, begin, end string) bool {
 		return false
 	}
 	windowStart := endAt.Add(-samsungMorningRestoreLead)
-	if now.Before(windowStart) {
-		return false
-	}
-	if now.After(endAt.Add(samsungMorningRestoreGrace)) {
-		return false
-	}
-	if InInactiveWindow(now, begin, end) {
-		// Only the tail of the inactive window — daily refresh fires near inactive end.
-		return !now.Before(windowStart) && now.Before(endAt)
-	}
-	return true
+	return !now.Before(windowStart) && !now.After(endAt)
 }
 
 func morningRestoreDeadline(now time.Time, end string) time.Time {
@@ -211,7 +200,7 @@ func morningRestoreDeadline(now time.Time, end string) time.Time {
 	if !ok {
 		return now
 	}
-	return endAt.Add(samsungMorningRestoreGrace)
+	return endAt
 }
 
 func shouldTriggerMorningStandbyRestore(cfg SamsungFrameConfig, now time.Time) bool {
@@ -228,7 +217,8 @@ func shouldTriggerMorningStandbyRestore(cfg SamsungFrameConfig, now time.Time) b
 	if !ok {
 		return false
 	}
-	if !cfg.MorningStandbyRestoredAt.IsZero() && !cfg.MorningStandbyRestoredAt.Before(endAt) {
+	windowStart := endAt.Add(-samsungMorningRestoreLead)
+	if !cfg.MorningStandbyRestoredAt.IsZero() && !cfg.MorningStandbyRestoredAt.Before(windowStart) {
 		return false
 	}
 	return true

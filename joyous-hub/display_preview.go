@@ -133,6 +133,9 @@ func (h *Hub) handleExternalPlay(mac string, payload []byte) {
 	if !ok {
 		return
 	}
+	if h.isLocalPlayURL(url) {
+		return
+	}
 	go h.fetchDisplayPreview(mac, url)
 }
 

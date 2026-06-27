@@ -250,8 +250,12 @@ func wmoWeatherText(code int) string {
 	switch code {
 	case 0:
 		return "Clear"
-	case 1, 2, 3:
+	case 1:
+		return "Mainly clear"
+	case 2:
 		return "Partly cloudy"
+	case 3:
+		return "Overcast"
 	case 45, 48:
 		return "Fog"
 	case 51, 53, 55:

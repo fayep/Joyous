@@ -136,9 +136,15 @@ func TestFormatOverlayTemp(t *testing.T) {
 
 func TestWMOWeatherText(t *testing.T) {
 	if wmoWeatherText(0) != "Clear" {
-		t.Fatal()
+		t.Fatal("code 0")
 	}
-	if wmoWeatherText(3) != "Partly cloudy" {
-		t.Fatal()
+	if wmoWeatherText(1) != "Mainly clear" {
+		t.Fatal("code 1")
+	}
+	if wmoWeatherText(2) != "Partly cloudy" {
+		t.Fatal("code 2")
+	}
+	if wmoWeatherText(3) != "Overcast" {
+		t.Fatal("code 3")
 	}
 }

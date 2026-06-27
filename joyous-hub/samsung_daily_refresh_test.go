@@ -53,40 +53,44 @@ func TestInMorningRestoreWindow(t *testing.T) {
 	end := "07:00"
 	begin := "22:00"
 
-	beforeLead := time.Date(2026, 6, 20, 6, 57, 0, 0, loc)
-	if inMorningRestoreWindow(beforeLead, begin, end) {
-		t.Fatal("expected false before lead window")
+	beforeWindow := time.Date(2026, 6, 20, 6, 49, 0, 0, loc)
+	if inMorningRestoreWindow(beforeWindow, begin, end) {
+		t.Fatal("expected false before 10-minute window")
 	}
-	inLead := time.Date(2026, 6, 20, 6, 59, 0, 0, loc)
-	if !inMorningRestoreWindow(inLead, begin, end) {
-		t.Fatal("expected inside lead window before inactive end")
+	inWindow := time.Date(2026, 6, 20, 6, 55, 0, 0, loc)
+	if !inMorningRestoreWindow(inWindow, begin, end) {
+		t.Fatal("expected inside pre-refresh window")
 	}
-	atEnd := time.Date(2026, 6, 20, 7, 5, 0, 0, loc)
+	atEnd := time.Date(2026, 6, 20, 7, 0, 0, 0, loc)
 	if !inMorningRestoreWindow(atEnd, begin, end) {
-		t.Fatal("expected inside grace after inactive end")
+		t.Fatal("expected true at inactive end")
 	}
-	tooLate := time.Date(2026, 6, 20, 7, 21, 0, 0, loc)
-	if inMorningRestoreWindow(tooLate, begin, end) {
-		t.Fatal("expected outside grace")
+	afterEnd := time.Date(2026, 6, 20, 7, 1, 0, 0, loc)
+	if inMorningRestoreWindow(afterEnd, begin, end) {
+		t.Fatal("expected false after inactive end")
 	}
 	duringInactive := time.Date(2026, 6, 20, 23, 0, 0, 0, loc)
 	if inMorningRestoreWindow(duringInactive, begin, end) {
-		t.Fatal("expected false during inactive window")
+		t.Fatal("expected false during inactive window (not tail)")
+	}
+	preRefresh := time.Date(2026, 6, 20, 8, 54, 0, 0, loc)
+	if !inMorningRestoreWindow(preRefresh, begin, "09:00") {
+		t.Fatal("expected true during frame pre-refresh window before 09:00 inactive end")
 	}
 }
 
 func TestShouldTriggerMorningStandbyRestore(t *testing.T) {
 	loc := time.FixedZone("test", 0)
-	now := time.Date(2026, 6, 20, 7, 10, 0, 0, loc)
+	now := time.Date(2026, 6, 20, 6, 55, 0, 0, loc)
 	cfg := SamsungFrameConfig{
-		InactiveBegin: "22:00",
-		InactiveEnd:   "07:00",
+		InactiveBegin:   "22:00",
+		InactiveEnd:     "07:00",
 		DeepSleepActive: true,
 	}
 	if !shouldTriggerMorningStandbyRestore(cfg, now) {
 		t.Fatal("expected trigger")
 	}
-	cfg.MorningStandbyRestoredAt = time.Date(2026, 6, 20, 7, 5, 0, 0, loc)
+	cfg.MorningStandbyRestoredAt = time.Date(2026, 6, 20, 6, 56, 0, 0, loc)
 	if shouldTriggerMorningStandbyRestore(cfg, now) {
 		t.Fatal("expected skip after restore this window")
 	}

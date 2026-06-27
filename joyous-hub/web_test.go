@@ -20,6 +20,7 @@ func buildTestHub(t *testing.T) *Hub {
 		samsungBattery: NewSamsungBatteryStore(dir),
 		images:         NewImageStore(dir),
 		displayPreview: NewDisplayPreviewStore(dir),
+		inkjoy:         NewInkJoyCache(dir),
 		samsung:        NewSamsungStore(dir),
 		sendDelivery:   NewSendDeliveryTracker(),
 		overlay:        NewOverlayStore(dir),
