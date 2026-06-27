@@ -39,13 +39,25 @@ func (h *Hub) handleOverlayPut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) handleOverlayPreview(w http.ResponseWriter, r *http.Request) {
-	imageID := strings.TrimSpace(r.URL.Query().Get("image_id"))
-	if imageID == "" {
+	var body struct {
+		ImageID  string         `json:"image_id"`
+		Portrait bool           `json:"portrait"`
+		Config   *OverlayConfig `json:"config,omitempty"`
+	}
+	if r.Method == http.MethodPost {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+	} else {
+		body.ImageID = strings.TrimSpace(r.URL.Query().Get("image_id"))
+		body.Portrait = r.URL.Query().Get("portrait") == "1"
+	}
+	if body.ImageID == "" {
 		http.Error(w, "image_id required", http.StatusBadRequest)
 		return
 	}
-	portrait := r.URL.Query().Get("portrait") == "1"
-	jpeg, err := h.renderOverlayPreviewJPEG(r.Context(), imageID, portrait)
+	jpeg, err := h.renderOverlayPreviewJPEG(r.Context(), body.ImageID, body.Portrait, body.Config)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -53,6 +65,29 @@ func (h *Hub) handleOverlayPreview(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write(jpeg)
+}
+
+func (h *Hub) handleOverlayMetrics(w http.ResponseWriter, r *http.Request) {
+	if h.overlay == nil {
+		http.Error(w, "overlay not configured", http.StatusInternalServerError)
+		return
+	}
+	var body struct {
+		Config *OverlayConfig `json:"config,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	cfg := mergeOverlayConfig(h.overlay.Config(), body.Config)
+	weather, err := h.fetchOverlayWeather(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	m := overlayMetrics(cfg, weather)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(m)
 }
 
 func (h *Hub) handleOverlaySend(w http.ResponseWriter, r *http.Request) {

@@ -50,84 +50,23 @@ func overlayFacesStandard() (large, medium, small font.Face) {
 	return overlayFace(overlayFontLarge), overlayFace(overlayFontMedium), overlayFace(overlayFontSmall)
 }
 
-func overlayPanelWidthFor(cfg OverlayConfig, weather WeatherSnapshot) int {
-	large, medium, small := overlayFacesStandard()
-	maxTextW := 0
-	measure := func(face font.Face, text string) {
-		if face == nil || text == "" {
-			return
-		}
-		if w := font.MeasureString(face, text).Ceil(); w > maxTextW {
-			maxTextW = w
-		}
-	}
-	if cfg.ShowCity && weather.City != "" {
-		measure(small, weather.City)
-	}
-	if cfg.ShowDate {
-		measure(large, formatOverlayDate(weather.DisplayDate, cfg.DateStyle))
-	}
-	if cfg.ShowTemp {
-		measure(large, formatOverlayTemp(weather.TempC, cfg.UseFahrenheit))
-	}
-	if cfg.ShowCondition && weather.Condition != "" {
-		measure(medium, weather.Condition)
-	}
-	return maxTextW + 2*overlayPadMin
-}
-
 func drawWeatherOverlay(src image.Image, cfg OverlayConfig, weather WeatherSnapshot, portrait bool) image.Image {
-	b := src.Bounds()
-	w, h := b.Dx(), b.Dy()
-	if overlayLayoutForSize(w, h) == overlayLayoutPanel {
-		return drawWeatherOverlayPanel(src, cfg, weather)
+	lines, err := overlayRenderedLines(cfg, weather)
+	if err != nil || len(lines) == 0 {
+		return imageToRGBA(src)
 	}
 	if portrait {
 		upright := rotate90(src)
-		upright = drawWeatherOverlayBar(upright, cfg, weather)
+		upright = drawWeatherOverlayBox(upright, lines)
 		return rotate90CCW(upright)
 	}
-	return drawWeatherOverlayBar(src, cfg, weather)
+	return drawWeatherOverlayBox(src, lines)
 }
 
-func drawWeatherOverlayBar(src image.Image, cfg OverlayConfig, weather WeatherSnapshot) image.Image {
+func drawWeatherOverlayBox(src image.Image, lines []overlayLine) image.Image {
 	dst := imageToRGBA(src)
 	b := dst.Bounds()
 	w, h := b.Dx(), b.Dy()
-	large, medium, small := overlayFacesStandard()
-
-	barH := overlayBarHeight(h)
-	y0 := b.Max.Y - barH
-	drawVerticalGradientBar(dst, b.Min.X, y0, b.Max.X, b.Max.Y)
-
-	pad := overlayPadForWidth(w)
-	x := b.Min.X + pad
-	y := y0 + pad/2
-
-	if cfg.ShowCity && weather.City != "" {
-		drawOverlayText(dst, weather.City, x, y, small, color.RGBA{220, 220, 220, 255})
-		y += overlayLineStep
-	}
-	if cfg.ShowDate {
-		drawOverlayText(dst, formatOverlayDate(weather.DisplayDate, cfg.DateStyle), x, y, large, color.RGBA{255, 255, 255, 255})
-		y += overlayDateStep
-	}
-	rightX := b.Max.X - pad
-	if cfg.ShowTemp {
-		temp := formatOverlayTemp(weather.TempC, cfg.UseFahrenheit)
-		drawOverlayTextRight(dst, temp, rightX, y0+pad/2, large, color.RGBA{255, 255, 255, 255})
-	}
-	if cfg.ShowCondition && weather.Condition != "" {
-		drawOverlayTextRight(dst, weather.Condition, rightX, y0+pad/2+overlayDateStep, medium, color.RGBA{230, 230, 230, 255})
-	}
-	return dst
-}
-
-func drawWeatherOverlayPanel(src image.Image, cfg OverlayConfig, weather WeatherSnapshot) image.Image {
-	dst := imageToRGBA(src)
-	b := dst.Bounds()
-	w, h := b.Dx(), b.Dy()
-	large, medium, small := overlayFacesStandard()
 
 	marginX := overlayPadForWidth(w)
 	marginY := overlayPadForWidth(h)
@@ -135,34 +74,34 @@ func drawWeatherOverlayPanel(src image.Image, cfg OverlayConfig, weather Weather
 		marginY = overlayPadMin
 	}
 	pad := overlayPadMin
-	panelW := overlayPanelWidthFor(cfg, weather)
-	panelH := overlayPanelHeightFor(cfg, weather)
+	boxW, boxH := overlayBoxSize(lines)
 
 	x0 := b.Min.X + marginX
-	y0 := b.Max.Y - marginY - panelH
-	x1 := x0 + panelW
+	y0 := b.Max.Y - marginY - boxH
+	x1 := x0 + boxW
 	y1 := b.Max.Y - marginY
 	drawSolidPanel(dst, x0, y0, x1, y1, 210)
 
-	// InkJoy left column, then temp/condition from the right side stacked below.
-	x := x0 + pad
-	y := y0 + pad
-	if cfg.ShowCity && weather.City != "" {
-		drawOverlayText(dst, weather.City, x, y, small, color.RGBA{220, 220, 220, 255})
-		y += overlayLineStep
-	}
-	if cfg.ShowDate {
-		drawOverlayText(dst, formatOverlayDate(weather.DisplayDate, cfg.DateStyle), x, y, large, color.RGBA{255, 255, 255, 255})
-		y += overlayDateStep
-	}
-	if cfg.ShowTemp {
-		drawOverlayText(dst, formatOverlayTemp(weather.TempC, cfg.UseFahrenheit), x, y, large, color.RGBA{255, 255, 255, 255})
-		y += overlayDateStep
-	}
-	if cfg.ShowCondition && weather.Condition != "" {
-		drawOverlayText(dst, weather.Condition, x, y, medium, color.RGBA{230, 230, 230, 255})
-	}
+	drawOverlayLines(dst, x0+pad, y0+pad, lines)
 	return dst
+}
+
+func drawOverlayLines(dst *image.RGBA, x, y int, lines []overlayLine) {
+	for i, ln := range lines {
+		drawOverlayText(dst, ln.text, x, y, ln.face, overlayLineColor(i))
+		y += overlayLineStepAfter(i)
+	}
+}
+
+func overlayLineColor(index int) color.Color {
+	switch index {
+	case 0:
+		return color.RGBA{220, 220, 220, 255}
+	case 1:
+		return color.RGBA{255, 255, 255, 255}
+	default:
+		return color.RGBA{230, 230, 230, 255}
+	}
 }
 
 func imageToRGBA(src image.Image) *image.RGBA {
@@ -170,20 +109,6 @@ func imageToRGBA(src image.Image) *image.RGBA {
 	dst := image.NewRGBA(b)
 	draw.Draw(dst, b, src, b.Min, draw.Src)
 	return dst
-}
-
-func drawVerticalGradientBar(dst *image.RGBA, x0, y0, x1, y1 int) {
-	for y := y0; y < y1; y++ {
-		t := float64(y-y0) / float64(y1-y0)
-		alpha := uint8(140 + t*100)
-		if alpha > 235 {
-			alpha = 235
-		}
-		c := color.RGBA{20, 22, 28, alpha}
-		for x := x0; x < x1; x++ {
-			blendPixel(dst, x, y, c)
-		}
-	}
 }
 
 func drawSolidPanel(dst *image.RGBA, x0, y0, x1, y1 int, alpha uint8) {

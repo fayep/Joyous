@@ -36,6 +36,7 @@ type OverlayConfig struct {
 	Latitude      float64 `json:"latitude,omitempty"`
 	Longitude     float64 `json:"longitude,omitempty"`
 	Timezone      string  `json:"timezone,omitempty"`
+	Template      string  `json:"template,omitempty"` // Go text/template; see OverlayTemplateData
 }
 
 func defaultOverlayConfig() OverlayConfig {
@@ -48,16 +49,19 @@ func defaultOverlayConfig() OverlayConfig {
 		ShowCity:      true,
 		UseFahrenheit: true,
 		DateStyle:     1,
+		Template:      defaultOverlayTemplate(),
 	}
 }
 
 // WeatherSnapshot is live weather data composited onto a frame image.
 type WeatherSnapshot struct {
-	TempC       float64   `json:"temp_c"`
-	Condition   string    `json:"condition"`
-	City        string    `json:"city"`
-	ObservedAt  time.Time `json:"observed_at"`
-	DisplayDate time.Time `json:"display_date"`
+	TempC         float64              `json:"temp_c"` // current °C (alias for Temperature.Current)
+	Condition     string               `json:"condition"`
+	City          string               `json:"city"`
+	ObservedAt    time.Time            `json:"observed_at"`
+	DisplayDate   time.Time            `json:"display_date"`
+	Temperature   OverlayTemperature   `json:"temperature"`
+	Precipitation OverlayPrecipitation `json:"precipitation"`
 }
 
 // OverlayStore persists overlay.json under the hub data directory.
@@ -99,6 +103,11 @@ func (s *OverlayStore) Save(cfg OverlayConfig) error {
 	if cfg.DateStyle == 0 {
 		cfg.DateStyle = 1
 	}
+	if t := strings.TrimSpace(cfg.Template); t != "" {
+		if _, err := executeOverlayTemplate(cfg, WeatherSnapshot{}); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	s.cfg = cfg
 	s.mu.Unlock()
@@ -124,15 +133,18 @@ func (s *OverlayStore) Active() bool {
 }
 
 func overlayHasContent(cfg OverlayConfig) bool {
-	return cfg.ShowDate || cfg.ShowTemp || cfg.ShowCondition || cfg.ShowCity
+	return strings.TrimSpace(effectiveOverlayTemplate(cfg)) != ""
 }
 
 func (cfg OverlayConfig) sendToken(weather WeatherSnapshot, portrait bool) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "v1|%t|%s|%t|%t|%t|%t|%t|%d|%s|%.4f|%.4f|%s|%.1f|%s|%s",
-		portrait, cfg.Layout, cfg.ShowDate, cfg.ShowTemp, cfg.ShowCondition, cfg.ShowCity,
-		cfg.UseFahrenheit, cfg.DateStyle, cfg.Location, cfg.Latitude, cfg.Longitude, cfg.Timezone,
-		weather.TempC, weather.Condition, weather.DisplayDate.Format("2006-01-02"))
+	fmt.Fprintf(h, "v2|%t|%s|%t|%d|%s|%.4f|%.4f|%s|%s|%.1f|%.1f|%.1f|%d|%d|%s|%s",
+		portrait, cfg.Layout, cfg.UseFahrenheit, cfg.DateStyle,
+		cfg.Location, cfg.Latitude, cfg.Longitude, cfg.Timezone,
+		effectiveOverlayTemplate(cfg),
+		weather.Temperature.Current, weather.Temperature.Min, weather.Temperature.Max,
+		weather.Precipitation.Hour, weather.Precipitation.Max,
+		weather.Condition, weather.DisplayDate.Format("2006-01-02"))
 	return hex.EncodeToString(h.Sum(nil))[:10]
 }
 
@@ -154,6 +166,9 @@ func (f *weatherFetcher) Fetch(ctx context.Context, cfg OverlayConfig) (WeatherS
 	q.Set("latitude", fmt.Sprintf("%.4f", lat))
 	q.Set("longitude", fmt.Sprintf("%.4f", lon))
 	q.Set("current", "temperature_2m,weather_code")
+	q.Set("daily", "temperature_2m_max,temperature_2m_min,precipitation_probability_max")
+	q.Set("hourly", "precipitation_probability")
+	q.Set("forecast_days", "1")
 	if tz != "" {
 		q.Set("timezone", tz)
 	} else {
@@ -178,6 +193,16 @@ func (f *weatherFetcher) Fetch(ctx context.Context, cfg OverlayConfig) (WeatherS
 			Temperature2m float64 `json:"temperature_2m"`
 			WeatherCode   int     `json:"weather_code"`
 		} `json:"current"`
+		Daily struct {
+			Time                     []string  `json:"time"`
+			Temperature2mMax         []float64 `json:"temperature_2m_max"`
+			Temperature2mMin         []float64 `json:"temperature_2m_min"`
+			PrecipitationProbMax     []int     `json:"precipitation_probability_max"`
+		} `json:"daily"`
+		Hourly struct {
+			Time                    []string `json:"time"`
+			PrecipitationProbability []int    `json:"precipitation_probability"`
+		} `json:"hourly"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return WeatherSnapshot{}, err
@@ -189,13 +214,54 @@ func (f *weatherFetcher) Fetch(ctx context.Context, cfg OverlayConfig) (WeatherS
 	if city == "" {
 		city = strings.TrimSpace(cfg.Location)
 	}
+	tempC := payload.Current.Temperature2m
+	precipHour := 0
+	if i := hourlyIndexFor(payload.Hourly.Time, observed); i >= 0 && i < len(payload.Hourly.PrecipitationProbability) {
+		precipHour = payload.Hourly.PrecipitationProbability[i]
+	}
+	tempMin, tempMax := tempC, tempC
+	precipMax := 0
+	if len(payload.Daily.Temperature2mMin) > 0 {
+		tempMin = payload.Daily.Temperature2mMin[0]
+	}
+	if len(payload.Daily.Temperature2mMax) > 0 {
+		tempMax = payload.Daily.Temperature2mMax[0]
+	}
+	if len(payload.Daily.PrecipitationProbMax) > 0 {
+		precipMax = payload.Daily.PrecipitationProbMax[0]
+	}
 	return WeatherSnapshot{
-		TempC:       payload.Current.Temperature2m,
+		TempC:       tempC,
 		Condition:   wmoWeatherText(payload.Current.WeatherCode),
 		City:        city,
 		ObservedAt:  observed,
 		DisplayDate: observed,
+		Temperature: OverlayTemperature{Current: tempC, Min: tempMin, Max: tempMax},
+		Precipitation: OverlayPrecipitation{Hour: precipHour, Max: precipMax},
 	}, nil
+}
+
+func hourlyIndexFor(times []string, at time.Time) int {
+	if len(times) == 0 {
+		return -1
+	}
+	hourKey := at.Format("2006-01-02T15:04")
+	if len(hourKey) >= 13 {
+		hourKey = hourKey[:13] + ":00"
+	}
+	for i, t := range times {
+		if strings.HasPrefix(t, hourKey) || t == hourKey {
+			return i
+		}
+	}
+	// Fallback: nearest hour at or before observed time.
+	best := -1
+	for i, t := range times {
+		if t <= hourKey {
+			best = i
+		}
+	}
+	return best
 }
 
 func (f *weatherFetcher) resolveCoords(ctx context.Context, cfg OverlayConfig) (lat, lon float64, city string, err error) {
@@ -320,8 +386,32 @@ func (h *Hub) ensureOverlayBin(imageID string, portrait bool, cfg OverlayConfig,
 	return token, nil
 }
 
-func (h *Hub) renderOverlayPreviewJPEG(ctx context.Context, imageID string, portrait bool) ([]byte, error) {
-	cfg := h.overlay.Config()
+func mergeOverlayConfig(base OverlayConfig, override *OverlayConfig) OverlayConfig {
+	if override == nil {
+		return base
+	}
+	merged := base
+	merged.Template = override.Template
+	if override.Location != "" {
+		merged.Location = override.Location
+	}
+	if override.Latitude != 0 || override.Longitude != 0 {
+		merged.Latitude = override.Latitude
+		merged.Longitude = override.Longitude
+	}
+	if override.Timezone != "" {
+		merged.Timezone = override.Timezone
+	}
+	merged.UseFahrenheit = override.UseFahrenheit
+	if override.DateStyle != 0 {
+		merged.DateStyle = override.DateStyle
+	}
+	merged.Enabled = override.Enabled
+	return merged
+}
+
+func (h *Hub) renderOverlayPreviewJPEG(ctx context.Context, imageID string, portrait bool, cfgOverride *OverlayConfig) ([]byte, error) {
+	cfg := mergeOverlayConfig(h.overlay.Config(), cfgOverride)
 	if !cfg.Enabled || !overlayHasContent(cfg) {
 		return h.images.framePreviewJPEG(imageID, portrait, "")
 	}

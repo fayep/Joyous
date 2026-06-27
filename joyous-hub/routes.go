@@ -51,6 +51,8 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("GET /api/overlay", hub.handleOverlayGet)
 	mux.HandleFunc("PUT /api/overlay", hub.handleOverlayPut)
 	mux.HandleFunc("GET /api/overlay/preview", hub.handleOverlayPreview)
+	mux.HandleFunc("POST /api/overlay/preview", hub.handleOverlayPreview)
+	mux.HandleFunc("POST /api/overlay/metrics", hub.handleOverlayMetrics)
 	mux.HandleFunc("POST /api/overlay/send", hub.handleOverlaySend)
 	mux.HandleFunc("POST /api/images/{id}/crop", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSaveCrop(w, r, r.PathValue("id"))

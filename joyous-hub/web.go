@@ -637,14 +637,23 @@ const indexHTML = `<!DOCTYPE html>
         <label style="display:block;margin:.5rem 0;font-size:.85rem">Timezone (optional)
           <input id="ovl-timezone" placeholder="America/Los_Angeles" style="width:100%;box-sizing:border-box;padding:.35rem .5rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
         </label>
-        <div class="section-label">Show on frame</div>
-        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-show-date" checked> Date</label>
-        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-show-temp" checked> Temperature</label>
-        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-show-condition" checked> Condition</label>
-        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-show-city" checked> City</label>
-        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-fahrenheit" checked> Fahrenheit</label>
+        <div class="section-label">Overlay template</div>
+        <p style="font-size:.8rem;color:#666;margin:.25rem 0 .5rem;line-height:1.4">One line per row on the frame. Go <code>text/template</code> syntax — fields and helpers below.</p>
+        <textarea id="ovl-template" rows="6" spellcheck="false" style="width:100%;box-sizing:border-box;padding:.5rem;font-family:ui-monospace,Menlo,monospace;font-size:.8rem;line-height:1.35;border:1px solid #ccc;border-radius:4px;resize:vertical" oninput="debouncedOverlayPreview()"></textarea>
+        <div id="ovl-template-metrics" style="margin:.5rem 0;font-size:.8rem;color:#555"></div>
+        <details style="margin:.5rem 0;font-size:.8rem;color:#555">
+          <summary style="cursor:pointer;margin-bottom:.35rem">Fields &amp; helpers</summary>
+          <div style="line-height:1.5;font-family:ui-monospace,Menlo,monospace;font-size:.75rem">
+            <div><b>.City</b> · <b>.Condition</b></div>
+            <div><b>.Temperature.Current</b> · <b>.Temperature.Min</b> · <b>.Temperature.Max</b></div>
+            <div><b>.Precipitation.Hour</b> (this hour %) · <b>.Precipitation.Max</b> (daily max %)</div>
+            <div><b>{{date .Date .DateStyle}}</b> · <b>{{fahrenheit .Temperature.Min}}</b> · <b>{{celsius .Temperature.Current}}</b> · <b>{{pct .Precipitation.Hour}}</b></div>
+            <div style="margin-top:.35rem;color:#666">Example: <code>{{fahrenheit .Temperature.Min}}-{{fahrenheit .Temperature.Max}}  {{pct .Precipitation.Max}}</code></div>
+          </div>
+        </details>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-fahrenheit" checked onchange="debouncedOverlayPreview()"> Use Fahrenheit in templates</label>
         <label style="display:block;margin:.75rem 0 .35rem;font-size:.85rem">Date format
-          <select id="ovl-date-style" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+          <select id="ovl-date-style" onchange="debouncedOverlayPreview()" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
             <option value="1">Jun 20, 2026</option>
             <option value="2">20 Jun 2026</option>
             <option value="3">June 20 2026</option>
@@ -1597,6 +1606,52 @@ showTab('devices', document.querySelector('nav button.active'));
 
 // ── Overlays tab ────────────────────────────────────────────────────────────
 let overlayConfig=null;
+let overlayPreviewTimer=null;
+
+function debouncedOverlayPreview(){
+  clearTimeout(overlayPreviewTimer);
+  overlayPreviewTimer=setTimeout(()=>{
+    refreshOverlayMetrics();
+    refreshOverlayPreview();
+  }, 400);
+}
+
+function renderOverlayMetrics(m){
+  const el=document.getElementById('ovl-template-metrics');
+  if(!el) return;
+  if(m.error){
+    el.innerHTML='<p style="color:#c00;margin:0">'+esc(m.error)+'</p>';
+    return;
+  }
+  const lines=(m.lines||[]).map(ln=>
+    '<div style="margin:.35rem 0;padding:.4rem .55rem;background:#f6f7f9;border:1px solid #e8eaed;border-radius:4px;font-family:ui-monospace,Menlo,monospace;font-size:.75rem;line-height:1.35">'+
+    '<div style="color:#666;margin-bottom:.15rem">Line '+ln.index+' · '+ln.font_size+'px · ~'+ln.width_px+' px wide · +'+ln.step_px+' px tall</div>'+
+    '<div style="color:#222">'+esc(ln.text)+'</div></div>'
+  ).join('');
+  el.innerHTML=
+    '<div style="margin-bottom:.35rem;color:#666">Rendered lines (approximate, using live weather)</div>'+
+    lines+
+    '<div style="margin-top:.55rem;padding:.45rem .55rem;background:#fff;border:1px dashed #ccc;border-radius:4px;line-height:1.5;color:#444">'+
+    '<div><b>Content</b> (max line × sum of line heights): ~'+m.content.width_px+' × '+m.content.height_px+' px</div>'+
+    '<div><b>Box</b> (+'+m.box.border_px+' px border each side): '+m.box.width_px+' × '+m.box.height_px+' px on all frames</div>'+
+    '</div>';
+}
+
+async function refreshOverlayMetrics(){
+  const el=document.getElementById('ovl-template-metrics');
+  if(!el) return;
+  try{
+    const r=await fetch('/api/overlay/metrics',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({config:overlayFormValues()})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    renderOverlayMetrics(await r.json());
+  }catch(e){
+    el.innerHTML='<p style="color:#c00;margin:0">Size estimate failed: '+esc(e.message)+'</p>';
+  }
+}
 
 async function loadOverlayConfig(){
   const r=await fetch('/api/overlay');
@@ -1610,10 +1665,7 @@ function applyOverlayForm(cfg){
   document.getElementById('ovl-lat').value=cfg.latitude||'';
   document.getElementById('ovl-lon').value=cfg.longitude||'';
   document.getElementById('ovl-timezone').value=cfg.timezone||'';
-  document.getElementById('ovl-show-date').checked=cfg.show_date!==false;
-  document.getElementById('ovl-show-temp').checked=cfg.show_temp!==false;
-  document.getElementById('ovl-show-condition').checked=cfg.show_condition!==false;
-  document.getElementById('ovl-show-city').checked=cfg.show_city!==false;
+  document.getElementById('ovl-template').value=cfg.template||'';
   document.getElementById('ovl-fahrenheit').checked=cfg.use_fahrenheit!==false;
   document.getElementById('ovl-date-style').value=String(cfg.date_style||1);
 }
@@ -1628,10 +1680,7 @@ function overlayFormValues(){
     latitude: Number.isFinite(lat)?lat:0,
     longitude: Number.isFinite(lon)?lon:0,
     timezone: document.getElementById('ovl-timezone').value.trim(),
-    show_date: document.getElementById('ovl-show-date').checked,
-    show_temp: document.getElementById('ovl-show-temp').checked,
-    show_condition: document.getElementById('ovl-show-condition').checked,
-    show_city: document.getElementById('ovl-show-city').checked,
+    template: document.getElementById('ovl-template').value,
     use_fahrenheit: document.getElementById('ovl-fahrenheit').checked,
     date_style: parseInt(document.getElementById('ovl-date-style').value,10)||1
   };
@@ -1671,11 +1720,17 @@ async function refreshOverlayPreview(){
     return;
   }
   const portrait=document.getElementById('ovl-preview-portrait').checked;
-  const q=new URLSearchParams({image_id:imageId});
-  if(portrait) q.set('portrait','1');
   wrap.innerHTML='<p style="color:#888;font-size:.9rem">Loading preview…</p>';
   try{
-    const r=await fetch('/api/overlay/preview?'+q.toString());
+    const r=await fetch('/api/overlay/preview',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        image_id:imageId,
+        portrait:portrait,
+        config:overlayFormValues()
+      })
+    });
     if(!r.ok) throw new Error(await r.text());
     const blob=await r.blob();
     const url=URL.createObjectURL(blob);
@@ -1754,6 +1809,7 @@ async function loadOverlaysTab(){
     sel.innerHTML=images.map(i=>'<option value="'+i.id+'">'+esc(i.name||i.id)+'</option>').join('');
     if(!sel.value&&images.length) sel.selectedIndex=0;
     renderOverlaySendList();
+    refreshOverlayMetrics();
     refreshOverlayPreview();
   }catch(e){
     document.getElementById('ovl-save-status').textContent='Load failed: '+e.message;

@@ -42,58 +42,39 @@ func TestDrawWeatherOverlay(t *testing.T) {
 	if overlayFontErr != nil {
 		t.Skip(overlayFontErr)
 	}
-	src := image.NewRGBA(image.Rect(0, 0, 1600, 1200))
-	for y := 0; y < 1200; y++ {
-		for x := 0; x < 1600; x++ {
-			src.Set(x, y, color.RGBA{120, 140, 180, 255})
-		}
-	}
-	cfg := defaultOverlayConfig()
-	weather := WeatherSnapshot{
-		TempC:       20,
-		Condition:   "Clear",
-		City:        "Testville",
-		DisplayDate: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC),
-	}
-	out := drawWeatherOverlay(src, cfg, weather, false)
-	b := out.Bounds()
-	if b.Dx() != 1600 || b.Dy() != 1200 {
-		t.Fatalf("bounds: %v", b)
-	}
-	// Bottom band should be tinted; top-left should stay close to source.
-	if !similarColor(out.At(100, 100), src.At(100, 100)) {
-		t.Fatal("bar layout should not tint top-left")
-	}
-	if similarColor(out.At(100, 1150), src.At(100, 1150)) {
-		t.Fatal("bar layout should tint bottom row")
-	}
-}
-
-func TestDrawWeatherOverlayPanel(t *testing.T) {
-	initOverlayFonts()
-	if overlayFontErr != nil {
-		t.Skip(overlayFontErr)
-	}
-	src := image.NewRGBA(image.Rect(0, 0, 2560, 1440))
-	for y := 0; y < 1440; y++ {
-		for x := 0; x < 2560; x++ {
-			src.Set(x, y, color.RGBA{120, 140, 180, 255})
-		}
-	}
-	cfg := defaultOverlayConfig()
-	weather := WeatherSnapshot{
-		TempC:       20,
-		Condition:   "Clear",
-		City:        "Testville",
-		DisplayDate: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC),
-	}
-	out := drawWeatherOverlay(src, cfg, weather, false)
-	// Panel is bottom-left; bottom-right should stay unchanged.
-	if similarColor(out.At(100, 1300), src.At(100, 1300)) {
-		t.Fatal("expected panel tint bottom-left")
-	}
-	if !similarColor(out.At(2400, 1300), src.At(2400, 1300)) {
-		t.Fatal("expected bottom-right untouched")
+	for _, size := range []struct {
+		name string
+		w, h int
+	}{
+		{"inkjoy", 1600, 1200},
+		{"samsung", 2560, 1440},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			src := image.NewRGBA(image.Rect(0, 0, size.w, size.h))
+			for y := 0; y < size.h; y++ {
+				for x := 0; x < size.w; x++ {
+					src.Set(x, y, color.RGBA{120, 140, 180, 255})
+				}
+			}
+			cfg := defaultOverlayConfig()
+			weather := WeatherSnapshot{
+				TempC:       20,
+				Condition:   "Clear",
+				City:        "Testville",
+				DisplayDate: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC),
+				Temperature: OverlayTemperature{Current: 20, Min: 14, Max: 22},
+			}
+			out := drawWeatherOverlay(src, cfg, weather, false)
+			if similarColor(out.At(100, size.h-50), src.At(100, size.h-50)) {
+				t.Fatal("expected box tint bottom-left")
+			}
+			if !similarColor(out.At(size.w-100, size.h-50), src.At(size.w-100, size.h-50)) {
+				t.Fatal("expected bottom-right untouched")
+			}
+			if !similarColor(out.At(100, 100), src.At(100, 100)) {
+				t.Fatal("expected top-left untouched")
+			}
+		})
 	}
 }
 
