@@ -367,7 +367,7 @@ func (h *Hub) handleDeleteCrop(w http.ResponseWriter, r *http.Request, id string
 func (h *Hub) handleStatic(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Write([]byte(indexHTML))
+	w.Write([]byte(uiRevisionHTML()))
 }
 
 // ── MQTT payload helpers ─────────────────────────────────────────────────────
@@ -535,7 +535,8 @@ const indexHTML = `<!DOCTYPE html>
   }
   .album-outer-selected .album-menu{opacity:1;transform:translateY(0);pointer-events:auto}
   .album-print{
-    width:fit-content;background:#fdfbf6;padding:12px 12px 0;border-radius:2px;position:relative;
+    width:calc(var(--photo-w) + 24px);max-width:calc(var(--photo-w) + 24px);box-sizing:border-box;overflow:hidden;
+    background:#fdfbf6;padding:12px 12px 0;border-radius:2px;position:relative;
     box-shadow:0 7px 16px -4px rgba(50,38,20,.28),0 1px 3px rgba(0,0,0,.12);
     transition:box-shadow .26s ease;
   }
@@ -550,18 +551,22 @@ const indexHTML = `<!DOCTYPE html>
   }
   .album-btn{border:0;cursor:pointer;font:600 12px/1 inherit;color:#fff;background:#1f2740;padding:7px 11px;border-radius:6px}
   .album-btn-delete{background:#e1483f;padding:7px 10px;font-size:13px;line-height:1}
+  .album-caption-wrap{
+    width:var(--photo-w);max-width:100%;margin:0 auto;overflow:hidden;box-sizing:border-box;
+  }
   .album-caption{
     font-family:'Caveat',cursive;font-size:21px;line-height:1;color:#4a4135;text-align:center;
     padding:11px 6px 13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-    max-width:var(--photo-w,100%);box-sizing:border-box;min-width:0;
+    width:100%;box-sizing:border-box;min-width:0;
   }
-  .album-outer-selected .album-caption,
-  .album-outer:hover .album-caption{cursor:text}
-  .album-caption-editing{
-    outline:none;overflow:visible;text-overflow:clip;
-    border-bottom:1px dashed #b8ad98;white-space:nowrap;
+  .album-outer-selected .album-caption-wrap,
+  .album-outer:hover .album-caption-wrap{cursor:text}
+  .album-caption-input{
+    display:block;width:100%;min-width:0;box-sizing:border-box;
+    font-family:'Caveat',cursive;font-size:21px;line-height:1;color:#4a4135;text-align:center;
+    padding:11px 6px 13px;margin:0;border:0;border-bottom:1px dashed #4a4135;border-radius:0;
+    background:transparent;outline:none;
   }
-  .album-caption-editing:focus{border-bottom-color:#4a4135}
   .album-empty{text-align:center;color:#6e6450;padding:3rem 1.5rem;font-size:15px;margin:0}
   @media (max-width:640px){
     .album-upload-wrap{padding:20px 16px 8px}
@@ -706,7 +711,7 @@ const indexHTML = `<!DOCTYPE html>
             <option value="bottom_center">Bottom center</option>
           </select>
         </label>
-        <p style="font-size:.8rem;color:#666;margin:0 0 .5rem;line-height:1.4">Caveat handwriting (matches album captions), black or white with a thin opposite outline, no background panel.</p>
+        <p style="font-size:.8rem;color:#666;margin:0 0 .5rem;line-height:1.4">Caveat handwriting (matches album captions), white with black outline and a light shadow, no background panel.</p>
         <button class="btn btn-primary btn-sm" style="margin-top:.75rem" onclick="saveOverlayConfig()">Save settings</button>
         <div id="ovl-save-status" style="font-size:.85rem;color:#666;margin-top:.5rem"></div>
       </div>
@@ -948,6 +953,34 @@ const indexHTML = `<!DOCTYPE html>
   </div>
 </main>
 <script>
+const JOYOUS_UI_REVISION='__JOYOUS_UI_REVISION__';
+let joyousUIRevision=JOYOUS_UI_REVISION;
+
+function joyousUIBusy(){
+  if(albumCaptionEditingId) return true;
+  const m=document.getElementById('crop-modal');
+  return !!(m&&m.classList.contains('open'));
+}
+
+async function checkJoyousUIRevision(){
+  if(joyousUIBusy()) return;
+  try{
+    const r=await fetch('/api/ui/revision',{cache:'no-store'});
+    if(!r.ok) return;
+    const j=await r.json();
+    if(j.revision&&joyousUIRevision&&j.revision!==joyousUIRevision){
+      location.reload();
+      return;
+    }
+    if(j.revision) joyousUIRevision=j.revision;
+  }catch(e){}
+}
+
+setInterval(checkJoyousUIRevision,60000);
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible') checkJoyousUIRevision();
+});
+
 let devices=[], images=[], activeTab='devices';
 
 function showTab(name,btn){
@@ -1177,7 +1210,7 @@ function albumGridTap(e){
   const card=e.target.closest('.album-outer');
   if(!card) return;
   const imageId=card.id.slice(5);
-  if(e.target.closest('.album-caption')){
+  if(e.target.closest('.album-caption-wrap')){
     albumCaptionClick(e,imageId);
     return;
   }
@@ -1235,28 +1268,27 @@ async function saveAlbumCaption(imageId,name){
 }
 
 function startAlbumCaptionEdit(imageId){
-  const cap=document.querySelector('#card-'+imageId+' .album-caption');
-  if(!cap||albumCaptionEditingId) return;
+  const wrap=document.querySelector('#card-'+imageId+' .album-caption-wrap');
+  const cap=wrap&&wrap.querySelector('.album-caption');
+  if(!wrap||!cap||albumCaptionEditingId) return;
   const img=images.find(i=>i.id===imageId);
+  const input=document.createElement('input');
+  input.type='text';
+  input.className='album-caption-input';
+  input.value=img?img.name:cap.textContent;
+  input.setAttribute('aria-label','Photo name');
+  cap.hidden=true;
+  wrap.appendChild(input);
   albumCaptionEditingId=imageId;
-  cap.contentEditable='true';
-  cap.classList.add('album-caption-editing');
-  cap.textContent=img?img.name:cap.textContent;
-  cap.focus();
-  const range=document.createRange();
-  range.selectNodeContents(cap);
-  range.collapse(false);
-  const sel=window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
+  input.focus();
+  input.select();
   function finish(save){
-    cap.contentEditable='false';
-    cap.classList.remove('album-caption-editing');
-    cap.removeEventListener('blur',onBlur);
-    cap.removeEventListener('keydown',onKey);
-    cap.removeEventListener('paste',onPaste);
+    input.removeEventListener('blur',onBlur);
+    input.removeEventListener('keydown',onKey);
+    cap.hidden=false;
+    input.remove();
     albumCaptionEditingId=null;
-    if(save) saveAlbumCaption(imageId,cap.textContent);
+    if(save) saveAlbumCaption(imageId,input.value);
     else if(img) updateAlbumCaptionElement(imageId,img.name);
   }
   function onBlur(){ finish(true); }
@@ -1264,14 +1296,8 @@ function startAlbumCaptionEdit(imageId){
     if(ev.key==='Enter'){ ev.preventDefault(); finish(true); }
     if(ev.key==='Escape'){ ev.preventDefault(); finish(false); }
   }
-  function onPaste(ev){
-    ev.preventDefault();
-    const text=(ev.clipboardData||window.clipboardData).getData('text').replace(/\r?\n/g,' ').trim();
-    document.execCommand('insertText',false,text);
-  }
-  cap.addEventListener('blur',onBlur);
-  cap.addEventListener('keydown',onKey);
-  cap.addEventListener('paste',onPaste);
+  input.addEventListener('blur',onBlur);
+  input.addEventListener('keydown',onKey);
 }
 
 function initAlbumGridTap(){
@@ -1303,7 +1329,9 @@ async function loadImages(){
             '<button type="button" class="album-btn album-btn-delete" onclick="event.stopPropagation();deleteImg(\''+img.id+'\')">&times;</button>'+
           '</div>'+
         '</div>'+
-        '<div class="album-caption" title="'+name+'">'+name+'</div>'+
+        '<div class="album-caption-wrap">'+
+          '<div class="album-caption" title="'+name+'">'+name+'</div>'+
+        '</div>'+
       '</div></div>';
   }).join('');
   initAlbumGridTap();
@@ -1826,7 +1854,7 @@ function renderOverlayMetrics(m){
     '<div style="margin-top:.55rem;padding:.45rem .55rem;background:#fff;border:1px dashed #ccc;border-radius:4px;line-height:1.5;color:#444">'+
     '<div><b>Content</b> (max line × sum of line heights): ~'+m.content.width_px+' × '+m.content.height_px+' px</div>'+
     (m.style==='outline'
-      ? '<div><b>Style</b> bordered text (no background panel)</div>'
+      ? '<div><b>Style</b> white bordered text with light shadow (no background panel)</div>'
       : '<div><b>Box</b> (+'+m.box.border_px+' px border each side): '+m.box.width_px+' × '+m.box.height_px+' px on all frames</div>')+
     '</div>';
 }

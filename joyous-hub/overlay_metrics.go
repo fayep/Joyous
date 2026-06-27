@@ -32,7 +32,7 @@ type OverlayBoxMetrics struct {
 func overlayLineFontSize(index int) int {
 	switch index {
 	case 0:
-		return overlayFontSmall
+		return overlayFontMedium
 	case 1:
 		return overlayFontLarge
 	default:

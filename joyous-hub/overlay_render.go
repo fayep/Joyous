@@ -95,12 +95,8 @@ func drawWeatherOverlayOutlined(dst *image.RGBA, lines []overlayLine) *image.RGB
 	y := b.Max.Y - marginY - overlayContentHeight(lines)
 	for i, ln := range lines {
 		if ln.face != nil && ln.text != "" {
-			textW := fontMeasureString(ln.face, ln.text)
-			ascent := ln.face.Metrics().Ascent.Ceil()
-			descent := ln.face.Metrics().Descent.Ceil()
-			fill := overlayContrastingColor(dst, x, y, textW, ascent+descent)
 			fontSize := float64(overlayLineFontSize(i))
-			drawOutlinedOverlayText(dst, ln.text, x, y, ln.face, fill, overlayOutlineColor(fill), fontSize)
+			drawBorderedOverlayText(dst, ln.text, x, y, ln.face, fontSize)
 		}
 		y += overlayLineStepAfter(i)
 	}
@@ -182,6 +178,12 @@ func blendPixel(dst *image.RGBA, x, y int, c color.RGBA) {
 	dst.Pix[i+3] = 255
 }
 
+var (
+	overlayBorderedFill    = color.RGBA{255, 255, 255, 255}
+	overlayBorderedOutline = color.RGBA{0, 0, 0, 255}
+	overlayBorderedShadow  = color.RGBA{0, 0, 0, 110}
+)
+
 func drawPlainOverlayText(dst *image.RGBA, text string, x, y int, face font.Face, col color.Color) {
 	if face == nil || text == "" {
 		return
@@ -195,14 +197,6 @@ func drawPlainOverlayText(dst *image.RGBA, text string, x, y int, face font.Face
 	d.DrawString(text)
 }
 
-func overlayOutlineColor(fill color.Color) color.Color {
-	r, g, b, _ := fill.RGBA()
-	if int(r>>8)+int(g>>8)+int(b>>8) > 128*3 {
-		return color.RGBA{0, 0, 0, 255}
-	}
-	return color.RGBA{255, 255, 255, 255}
-}
-
 func overlayTextOutlineStep(fontSize float64) int {
 	if fontSize >= 58 {
 		return 2
@@ -210,12 +204,27 @@ func overlayTextOutlineStep(fontSize float64) int {
 	return 1
 }
 
-func drawOutlinedOverlayText(dst *image.RGBA, text string, x, y int, face font.Face, fill, outline color.Color, fontSize float64) {
+func overlayTextShadowOffset(fontSize float64) (int, int) {
+	if fontSize >= 58 {
+		return 2, 2
+	}
+	return 1, 1
+}
+
+func drawBorderedOverlayText(dst *image.RGBA, text string, x, y int, face font.Face, fontSize float64) {
 	if face == nil || text == "" {
 		return
 	}
 	step := overlayTextOutlineStep(fontSize)
+	shadowDX, shadowDY := overlayTextShadowOffset(fontSize)
 	baseY := y + int(face.Metrics().Ascent.Ceil())
+	shadow := &font.Drawer{
+		Dst:  dst,
+		Src:  image.NewUniform(overlayBorderedShadow),
+		Face: face,
+		Dot:  fixed.P(x+shadowDX, baseY+shadowDY),
+	}
+	shadow.DrawString(text)
 	offsets := [][2]int{
 		{-step, 0}, {step, 0}, {0, -step}, {0, step},
 		{-step, -step}, {-step, step}, {step, -step}, {step, step},
@@ -223,13 +232,13 @@ func drawOutlinedOverlayText(dst *image.RGBA, text string, x, y int, face font.F
 	for _, off := range offsets {
 		d := &font.Drawer{
 			Dst:  dst,
-			Src:  image.NewUniform(outline),
+			Src:  image.NewUniform(overlayBorderedOutline),
 			Face: face,
 			Dot:  fixed.P(x+off[0], baseY+off[1]),
 		}
 		d.DrawString(text)
 	}
-	drawPlainOverlayText(dst, text, x, y, face, fill)
+	drawPlainOverlayText(dst, text, x, y, face, overlayBorderedFill)
 }
 
 func fontMeasureString(face font.Face, text string) int {

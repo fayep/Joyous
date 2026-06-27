@@ -201,12 +201,33 @@ func TestOverlayCaveatFace(t *testing.T) {
 	}
 }
 
-func TestOverlayOutlineColor(t *testing.T) {
-	if got := overlayOutlineColor(color.RGBA{255, 255, 255, 255}); got != (color.RGBA{0, 0, 0, 255}) {
-		t.Fatalf("white fill should get black outline")
+func TestDrawBorderedOverlayText(t *testing.T) {
+	initOverlayFonts()
+	if overlayFontErr != nil {
+		t.Skip(overlayFontErr)
 	}
-	if got := overlayOutlineColor(color.RGBA{0, 0, 0, 255}); got != (color.RGBA{255, 255, 255, 255}) {
-		t.Fatalf("black fill should get white outline")
+	dst := image.NewRGBA(image.Rect(0, 0, 400, 300))
+	for y := 0; y < 300; y++ {
+		for x := 0; x < 400; x++ {
+			dst.Set(x, y, color.RGBA{240, 240, 240, 255})
+		}
+	}
+	face := overlayFace(overlayFontSmall)
+	drawBorderedOverlayText(dst, "Sunset", 250, 250, face, overlayFontSmall)
+	found := false
+	for y := 240; y < 300; y++ {
+		for x := 240; x < 400; x++ {
+			if !similarColor(dst.At(x, y), color.RGBA{240, 240, 240, 255}) {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected bordered text pixels")
 	}
 }
 

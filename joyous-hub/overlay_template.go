@@ -126,7 +126,7 @@ func overlayRenderedLines(cfg OverlayConfig, weather WeatherSnapshot) ([]overlay
 	if err != nil {
 		return nil, err
 	}
-	large, medium, small := overlayFacesStandard()
+	large, medium, _ := overlayFacesStandard()
 	var lines []overlayLine
 	for i, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
@@ -137,7 +137,7 @@ func overlayRenderedLines(cfg OverlayConfig, weather WeatherSnapshot) ([]overlay
 		if face == nil {
 			switch i {
 			case 0:
-				face = small
+				face = medium
 			case 1:
 				face = large
 			default:
@@ -150,10 +150,10 @@ func overlayRenderedLines(cfg OverlayConfig, weather WeatherSnapshot) ([]overlay
 }
 
 func overlayLineFace(index int, _ string) font.Face {
-	large, medium, small := overlayFacesStandard()
+	large, medium, _ := overlayFacesStandard()
 	switch index {
 	case 0:
-		return small
+		return medium
 	case 1:
 		return large
 	default:

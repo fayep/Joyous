@@ -277,6 +277,28 @@ func TestRefreshAction(t *testing.T) {
 	}
 }
 
+// TestUIRevisionAPI: GET /api/ui/revision returns the embedded UI hash.
+func TestUIRevisionAPI(t *testing.T) {
+	h := buildTestHub(t)
+	rec := httptest.NewRecorder()
+	h.handleUIRevision(rec, httptest.NewRequest("GET", "/api/ui/revision", nil))
+	if rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control: got %q", got)
+	}
+	var out struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Revision != uiRevision || len(out.Revision) != 12 {
+		t.Fatalf("revision: got %q want %q", out.Revision, uiRevision)
+	}
+}
+
 // TestStaticRoot: GET / returns 200 with HTML content-type.
 func TestStaticRoot(t *testing.T) {
 	h := buildTestHub(t)
@@ -293,8 +315,15 @@ func TestStaticRoot(t *testing.T) {
 		t.Errorf("Cache-Control: got %q want no-cache", got)
 	}
 	body, _ := io.ReadAll(rec.Body)
-	if !strings.Contains(string(body), "<html") {
+	html := string(body)
+	if !strings.Contains(html, "<html") {
 		t.Error("body should contain <html>")
+	}
+	if strings.Contains(html, uiRevisionPlaceholder) {
+		t.Error("served HTML should inject ui revision")
+	}
+	if !strings.Contains(html, "const JOYOUS_UI_REVISION='"+uiRevision+"'") {
+		t.Error("served HTML should embed ui revision")
 	}
 }
 

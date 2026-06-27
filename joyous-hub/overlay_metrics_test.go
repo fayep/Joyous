@@ -25,8 +25,11 @@ func TestOverlayMetricsForLines(t *testing.T) {
 	if len(m.Lines) != 3 {
 		t.Fatalf("lines: %d", len(m.Lines))
 	}
-	if m.Lines[0].FontSize != overlayFontSmall || m.Lines[1].FontSize != overlayFontLarge {
+	if m.Lines[0].FontSize != overlayFontMedium || m.Lines[1].FontSize != overlayFontLarge {
 		t.Fatalf("font sizes: %+v", m.Lines)
+	}
+	if m.Lines[2].FontSize != overlayFontMedium {
+		t.Fatalf("last line font: %+v", m.Lines[2])
 	}
 	if m.Box.WidthPx != 397 || m.Box.HeightPx != 184 {
 		t.Fatalf("box: %+v", m.Box)
