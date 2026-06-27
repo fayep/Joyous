@@ -280,6 +280,41 @@ func cropForFormat(crops map[string]CropRect, format string) (CropRect, bool) {
 	return r, true
 }
 
+// Rename updates the display name in image metadata (raw file on disk is unchanged).
+func (s *ImageStore) Rename(id, name string) (ImageMeta, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ImageMeta{}, fmt.Errorf("name required")
+	}
+	meta, err := s.readMeta(id)
+	if err != nil {
+		return ImageMeta{}, err
+	}
+	meta.Name = name
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return ImageMeta{}, err
+	}
+	if err := os.WriteFile(s.metaPath(id), b, 0644); err != nil {
+		return ImageMeta{}, err
+	}
+	s.evictOverlayCacheForImage(id)
+	return meta, nil
+}
+
+func (s *ImageStore) evictOverlayCacheForImage(id string) {
+	entries, err := os.ReadDir(s.cacheDir())
+	if err != nil {
+		return
+	}
+	prefix := id + "~"
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), prefix) {
+			_ = os.Remove(filepath.Join(s.cacheDir(), e.Name()))
+		}
+	}
+}
+
 // DeleteImage removes the stored raw file, its metadata, bin cache, and all thumb files.
 func (s *ImageStore) DeleteImage(id string) error {
 	os.Remove(s.rawPath(id))

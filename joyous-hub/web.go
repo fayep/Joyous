@@ -260,6 +260,28 @@ func (h *Hub) handleImageDelete(w http.ResponseWriter, r *http.Request, id strin
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
+// handleImageRename serves PATCH /api/images/{id} — updates display name in metadata only.
+func (h *Hub) handleImageRename(w http.ResponseWriter, r *http.Request, id string) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	meta, err := h.images.Rename(id, body.Name)
+	if err != nil {
+		code := http.StatusBadRequest
+		if strings.Contains(err.Error(), "not found") {
+			code = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(meta)
+}
+
 // handleDisplay serves POST /api/devices/{id}/display.
 func (h *Hub) handleDisplay(w http.ResponseWriter, r *http.Request, deviceID string) {
 	var body struct {
@@ -533,6 +555,13 @@ const indexHTML = `<!DOCTYPE html>
     padding:11px 6px 13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
     max-width:var(--photo-w,100%);box-sizing:border-box;min-width:0;
   }
+  .album-outer-selected .album-caption,
+  .album-outer:hover .album-caption{cursor:text}
+  .album-caption-editing{
+    outline:none;overflow:visible;text-overflow:clip;
+    border-bottom:1px dashed #b8ad98;white-space:nowrap;
+  }
+  .album-caption-editing:focus{border-bottom-color:#4a4135}
   .album-empty{text-align:center;color:#6e6450;padding:3rem 1.5rem;font-size:15px;margin:0}
   @media (max-width:640px){
     .album-upload-wrap{padding:20px 16px 8px}
@@ -1121,9 +1150,12 @@ function albumStackVars(i){
 }
 
 let albumSelectedId=null;
+let albumCaptionEditingId=null;
 
-function albumTouchSelect(){
-  return window.matchMedia('(hover: none)').matches;
+function albumCardInForeground(card){
+  if(!card) return false;
+  if(card.classList.contains('album-outer-selected')) return true;
+  return window.matchMedia('(hover:hover)').matches&&card.matches(':hover');
 }
 
 function setAlbumSelected(id){
@@ -1141,10 +1173,105 @@ function setAlbumSelected(id){
 }
 
 function albumGridTap(e){
-  if(!albumTouchSelect()) return;
+  if(e.target.closest('.album-btn')) return;
   const card=e.target.closest('.album-outer');
-  if(!card||e.target.closest('.album-btn')) return;
-  setAlbumSelected(card.id.slice(5));
+  if(!card) return;
+  const imageId=card.id.slice(5);
+  if(e.target.closest('.album-caption')){
+    albumCaptionClick(e,imageId);
+    return;
+  }
+  setAlbumSelected(imageId);
+}
+
+function albumCaptionClick(e,imageId){
+  e.stopPropagation();
+  if(albumCaptionEditingId) return;
+  const card=document.getElementById('card-'+imageId);
+  if(!albumCardInForeground(card)) return;
+  startAlbumCaptionEdit(imageId);
+}
+
+function updateAlbumCaptionElement(imageId,name){
+  const cap=document.querySelector('#card-'+imageId+' .album-caption');
+  if(!cap) return;
+  cap.textContent=name;
+  cap.title=name;
+}
+
+function syncOverlayPreviewImageOption(imageId,name){
+  const sel=document.getElementById('ovl-preview-image');
+  if(!sel) return;
+  const opt=sel.querySelector('option[value="'+imageId+'"]');
+  if(opt) opt.textContent=name||imageId;
+}
+
+async function saveAlbumCaption(imageId,name){
+  name=String(name||'').trim();
+  const img=images.find(i=>i.id===imageId);
+  if(!name){
+    if(img) updateAlbumCaptionElement(imageId,img.name);
+    return;
+  }
+  if(img&&img.name===name){
+    updateAlbumCaptionElement(imageId,name);
+    return;
+  }
+  try{
+    const r=await fetch('/api/images/'+imageId,{
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    const meta=await r.json();
+    if(img) img.name=meta.name;
+    updateAlbumCaptionElement(imageId,meta.name);
+    syncOverlayPreviewImageOption(imageId,meta.name);
+  }catch(err){
+    alert('Rename failed: '+err.message);
+    if(img) updateAlbumCaptionElement(imageId,img.name);
+  }
+}
+
+function startAlbumCaptionEdit(imageId){
+  const cap=document.querySelector('#card-'+imageId+' .album-caption');
+  if(!cap||albumCaptionEditingId) return;
+  const img=images.find(i=>i.id===imageId);
+  albumCaptionEditingId=imageId;
+  cap.contentEditable='true';
+  cap.classList.add('album-caption-editing');
+  cap.textContent=img?img.name:cap.textContent;
+  cap.focus();
+  const range=document.createRange();
+  range.selectNodeContents(cap);
+  range.collapse(false);
+  const sel=window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  function finish(save){
+    cap.contentEditable='false';
+    cap.classList.remove('album-caption-editing');
+    cap.removeEventListener('blur',onBlur);
+    cap.removeEventListener('keydown',onKey);
+    cap.removeEventListener('paste',onPaste);
+    albumCaptionEditingId=null;
+    if(save) saveAlbumCaption(imageId,cap.textContent);
+    else if(img) updateAlbumCaptionElement(imageId,img.name);
+  }
+  function onBlur(){ finish(true); }
+  function onKey(ev){
+    if(ev.key==='Enter'){ ev.preventDefault(); finish(true); }
+    if(ev.key==='Escape'){ ev.preventDefault(); finish(false); }
+  }
+  function onPaste(ev){
+    ev.preventDefault();
+    const text=(ev.clipboardData||window.clipboardData).getData('text').replace(/\r?\n/g,' ').trim();
+    document.execCommand('insertText',false,text);
+  }
+  cap.addEventListener('blur',onBlur);
+  cap.addEventListener('keydown',onKey);
+  cap.addEventListener('paste',onPaste);
 }
 
 function initAlbumGridTap(){

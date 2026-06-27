@@ -210,6 +210,27 @@ func TestColorGuessesPNGUsesFlatSnap(t *testing.T) {
 	}
 }
 
+// TestRenameImage updates display name in metadata without changing the raw file.
+func TestRenameImage(t *testing.T) {
+	store := NewImageStore(t.TempDir())
+	id, _ := store.Store(bytes.NewReader([]byte{1, 2, 3, 4}), "vacation.jpg")
+
+	meta, err := store.Rename(id, "Sunset at the lake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Name != "Sunset at the lake" {
+		t.Fatalf("got name %q", meta.Name)
+	}
+	reloaded, err := store.readMeta(id)
+	if err != nil || reloaded.Name != "Sunset at the lake" {
+		t.Fatalf("reload: %+v err=%v", reloaded, err)
+	}
+	if _, err := store.Rename(id, "  "); err == nil {
+		t.Fatal("expected error for empty name")
+	}
+}
+
 // TestDeleteCrop: DeleteCrop removes a stored crop from metadata.
 func TestDeleteCrop(t *testing.T) {
 	store := NewImageStore(t.TempDir())

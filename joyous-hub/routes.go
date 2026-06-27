@@ -24,6 +24,9 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("DELETE /api/images/{id}", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleImageDelete(w, r, r.PathValue("id"))
 	})
+	mux.HandleFunc("PATCH /api/images/{id}", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleImageRename(w, r, r.PathValue("id"))
+	})
 	mux.HandleFunc("GET /images/{file}", func(w http.ResponseWriter, r *http.Request) {
 		file := r.PathValue("file")
 		id, overlayToken, portrait := parseImageBinFilename(file)

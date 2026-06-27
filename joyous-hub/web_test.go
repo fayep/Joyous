@@ -389,6 +389,32 @@ func TestUploadFullBinDragDrop(t *testing.T) {
 	}
 }
 
+// TestRenameImageAPI: PATCH /api/images/{id} updates the display name.
+func TestRenameImageAPI(t *testing.T) {
+	h := buildTestHub(t)
+	id, _ := h.images.Store(bytes.NewReader([]byte{0x01, 0x02}), "orig.jpg")
+
+	body := `{"name":"Beach day"}`
+	req := httptest.NewRequest("PATCH", "/api/images/"+id, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.handleImageRename(rec, req, id)
+	if rec.Code != 200 {
+		t.Fatalf("status %d body=%s", rec.Code, rec.Body.String())
+	}
+	var meta ImageMeta
+	if err := json.NewDecoder(rec.Body).Decode(&meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.Name != "Beach day" {
+		t.Fatalf("got %q", meta.Name)
+	}
+	got, err := h.images.readMeta(id)
+	if err != nil || got.Name != "Beach day" {
+		t.Fatalf("meta=%+v err=%v", got, err)
+	}
+}
+
 // TestDeleteImage: DELETE /api/images/{id} removes the image.
 func TestDeleteImage(t *testing.T) {
 	h := buildTestHub(t)
