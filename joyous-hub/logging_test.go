@@ -50,14 +50,17 @@ func TestQuietAccessLogger(t *testing.T) {
 
 func TestDevicesListPollAccessLogSuppressed(t *testing.T) {
 	orig := devicesListAccessLog
+	origImages := imagesRevisionAccessLog
 	origMQTT := mqttLogsAccessLog
 	origSamsung := samsungListAccessLog
 	t.Cleanup(func() {
 		devicesListAccessLog = orig
+		imagesRevisionAccessLog = origImages
 		mqttLogsAccessLog = origMQTT
 		samsungListAccessLog = origSamsung
 	})
 	devicesListAccessLog = newQuietAccessLogger(30 * time.Second)
+	imagesRevisionAccessLog = newQuietAccessLogger(30 * time.Second)
 	mqttLogsAccessLog = newQuietAccessLogger(30 * time.Second)
 	samsungListAccessLog = newQuietAccessLogger(30 * time.Second)
 
@@ -80,6 +83,19 @@ func TestDevicesListPollAccessLogSuppressed(t *testing.T) {
 		t.Fatalf("expected 1 access log line, got %d:\n%s", len(lines), buf.String())
 	}
 	if !strings.Contains(lines[0], "GET /api/devices") {
+		t.Fatalf("unexpected log line: %q", lines[0])
+	}
+
+	buf.Reset()
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/images/revision", nil))
+	}
+	lines = strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 images revision access log line, got %d:\n%s", len(lines), buf.String())
+	}
+	if !strings.Contains(lines[0], "GET /api/images/revision") {
 		t.Fatalf("unexpected log line: %q", lines[0])
 	}
 
