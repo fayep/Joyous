@@ -1230,6 +1230,16 @@ function escHtml(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+function downloadAlbumImage(id,name){
+  const a=document.createElement('a');
+  a.href='/images/'+encodeURIComponent(id)+'/original';
+  a.download=name||id;
+  a.rel='noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 function albumPhotoBaseHeightPx(){
   return window.matchMedia('(max-width:640px)').matches ? 120 : 148;
 }
@@ -1420,6 +1430,7 @@ async function loadImages(){
           '<img src="/images/'+img.id+'/preview" alt="'+name+'" loading="lazy">'+
           '<div class="album-menu">'+
             '<button type="button" class="album-btn" onclick="event.stopPropagation();openCrop(\''+img.id+'\')">Frame</button>'+
+            '<button type="button" class="album-btn" onclick="event.stopPropagation();downloadAlbumImage(\''+img.id+'\','+JSON.stringify(img.name)+')">Save</button>'+
             '<button type="button" class="album-btn" id="send-btn-'+img.id+'" onclick="sendImageToFrame(event,\''+img.id+'\')">Send</button>'+
             '<button type="button" class="album-btn album-btn-delete" onclick="event.stopPropagation();deleteImg(\''+img.id+'\')">&times;</button>'+
           '</div>'+
@@ -2898,7 +2909,8 @@ sz.addEventListener('drop',async e=>{
       </select>
     </label>
     <span id="crop-chroma-hint" style="font-size:.75rem;color:#888;max-width:14rem;line-height:1.3"></span>
-    <button class="btn btn-primary btn-sm" onclick="saveCrop()">Save</button>
+    <button class="btn btn-primary btn-sm" onclick="saveCrop()">Save crop</button>
+    <button class="btn btn-sm" id="crop-download-btn" onclick="downloadCropImage()">Save file</button>
     <button id="crop-delete-btn" class="btn btn-sm" style="background:#c0392b;color:#fff;display:none" onclick="deleteCrop()">Delete</button>
     <button class="btn btn-sm" onclick="closeCrop()">Close</button>
     <span id="crop-hint"></span>
@@ -3087,6 +3099,12 @@ async function saveCrop(){
   renderOverlays();
   updateDeleteBtn();
   refreshThumb(cropId);
+}
+
+function downloadCropImage(){
+  if(!cropId) return;
+  const img=images.find(i=>i.id===cropId)||cropMeta;
+  downloadAlbumImage(cropId, img&&(img.name||img.Name)||cropId);
 }
 
 async function deleteCrop(){

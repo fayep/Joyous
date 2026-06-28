@@ -15,6 +15,7 @@ import (
 	_ "image/png"
 	"io"
 	"math"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -534,6 +535,60 @@ func (s *ImageStore) ServePreviewHTTP(w http.ResponseWriter, r *http.Request, id
 		}
 	}
 	serveJPEGFile(w, r, path)
+}
+
+// ServeOriginalHTTP serves the stored upload bytes with the original filename.
+func (s *ImageStore) ServeOriginalHTTP(w http.ResponseWriter, r *http.Request, id string) {
+	meta, err := s.readMeta(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	data, err := os.ReadFile(s.rawPath(id))
+	if err != nil {
+		http.Error(w, "raw file missing", http.StatusNotFound)
+		return
+	}
+	filename := downloadFilename(meta)
+	ctype := mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Content-Disposition", contentDispositionAttachment(filename))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+	w.Write(data)
+}
+
+func downloadFilename(meta ImageMeta) string {
+	name := strings.TrimSpace(meta.Name)
+	if name == "" {
+		name = meta.ID
+	}
+	name = filepath.Base(name)
+	name = strings.Map(func(r rune) rune {
+		if r < 32 || r == '"' || r == '\\' {
+			return -1
+		}
+		return r
+	}, name)
+	if name == "" || name == "." || name == ".." {
+		return meta.ID
+	}
+	return name
+}
+
+func contentDispositionAttachment(filename string) string {
+	ascii := strings.Map(func(r rune) rune {
+		if r >= 0x20 && r <= 0x7e && r != '"' && r != '\\' {
+			return r
+		}
+		return '_'
+	}, filename)
+	if ascii == "" {
+		ascii = "download"
+	}
+	return fmt.Sprintf(`attachment; filename="%s"`, ascii)
 }
 
 func jpegFileInfo(path string) (etag string, mod time.Time, ok bool) {

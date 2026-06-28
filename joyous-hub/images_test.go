@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -727,5 +728,27 @@ func TestPatchMetaChromaEvictsCache(t *testing.T) {
 	meta, err := store.readMeta(id)
 	if err != nil || meta.ChromaBoost == nil || !*meta.ChromaBoost {
 		t.Fatalf("meta=%+v err=%v", meta, err)
+	}
+}
+
+func TestServeOriginalHTTP(t *testing.T) {
+	store := NewImageStore(t.TempDir())
+	raw := []byte{0x89, 0x50, 0x4e, 0x47, 0x01, 0x02}
+	id, _ := store.Store(bytes.NewReader(raw), "holiday snap.png")
+
+	rec := httptest.NewRecorder()
+	store.ServeOriginalHTTP(rec, httptest.NewRequest(http.MethodGet, "/images/"+id+"/original", nil), id)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), raw) {
+		t.Fatal("body mismatch")
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("Content-Type: %q", ct)
+	}
+	cd := rec.Header().Get("Content-Disposition")
+	if !strings.Contains(cd, `filename="holiday snap.png"`) {
+		t.Fatalf("Content-Disposition: %q", cd)
 	}
 }

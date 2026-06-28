@@ -51,6 +51,9 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("GET /images/{id}/preview", func(w http.ResponseWriter, r *http.Request) {
 		hub.images.ServePreviewHTTP(w, r, r.PathValue("id"))
 	})
+	mux.HandleFunc("GET /images/{id}/original", func(w http.ResponseWriter, r *http.Request) {
+		hub.images.ServeOriginalHTTP(w, r, r.PathValue("id"))
+	})
 	mux.HandleFunc("GET /images/{id}/frame-preview", func(w http.ResponseWriter, r *http.Request) {
 		portrait := r.URL.Query().Get("portrait") == "1"
 		overlay := r.URL.Query().Get("overlay")
