@@ -179,6 +179,9 @@ func (h *Hub) SendImageToDevice(deviceID, imageID, overlayToken string) (string,
 		h.sendDelivery.Fail(send.ID)
 		return "", err
 	}
+	if dev.Type == DeviceTypeInkJoy && h.inkjoyRetry != nil {
+		h.inkjoyRetry.Track(send.ID, deviceID, imageID, overlayToken)
+	}
 	return send.ID, nil
 }
 

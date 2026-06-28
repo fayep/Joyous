@@ -55,6 +55,7 @@ func (h *Hub) sendInkJoyImage(dev *Device, imageID, overlayToken, sendID string)
 	imgURL := fmt.Sprintf("http://%s/images/%s", addr, file)
 	payload, msgid := buildPlayPayload(dev.MAC, imgURL)
 	if h.sendDelivery != nil {
+		h.sendDelivery.UnbindInkJoy(sendID)
 		h.sendDelivery.BindInkJoy(sendID, msgid)
 	}
 	registerInjectedPlay(msgid)

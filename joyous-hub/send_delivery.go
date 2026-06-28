@@ -94,8 +94,32 @@ func (t *SendDeliveryTracker) BindInkJoy(sendID, msgid string) {
 	if !ok || msgid == "" {
 		return
 	}
+	if d.inkjoyMsgID != "" && d.inkjoyMsgID != msgid {
+		delete(t.inkjoyByMsgID, d.inkjoyMsgID)
+	}
 	d.inkjoyMsgID = msgid
 	t.inkjoyByMsgID[msgid] = sendID
+}
+
+// UnbindInkJoy removes the current msgid mapping for a pending send (before re-publish).
+func (t *SendDeliveryTracker) UnbindInkJoy(sendID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	d, ok := t.byID[sendID]
+	if !ok {
+		return
+	}
+	if d.inkjoyMsgID != "" {
+		delete(t.inkjoyByMsgID, d.inkjoyMsgID)
+		d.inkjoyMsgID = ""
+	}
+}
+
+// SendIDForInkJoyMsgid returns the hub send id bound to a play msgid.
+func (t *SendDeliveryTracker) SendIDForInkJoyMsgid(msgid string) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.inkjoyByMsgID[msgid]
 }
 
 func (t *SendDeliveryTracker) Get(sendID string) *sendDelivery {
@@ -241,6 +265,11 @@ func (h *Hub) handleSendStatus(w http.ResponseWriter, r *http.Request, sendID st
 	}
 	if !d.DeliveredAt.IsZero() {
 		out["delivered_at"] = d.DeliveredAt
+	}
+	if h.inkjoyRetry != nil {
+		if n := h.inkjoyRetry.Attempts(sendID); n > 1 {
+			out["retry_attempts"] = n - 1
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)

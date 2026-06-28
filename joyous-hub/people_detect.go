@@ -70,8 +70,14 @@ func isSkinTone(r, g, b uint8) bool {
 		if b < minC {
 			minC = b
 		}
-		if maxC-minC > 15 && absInt(int(r)-int(g)) > 15 && r > g && r > b {
-			return true
+		if maxC-minC > 15 {
+			rg := int(r) - int(g)
+			if rg < 0 {
+				rg = -rg
+			}
+			if rg > 15 && r > g && r > b {
+				return true
+			}
 		}
 	}
 	_, cb, cr := rgbToYCbCr(r, g, b)

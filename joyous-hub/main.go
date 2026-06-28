@@ -187,6 +187,8 @@ func main() {
 		hubIP:          hubIP,
 		mqttLog:        mqttLog,
 	}
+	hub.inkjoyRetry = NewInkJoySendRetry(hub)
+	frameHook.inkjoyRetry = hub.inkjoyRetry
 	bridges.onExternalPlay = hub.handleExternalPlay
 	bridges.rewritePlay = hub.rewriteExternalPlay
 	hub.migrateSamsungFramesOnStartup()
@@ -435,6 +437,7 @@ type frameHook struct {
 	devices       *DeviceRegistry
 	upstreamAllow AllowList
 	sendDelivery  *SendDeliveryTracker
+	inkjoyRetry   *InkJoySendRetry
 }
 
 func (h *frameHook) ID() string { return "frame-hook" }
@@ -481,10 +484,16 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 				h.devices.SetHubIP(mac, localIP)
 			}
 		}
+		if h.inkjoyRetry != nil {
+			h.inkjoyRetry.OnDeviceLogin(mac)
+		}
 	case "heart":
 		info, err := ParseHeartPayload(payload)
 		if err == nil {
 			h.devices.UpdateHeart(mac, info)
+		}
+		if h.inkjoyRetry != nil {
+			h.inkjoyRetry.OnDeviceHeart(mac)
 		}
 	case "play_ack":
 		var ack struct {
@@ -497,7 +506,9 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		if isInjectedPlay(ack.Data.AckMsgid) {
 			log.Printf("[%s] play_ack suppressed (hub-initiated, result=%d)", mac, ack.Data.Result)
 			skipUpstream = true
-			if h.sendDelivery != nil {
+			if h.inkjoyRetry != nil {
+				h.inkjoyRetry.OnPlayAck(ack.Data.AckMsgid, ack.Data.Result)
+			} else if h.sendDelivery != nil {
 				switch ack.Data.Result {
 				case inkjoyAckComplete:
 					h.sendDelivery.CompleteInkJoy(ack.Data.AckMsgid, true)

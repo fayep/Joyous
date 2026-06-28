@@ -24,6 +24,7 @@ type Hub struct {
 	inkjoy         *InkJoyCache
 	samsung        *SamsungStore
 	sendDelivery   *SendDeliveryTracker
+	inkjoyRetry    *InkJoySendRetry
 	overlay        *OverlayStore
 	color          *ColorStore
 	weather        weatherClient
@@ -1542,7 +1543,11 @@ async function doSend(imageId, deviceId, feedbackBtn){
       }
     });
     if(sendId&&feedbackBtn) feedbackBtn.textContent='Downloading…';
-    const delivered=sendId?await waitSendDelivered(sendId):false;
+    const delivered=sendId?await waitSendDelivered(sendId,j=>{
+      if(feedbackBtn&&j.retry_attempts>0){
+        feedbackBtn.textContent='Retrying ('+j.retry_attempts+')…';
+      }
+    }):false;
     if(feedbackBtn){
       feedbackBtn.textContent=delivered?'✓ Sent':(sendId?'Sent (unconfirmed)':'✓ Sent');
       setTimeout(()=>{feedbackBtn.textContent=orig;feedbackBtn.disabled=false;},2000);
