@@ -34,6 +34,8 @@ type ColorConfig struct {
 	LABShadowStrength    float64 `json:"lab_shadow_strength"`
 	LABDynamicRangeEnabled bool    `json:"lab_dynamic_range_enabled"`
 	LABDynamicRangeStops   float64 `json:"lab_dynamic_range_stops"`
+	LABSkinToneEnabled     bool    `json:"lab_skin_tone_enabled"`
+	LABSkinToneStrength    float64 `json:"lab_skin_tone_strength"`
 
 	InkJoyDisplayPreset  string `json:"inkjoy_display_preset"`
 	SamsungDisplayPreset string `json:"samsung_display_preset"`
@@ -54,6 +56,8 @@ type ColorPipeline struct {
 	LABShadowStrength    float64
 	LABDynamicRangeEnabled bool
 	LABDynamicRangeStops   float64
+	PortraitEnhance        bool
+	PortraitStrength       float64
 	InkJoyDisplay        [6][3]float64
 	SamsungDisplay       [6][3]float64
 	SamsungSend          [6][3]float64
@@ -92,6 +96,8 @@ func defaultColorConfig() ColorConfig {
 		LABShadowStrength:    1.0,
 		LABDynamicRangeEnabled: false,
 		LABDynamicRangeStops:   4.5,
+		LABSkinToneEnabled:     true,
+		LABSkinToneStrength:    1.0,
 		InkJoyDisplayPreset:  ColorPresetCalibrated,
 		SamsungDisplayPreset: ColorPresetCalibrated,
 		SamsungSendPreset:    ColorPresetCalibrated,
@@ -145,6 +151,9 @@ func normalizeColorConfig(cfg ColorConfig) ColorConfig {
 	}
 	if cfg.LABDynamicRangeStops <= 0 {
 		cfg.LABDynamicRangeStops = 4.5
+	}
+	if cfg.LABSkinToneStrength <= 0 {
+		cfg.LABSkinToneStrength = 1.0
 	}
 	if cfg.InkJoyDisplayPreset == "" {
 		cfg.InkJoyDisplayPreset = ColorPresetCalibrated
@@ -274,6 +283,9 @@ func validateColorConfig(cfg ColorConfig) error {
 	if cfg.LABDynamicRangeStops < 2 || cfg.LABDynamicRangeStops > 6 {
 		return fmt.Errorf("lab_dynamic_range_stops must be between 2 and 6")
 	}
+	if cfg.LABSkinToneStrength < 0 || cfg.LABSkinToneStrength > 3 {
+		return fmt.Errorf("lab_skin_tone_strength must be between 0 and 3")
+	}
 	for _, preset := range []string{cfg.InkJoyDisplayPreset, cfg.SamsungDisplayPreset, cfg.SamsungSendPreset} {
 		if err := validatePresetName(preset); err != nil {
 			return err
@@ -335,6 +347,17 @@ func displayPaletteLABRange(pal [6][3]float64) (lo, hi float64) {
 
 func paletteRGB01(c [3]float64) [3]float64 {
 	return [3]float64{c[0] / 255, c[1] / 255, c[2] / 255}
+}
+
+func applyPortraitEnhance(pipe ColorPipeline, peopleLikely bool, cfg ColorConfig) ColorPipeline {
+	if peopleLikely && cfg.LABSkinToneEnabled {
+		pipe.PortraitEnhance = true
+		pipe.PortraitStrength = cfg.LABSkinToneStrength
+		if pipe.PortraitStrength <= 0 {
+			pipe.PortraitStrength = 1.0
+		}
+	}
+	return pipe
 }
 
 func defaultColorPipeline() ColorPipeline {

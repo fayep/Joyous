@@ -299,6 +299,26 @@ func TestStuckiEdgeAttenuation(t *testing.T) {
 	}
 }
 
+func TestStuckiOptionsInkJoyMatchesSamsungQuality(t *testing.T) {
+	pipe := ColorPipeline{}
+	ij := stuckiOptionsInkJoy(pipe)
+	sg := stuckiOptionsSamsung(pipe)
+	if !ij.Serpentine || !ij.PreDither || ij.EdgePreserve <= 0 {
+		t.Fatalf("InkJoy should use full Stucki tuning, got %+v", ij)
+	}
+	if ij.Serpentine != sg.Serpentine || ij.EdgePreserve != sg.EdgePreserve {
+		t.Fatal("InkJoy and Samsung serpentine/edge settings should match")
+	}
+	if ij.PreDitherStrength != sg.PreDitherStrength {
+		t.Fatalf("InkJoy pre-dither strength should match Samsung, got %v vs %v", ij.PreDitherStrength, sg.PreDitherStrength)
+	}
+	plain := stuckiOptionsInkJoy(ColorPipeline{})
+	portrait := stuckiOptionsInkJoy(ColorPipeline{PortraitEnhance: true})
+	if portrait.PreDitherStrength != plain.PreDitherStrength {
+		t.Fatal("people photos should not reduce pre-dither strength")
+	}
+}
+
 func TestStuckiPreservesLuminanceStep(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 32, 16))
 	for y := 0; y < 16; y++ {

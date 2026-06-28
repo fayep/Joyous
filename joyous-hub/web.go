@@ -803,6 +803,13 @@ const indexHTML = `<!DOCTYPE html>
         <input type="range" id="clr-lab-shadow-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-shadow-strength-val').textContent=this.value">
         <span id="clr-lab-shadow-strength-val" style="font-family:monospace">1</span>
       </label>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-skin-tone" checked> Portrait skin tones (auto when people detected — warm shadows, preserve depth; not frame orientation)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Skin tone strength
+        <input type="range" id="clr-lab-skin-tone-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-skin-tone-strength-val').textContent=this.value">
+        <span id="clr-lab-skin-tone-strength-val" style="font-family:monospace">1</span>
+      </label>
       <div class="section-label">InkJoy dither palette (P2)</div>
       <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
         <select id="clr-inkjoy-display-preset" onchange="onColorPresetChange('inkjoy_display')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
@@ -2308,6 +2315,10 @@ function applyColorForm(cfg){
   const shadowStrength=cfg.lab_shadow_strength||1;
   document.getElementById('clr-lab-shadow-strength').value=shadowStrength;
   document.getElementById('clr-lab-shadow-strength-val').textContent=String(shadowStrength);
+  document.getElementById('clr-lab-skin-tone').checked=cfg.lab_skin_tone_enabled!==false;
+  const skinStrength=cfg.lab_skin_tone_strength||1;
+  document.getElementById('clr-lab-skin-tone-strength').value=skinStrength;
+  document.getElementById('clr-lab-skin-tone-strength-val').textContent=String(skinStrength);
   for(const g of COLOR_GROUPS){
     document.getElementById(g.presetId).value=cfg[g.cfgPreset]||'calibrated';
     const preset=cfg[g.cfgPreset]||'calibrated';
@@ -2326,6 +2337,8 @@ function colorFormValues(){
     lab_highlight_strength:parseFloat(document.getElementById('clr-lab-highlight-strength').value)||1,
     lab_shadow_enabled:document.getElementById('clr-lab-shadow').checked,
     lab_shadow_strength:parseFloat(document.getElementById('clr-lab-shadow-strength').value)||1,
+    lab_skin_tone_enabled:document.getElementById('clr-lab-skin-tone').checked,
+    lab_skin_tone_strength:parseFloat(document.getElementById('clr-lab-skin-tone-strength').value)||1,
     inkjoy_display_preset:document.getElementById('clr-inkjoy-display-preset').value,
     samsung_display_preset:document.getElementById('clr-samsung-display-preset').value,
     samsung_send_preset:document.getElementById('clr-samsung-send-preset').value
@@ -2961,8 +2974,8 @@ function updateCropChromaUI(meta){
   wrap.style.display='inline-flex';
   sel.value=chromaModeFromMeta(meta);
   if(meta.people_likely){
-    hint.textContent='People likely — leave chroma off unless you prefer the look';
-    hint.style.color='#e8a060';
+    hint.textContent='People detected — warm shadow skin processing applies. Leave chroma off. (Unrelated to frame portrait orientation.)';
+    hint.style.color='#c9a86c';
   }else{
     hint.textContent='No people detected — chroma on is a good fit for landscapes and still life';
     hint.style.color='#8fbf8f';

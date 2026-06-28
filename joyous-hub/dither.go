@@ -77,12 +77,13 @@ const (
 	stuckiEdgeHard = 22.0 // above: minimum transfer across the edge
 )
 
-// stuckiOptions selects Samsung-tuned Stucki vs classic LTR diffusion for InkJoy.
+// stuckiOptions selects Stucki tuning; InkJoy uses the same diffusion quality as Samsung.
 type stuckiOptions struct {
-	Serpentine   bool
-	EdgePreserve float64
-	PreDither    bool
-	DynamicRange bool
+	Serpentine         bool
+	EdgePreserve       float64
+	PreDither          bool
+	PreDitherStrength  float64
+	DynamicRange       bool
 }
 
 func stuckiOptionsSamsung(pipe ColorPipeline) stuckiOptions {
@@ -90,12 +91,12 @@ func stuckiOptionsSamsung(pipe ColorPipeline) stuckiOptions {
 		Serpentine:   true,
 		EdgePreserve: stuckiEdgePreserve,
 		PreDither:    true,
-		DynamicRange: pipe.LABDynamicRangeEnabled,
+		DynamicRange: pipe.LABDynamicRangeEnabled && !pipe.PortraitEnhance,
 	}
 }
 
 func stuckiOptionsInkJoy(pipe ColorPipeline) stuckiOptions {
-	return stuckiOptions{}
+	return stuckiOptionsSamsung(pipe)
 }
 
 // hiBytes maps palette index 0-5 to the hi byte values used in the .bin format.
@@ -410,8 +411,17 @@ func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorP
 	if shouldApplyLABProcessing(pipe, img, flatRGB, opts.DynamicRange) {
 		src = ApplyLABProcessing(img, pipe, displayPalette, opts.DynamicRange)
 	}
-	if opts.PreDither && !flatRGB && stuckiPreDitherNoise > 0 {
-		src = applyPreDitherNoise(src, stuckiPreDitherNoise)
+	if pipe.PortraitEnhance && pipe.PortraitStrength > 0 && !flatRGB {
+		src = ApplySkinToneProcessing(src, pipe.PortraitStrength)
+	}
+	if opts.PreDither && !flatRGB {
+		noise := stuckiPreDitherNoise
+		if opts.PreDitherStrength > 0 {
+			noise = opts.PreDitherStrength
+		}
+		if noise > 0 {
+			src = applyPreDitherNoise(src, noise)
+		}
 	}
 	return StuckiDither(src, displayPalette, opts)
 }
@@ -556,6 +566,7 @@ func ApplyLABProcessing(img image.Image, pipe ColorPipeline, displayPalette [6][
 					t = 1
 				}
 				lift := t * t * (3.0 - 2.0*t)
+				lift = shadowLiftOnSkin(lab, lift, pipe.PortraitEnhance)
 				lab[0] = L + lift*20.0*pipe.LABShadowStrength
 			}
 

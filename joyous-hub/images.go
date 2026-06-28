@@ -44,8 +44,9 @@ type ImageMeta struct {
 	Crops          map[string]CropRect `json:"crops,omitempty"`
 	FlatRGB        bool                `json:"flat_rgb,omitempty"` // calibration PNG: per-pixel snap, no Stucki/LAB
 	ChromaBoost    *bool               `json:"chroma_boost,omitempty"` // nil = global color setting
-	PeopleLikely   bool                `json:"people_likely,omitempty"`
-	PeopleAnalyzed bool                `json:"people_analyzed,omitempty"`
+	PeopleLikely     bool `json:"people_likely,omitempty"`
+	PeopleAnalyzed   bool `json:"people_analyzed,omitempty"`
+	PeopleDetectVer  int  `json:"people_detect_ver,omitempty"`
 }
 
 // ImageStore manages raw image storage and a bounded converted-bin cache.
@@ -74,7 +75,11 @@ func (s *ImageStore) colorPipelineForMeta(meta ImageMeta) ColorPipeline {
 	if meta.ChromaBoost != nil {
 		pipe.LABChromaEnabled = *meta.ChromaBoost
 	}
-	return pipe
+	cfg := defaultColorConfig()
+	if s.colors != nil {
+		cfg = s.colors.Config()
+	}
+	return applyPortraitEnhance(pipe, meta.PeopleLikely, cfg)
 }
 
 func (s *ImageStore) colorPipelineForID(id string) ColorPipeline {
@@ -82,6 +87,7 @@ func (s *ImageStore) colorPipelineForID(id string) ColorPipeline {
 	if err != nil {
 		return s.colorPipeline()
 	}
+	_ = s.ensurePeopleAnalyzed(&meta)
 	return s.colorPipelineForMeta(meta)
 }
 
@@ -138,6 +144,7 @@ func (s *ImageStore) Store(r io.Reader, name string) (string, error) {
 		if img, err := decodeAnyImage(data); err == nil {
 			meta.PeopleLikely = detectPeopleLikely(img)
 			meta.PeopleAnalyzed = true
+			meta.PeopleDetectVer = peopleDetectVersion
 		}
 	}
 	b, _ := json.Marshal(meta)
@@ -409,9 +416,13 @@ func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string) (Imag
 }
 
 func (s *ImageStore) ensurePeopleAnalyzed(meta *ImageMeta) error {
-	if meta.PeopleAnalyzed || meta.FlatRGB || isStoredBin(meta.Name) {
+	if meta.FlatRGB || isStoredBin(meta.Name) {
 		return nil
 	}
+	if meta.PeopleAnalyzed && meta.PeopleDetectVer >= peopleDetectVersion {
+		return nil
+	}
+	oldLikely := meta.PeopleLikely
 	raw, err := os.ReadFile(s.rawPath(meta.ID))
 	if err != nil {
 		return nil
@@ -419,15 +430,23 @@ func (s *ImageStore) ensurePeopleAnalyzed(meta *ImageMeta) error {
 	img, err := decodeAnyImage(raw)
 	if err != nil {
 		meta.PeopleAnalyzed = true
+		meta.PeopleDetectVer = peopleDetectVersion
 		return nil
 	}
 	meta.PeopleLikely = detectPeopleLikely(img)
 	meta.PeopleAnalyzed = true
+	meta.PeopleDetectVer = peopleDetectVersion
 	b, err := json.Marshal(meta)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.metaPath(meta.ID), b, 0644)
+	if err := os.WriteFile(s.metaPath(meta.ID), b, 0644); err != nil {
+		return err
+	}
+	if oldLikely != meta.PeopleLikely {
+		s.evictBinCacheForImage(meta.ID)
+	}
+	return nil
 }
 
 // GetMeta returns metadata for one image, backfilling people detection when needed.
