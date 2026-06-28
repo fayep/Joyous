@@ -55,13 +55,26 @@ var PaletteSamsungDisplay = [6][3]float64{
 	{195, 183, 12},
 	{121, 6, 0},
 	{0, 74, 159},
-	{49, 104, 99},
+	{50, 105, 98},
 }
 
 // PaletteSamsung is the send palette (alias kept for callers that only need P1).
 var PaletteSamsung = PaletteSamsungSend
 
 const samsungW, samsungH = 2560, 1440
+
+// stuckiPreDitherNoise breaks up visible banding in smooth gradients (sky, water)
+// before error diffusion. Deterministic per pixel so output is stable for caching.
+const stuckiPreDitherNoise = 3.0
+
+// stuckiEdgePreserve limits how much quantization error crosses strong luminance
+// edges (lightning vs cloud, tonal steps in gray clouds). 0 = no attenuation.
+const stuckiEdgePreserve = 0.72
+
+const (
+	stuckiEdgeSoft = 3.0  // below: full error diffusion
+	stuckiEdgeHard = 22.0 // above: minimum transfer across the edge
+)
 
 // hiBytes maps palette index 0-5 to the hi byte values used in the .bin format.
 var hiBytes = [6]byte{0x01, 0x02, 0x03, 0x04, 0x06, 0x07}
@@ -239,13 +252,30 @@ func StuckiDither(img image.Image, palette [6][3]float64) [][]byte {
 			buf[y+2][base+2] = float64(bv >> 8)
 		}
 	}
-
-	const A, B, C, D = 8.0 / 42, 4.0 / 42, 2.0 / 42, 1.0 / 42
+	lum := buildLuminanceGrid(img, h, w)
 
 	out := make([][]byte, h)
 	for y := range h {
 		out[y] = make([]byte, w)
 		by := y + 2
+		rtl := y&1 == 1
+		if rtl {
+			for x := w - 1; x >= 0; x-- {
+				bx := (x + 2) * 3
+				pr := clamp255(buf[by][bx])
+				pg := clamp255(buf[by][bx+1])
+				pb := clamp255(buf[by][bx+2])
+
+				idx := nearestColor([3]float64{pr, pg, pb}, palette)
+				out[y][x] = byte(idx)
+
+				er := pr - palette[idx][0]
+				eg := pg - palette[idx][1]
+				eb := pb - palette[idx][2]
+				stuckiSpreadError(buf, lum, h, w, by, x+2, x, y, er, eg, eb, true)
+			}
+			continue
+		}
 		for x := range w {
 			bx := (x + 2) * 3
 			pr := clamp255(buf[by][bx])
@@ -258,32 +288,89 @@ func StuckiDither(img image.Image, palette [6][3]float64) [][]byte {
 			er := pr - palette[idx][0]
 			eg := pg - palette[idx][1]
 			eb := pb - palette[idx][2]
-
-			addErr := func(ry, rx int, wt float64) {
-				if ry >= h+4 || rx < 0 || rx >= w+4 {
-					return
-				}
-				base := rx * 3
-				buf[ry][base] += er * wt
-				buf[ry][base+1] += eg * wt
-				buf[ry][base+2] += eb * wt
-			}
-			xc := x + 2
-			addErr(by, xc+1, A)
-			addErr(by, xc+2, B)
-			addErr(by+1, xc-2, C)
-			addErr(by+1, xc-1, B)
-			addErr(by+1, xc, A)
-			addErr(by+1, xc+1, B)
-			addErr(by+1, xc+2, C)
-			addErr(by+2, xc-2, D)
-			addErr(by+2, xc-1, C)
-			addErr(by+2, xc, B)
-			addErr(by+2, xc+1, C)
-			addErr(by+2, xc+2, D)
+			stuckiSpreadError(buf, lum, h, w, by, x+2, x, y, er, eg, eb, false)
 		}
 	}
 	return out
+}
+
+func stuckiSpreadError(buf [][]float64, lum [][]float64, h, w, by, xc, cx, cy int, er, eg, eb float64, rtl bool) {
+	const A, B, C, D = 8.0 / 42, 4.0 / 42, 2.0 / 42, 1.0 / 42
+	centerLum := lum[cy][cx]
+	addErr := func(ry, rx int, wt float64) {
+		if ry >= h+4 || rx < 0 || rx >= w+4 {
+			return
+		}
+		nx, ny := rx-2, ry-2
+		if nx >= 0 && nx < w && ny >= 0 && ny < h {
+			wt *= stuckiEdgeAttenuation(centerLum, lum[ny][nx])
+		}
+		base := rx * 3
+		buf[ry][base] += er * wt
+		buf[ry][base+1] += eg * wt
+		buf[ry][base+2] += eb * wt
+	}
+	if rtl {
+		addErr(by, xc-1, A)
+		addErr(by, xc-2, B)
+		addErr(by+1, xc+2, C)
+		addErr(by+1, xc+1, B)
+		addErr(by+1, xc, A)
+		addErr(by+1, xc-1, B)
+		addErr(by+1, xc-2, C)
+		addErr(by+2, xc+2, D)
+		addErr(by+2, xc+1, C)
+		addErr(by+2, xc, B)
+		addErr(by+2, xc-1, C)
+		addErr(by+2, xc-2, D)
+		return
+	}
+	addErr(by, xc+1, A)
+	addErr(by, xc+2, B)
+	addErr(by+1, xc-2, C)
+	addErr(by+1, xc-1, B)
+	addErr(by+1, xc, A)
+	addErr(by+1, xc+1, B)
+	addErr(by+1, xc+2, C)
+	addErr(by+2, xc-2, D)
+	addErr(by+2, xc-1, C)
+	addErr(by+2, xc, B)
+	addErr(by+2, xc+1, C)
+	addErr(by+2, xc+2, D)
+}
+
+func buildLuminanceGrid(img image.Image, h, w int) [][]float64 {
+	b := img.Bounds()
+	lum := make([][]float64, h)
+	for y := range h {
+		lum[y] = make([]float64, w)
+		for x := range w {
+			lum[y][x] = pixelLuminance(img.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return lum
+}
+
+func pixelLuminance(c color.Color) float64 {
+	r, g, b, _ := c.RGBA()
+	return 0.2126*float64(r>>8) + 0.7152*float64(g>>8) + 0.0722*float64(b>>8)
+}
+
+// stuckiEdgeAttenuation scales error diffusion across an edge. Smooth neighbors
+// get full transfer; hard edges (lightning, cloud boundary) get much less.
+func stuckiEdgeAttenuation(lumA, lumB float64) float64 {
+	if stuckiEdgePreserve <= 0 {
+		return 1
+	}
+	diff := math.Abs(lumA - lumB)
+	if diff <= stuckiEdgeSoft {
+		return 1
+	}
+	if diff >= stuckiEdgeHard {
+		return 1 - stuckiEdgePreserve
+	}
+	t := (diff - stuckiEdgeSoft) / (stuckiEdgeHard - stuckiEdgeSoft)
+	return 1 - stuckiEdgePreserve*t
 }
 
 // StuckiTwoPalette runs Stucki error diffusion in displayPalette (P2) space.
@@ -293,7 +380,75 @@ func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorP
 	if shouldApplyLABProcessing(pipe, img, flatRGB) {
 		src = ApplyLABProcessing(img, pipe)
 	}
+	if !flatRGB && stuckiPreDitherNoise > 0 {
+		src = applyPreDitherNoise(src, stuckiPreDitherNoise)
+	}
 	return StuckiDither(src, displayPalette)
+}
+
+func applyPreDitherNoise(img image.Image, strength float64) *image.RGBA {
+	b := img.Bounds()
+	out := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r8, g8, b8, a8 := img.At(x, y).RGBA()
+			w := preDitherGradientWeight(img, x, y)
+			r := float64(r8>>8) + preDitherNoiseSample(x, y, 0)*strength*w
+			g := float64(g8>>8) + preDitherNoiseSample(x, y, 1)*strength*w
+			bl := float64(b8>>8) + preDitherNoiseSample(x, y, 2)*strength*w
+			out.SetRGBA(x, y, color.RGBA{
+				R: uint8(clamp255(r)),
+				G: uint8(clamp255(g)),
+				B: uint8(clamp255(bl)),
+				A: uint8(a8 >> 8),
+			})
+		}
+	}
+	return out
+}
+
+// preDitherGradientWeight is 0 on flat regions and sharp edges, peaking on smooth
+// gradients where Stucki banding is most visible (sky, water, soft shadows).
+func preDitherGradientWeight(img image.Image, x, y int) float64 {
+	const flatCutoff = 0.75
+	const fullGrad = 10.0
+	const edgeCutoff = 28.0
+
+	lum := func(px, py int) float64 {
+		return pixelLuminance(img.At(px, py))
+	}
+	c := lum(x, y)
+	b := img.Bounds()
+	var spread float64
+	for _, o := range [][2]int{{0, -1}, {0, 1}, {-1, 0}, {1, 0}} {
+		nx, ny := x+o[0], y+o[1]
+		if nx < b.Min.X || nx >= b.Max.X || ny < b.Min.Y || ny >= b.Max.Y {
+			continue
+		}
+		d := math.Abs(lum(nx, ny) - c)
+		if d > spread {
+			spread = d
+		}
+	}
+	if spread <= flatCutoff || spread >= edgeCutoff {
+		return 0
+	}
+	w := (spread - flatCutoff) / (fullGrad - flatCutoff)
+	if w > 1 {
+		return 1
+	}
+	if w < 0 {
+		return 0
+	}
+	return w
+}
+
+func preDitherNoiseSample(x, y, c int) float64 {
+	n := uint32(x*73856093 ^ y*19349663 ^ c*83492791)
+	n ^= n << 13
+	n ^= n >> 17
+	n ^= n << 5
+	return float64(n%1000)/499.5 - 1.0
 }
 
 // RenderIndicesToRGB writes sendPalette (P1) RGB for each ink index.

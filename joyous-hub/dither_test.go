@@ -286,6 +286,70 @@ func TestLABEnhanceChroma(t *testing.T) {
 	}
 }
 
+func TestStuckiEdgeAttenuation(t *testing.T) {
+	if stuckiEdgeAttenuation(100, 100) != 1 {
+		t.Fatal("same luminance should allow full error transfer")
+	}
+	if a := stuckiEdgeAttenuation(30, 200); a >= 0.35 {
+		t.Fatalf("hard edge attenuation = %v, want < 0.35", a)
+	}
+	mid := stuckiEdgeAttenuation(80, 95)
+	if mid <= 0.4 || mid >= 0.95 {
+		t.Fatalf("mid edge attenuation = %v, want between 0.4 and 0.95", mid)
+	}
+}
+
+func TestStuckiPreservesLuminanceStep(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 32, 16))
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 32; x++ {
+			v := uint8(35)
+			if x >= 14 && x <= 17 {
+				v = 230
+			}
+			img.Set(x, y, color.RGBA{v, v, v, 255})
+		}
+	}
+	indices := StuckiDither(img, PaletteSamsungDisplay)
+	darkIdx := nearestColor([3]float64{35, 35, 35}, PaletteSamsungDisplay)
+	brightIdx := nearestColor([3]float64{230, 230, 230}, PaletteSamsungDisplay)
+	if darkIdx == brightIdx {
+		t.Fatal("test palette mapping collapsed dark/bright")
+	}
+	darkBeside := 0
+	for y := 0; y < 16; y++ {
+		if indices[y][13] == byte(darkIdx) {
+			darkBeside++
+		}
+	}
+	if darkBeside < 12 {
+		t.Fatalf("only %d/16 pixels beside stripe stayed dark (idx %d), edge preservation weak", darkBeside, darkIdx)
+	}
+}
+
+func TestPreDitherGradientWeight(t *testing.T) {
+	flat := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			flat.Set(x, y, color.RGBA{180, 190, 210, 255})
+		}
+	}
+	if w := preDitherGradientWeight(flat, 2, 2); w != 0 {
+		t.Fatalf("flat region weight = %v, want 0", w)
+	}
+
+	grad := image.NewRGBA(image.Rect(0, 0, 64, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 64; x++ {
+			v := uint8(140 + x*80/63)
+			grad.Set(x, y, color.RGBA{v, v, uint8(int(v) + 8), 255})
+		}
+	}
+	if w := preDitherGradientWeight(grad, 32, 4); w <= 0 {
+		t.Fatalf("smooth gradient weight = %v, want > 0", w)
+	}
+}
+
 // helpers
 
 func bytesToGrid(flat []byte, rows, cols int) [][]byte {
