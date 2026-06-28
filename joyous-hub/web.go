@@ -599,6 +599,7 @@ const indexHTML = `<!DOCTYPE html>
   }
   .album-outer-selected .album-caption-wrap,
   .album-outer:hover .album-caption-wrap{cursor:text}
+  .album-outer-selected .album-img{cursor:zoom-in}
   .album-caption-input{
     display:block;width:100%;min-width:0;box-sizing:border-box;
     font-family:'Caveat',cursive;font-size:21px;line-height:1;color:#4a4135;text-align:center;
@@ -609,6 +610,29 @@ const indexHTML = `<!DOCTYPE html>
   @media (max-width:640px){
     .album-upload-wrap{padding:20px 16px 8px}
     .album-grid{padding:20px 12px 60px}
+  }
+  /* album fullscreen zoom */
+  #album-zoom{
+    display:none;position:fixed;inset:0;z-index:2000;
+    background:rgba(18,16,12,.94);
+    flex-direction:column;align-items:center;justify-content:center;
+    padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
+    box-sizing:border-box;touch-action:manipulation;
+  }
+  #album-zoom.open{display:flex}
+  #album-zoom-stage{
+    flex:1;display:flex;align-items:center;justify-content:center;
+    width:100%;min-height:0;
+  }
+  #album-zoom-img{display:block;object-fit:contain;max-width:100%;max-height:100%}
+  #album-zoom-caption{
+    flex:0 0 auto;color:#e8e4dc;font-family:'Caveat',cursive;font-size:clamp(18px,4vw,28px);
+    text-align:center;padding:10px 8px 0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .album-zoom-close{
+    position:absolute;top:max(10px,env(safe-area-inset-top));right:max(10px,env(safe-area-inset-right));
+    border:0;background:rgba(255,255,255,.12);color:#fff;font-size:28px;line-height:1;
+    width:44px;height:44px;border-radius:999px;cursor:pointer;
   }
   /* crop modal */
   #crop-modal{display:none;position:fixed;inset:0;background:#000c;z-index:1000;align-items:center;justify-content:center;touch-action:none;overscroll-behavior:none}
@@ -689,6 +713,13 @@ const indexHTML = `<!DOCTYPE html>
     </div>
     <div id="image-grid" class="album-grid"></div>
     <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg" multiple>
+  </div>
+  <div id="album-zoom" aria-hidden="true">
+    <button type="button" class="album-zoom-close" aria-label="Close" onclick="closeAlbumZoom()">&times;</button>
+    <div id="album-zoom-stage" onclick="if(event.target===this) closeAlbumZoom()">
+      <img id="album-zoom-img" alt="">
+    </div>
+    <div id="album-zoom-caption"></div>
   </div>
   <div id="tab-overlays" style="display:none">
     <div style="display:flex;gap:1.5rem;align-items:flex-start;flex-wrap:wrap">
@@ -1027,6 +1058,7 @@ let joyousUIRevision=JOYOUS_UI_REVISION;
 
 function joyousUIBusy(){
   if(albumCaptionEditingId) return true;
+  if(albumZoomId) return true;
   const m=document.getElementById('crop-modal');
   return !!(m&&m.classList.contains('open'));
 }
@@ -1169,6 +1201,7 @@ async function refreshSamsungTab(){
 let albumRevision=null;
 async function refreshAlbumTab(){
   if(albumCaptionEditingId) return;
+  if(albumZoomId) return;
   const m=document.getElementById('crop-modal');
   if(m&&m.classList.contains('open')) return;
   try{
@@ -1289,6 +1322,67 @@ function albumStackVars(i){
 
 let albumSelectedId=null;
 let albumCaptionEditingId=null;
+let albumZoomId=null;
+let albumZoomScrollY=0;
+
+function layoutAlbumZoom(){
+  const wrap=document.getElementById('album-zoom');
+  const img=document.getElementById('album-zoom-img');
+  if(!wrap||!wrap.classList.contains('open')||!img||!img.naturalWidth) return;
+  const cap=document.getElementById('album-zoom-caption');
+  const capH=cap&&cap.offsetHeight?cap.offsetHeight+16:0;
+  const maxW=window.innerWidth-24;
+  const maxH=window.innerHeight-24-capH;
+  const scale=Math.min(maxW/img.naturalWidth, maxH/img.naturalHeight);
+  img.style.width=Math.floor(img.naturalWidth*scale)+'px';
+  img.style.height=Math.floor(img.naturalHeight*scale)+'px';
+}
+
+function openAlbumZoom(id){
+  const meta=images.find(i=>i.id===id);
+  if(!meta) return;
+  const wrap=document.getElementById('album-zoom');
+  const img=document.getElementById('album-zoom-img');
+  const cap=document.getElementById('album-zoom-caption');
+  if(!wrap||!img) return;
+  albumZoomId=id;
+  wrap.classList.add('open');
+  wrap.setAttribute('aria-hidden','false');
+  cap.textContent=meta.name||id;
+  img.onload=()=>layoutAlbumZoom();
+  img.src='/images/'+encodeURIComponent(id)+'/preview';
+  if(img.complete&&img.naturalWidth) layoutAlbumZoom();
+  albumZoomScrollY=window.scrollY;
+  document.documentElement.style.overflow='hidden';
+  document.body.style.overflow='hidden';
+}
+
+function closeAlbumZoom(){
+  const wrap=document.getElementById('album-zoom');
+  if(!wrap||!wrap.classList.contains('open')) return;
+  wrap.classList.remove('open');
+  wrap.setAttribute('aria-hidden','true');
+  albumZoomId=null;
+  const img=document.getElementById('album-zoom-img');
+  if(img){
+    img.onload=null;
+    img.removeAttribute('src');
+    img.style.width='';
+    img.style.height='';
+  }
+  document.documentElement.style.overflow='';
+  document.body.style.overflow='';
+  window.scrollTo(0,albumZoomScrollY);
+}
+
+if(!window._albumZoomLayoutBound){
+  window._albumZoomLayoutBound=true;
+  window.addEventListener('resize',()=>layoutAlbumZoom());
+  window.addEventListener('orientationchange',()=>setTimeout(layoutAlbumZoom,120));
+  document.addEventListener('keydown',e=>{
+    if(e.key==='Escape'&&albumZoomId) closeAlbumZoom();
+  });
+}
 
 function albumCardInForeground(card){
   if(!card) return false;
@@ -1317,6 +1411,10 @@ function albumGridTap(e){
   const imageId=card.id.slice(5);
   if(e.target.closest('.album-caption-wrap')){
     albumCaptionClick(e,imageId);
+    return;
+  }
+  if(albumSelectedId===imageId&&e.target.closest('.album-img')){
+    openAlbumZoom(imageId);
     return;
   }
   setAlbumSelected(imageId);
@@ -1418,6 +1516,7 @@ async function loadImages(){
   const el=document.getElementById('image-grid');
   if(!images||!images.length){
     albumSelectedId=null;
+    if(albumZoomId) closeAlbumZoom();
     el.innerHTML='<p class="album-empty">No images uploaded yet.</p>';
     return;
   }
@@ -1449,6 +1548,7 @@ async function loadImages(){
       albumSelectedId=null;
     }
   }
+  if(albumZoomId&&!images.some(img=>img.id===albumZoomId)) closeAlbumZoom();
   await syncAlbumRevision();
 }
 
@@ -1608,6 +1708,7 @@ async function sendToFrame(deviceId){
 
 async function deleteImg(id){
   if(!confirm('Delete image?'))return;
+  if(albumZoomId===id) closeAlbumZoom();
   await fetch('/api/images/'+id,{method:'DELETE'});
   if(albumSelectedId===id) albumSelectedId=null;
   loadImages();
