@@ -41,16 +41,16 @@ func TestDecodeBinToImagePortrait(t *testing.T) {
 	hi[0][0] = 0x04
 	bin = ToBin(hi, loGrid(hi))
 
-	land, err := decodeBinToImage(bin, false)
+	land, err := decodeBinToImage(bin, false, PaletteInkJoyDisplay)
 	if err != nil {
 		t.Fatal(err)
 	}
-	red := color.RGBA{uint8(PaletteInkJoy[3][0]), uint8(PaletteInkJoy[3][1]), uint8(PaletteInkJoy[3][2]), 255}
+	red := color.RGBA{uint8(PaletteInkJoyDisplay[3][0]), uint8(PaletteInkJoyDisplay[3][1]), uint8(PaletteInkJoyDisplay[3][2]), 255}
 	if !colorsEqual(land.At(0, 0), red) {
 		t.Fatalf("landscape red at (0,0), got %v", land.At(0, 0))
 	}
 
-	port, err := decodeBinToImage(bin, true)
+	port, err := decodeBinToImage(bin, true, PaletteInkJoyDisplay)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestResizeBilinearHalvesCheckerboard(t *testing.T) {
 }
 
 func TestBinToDisplayPreviewJPEGScale(t *testing.T) {
-	jpegData, err := binToDisplayPreviewJPEG(makeSolidBin(0x02), false)
+	jpegData, err := binToDisplayPreviewJPEG(makeSolidBin(0x02), false, PaletteInkJoyDisplay)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestBinToDisplayPreviewJPEGScale(t *testing.T) {
 		t.Fatalf("landscape preview %dx%d want %dx%d", img.Bounds().Dx(), img.Bounds().Dy(), wantW, wantH)
 	}
 
-	jpegDataP, err := binToDisplayPreviewJPEG(makeSolidBin(0x02), true)
+	jpegDataP, err := binToDisplayPreviewJPEG(makeSolidBin(0x02), true, PaletteInkJoyDisplay)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestDisplayPreviewServeHTTP(t *testing.T) {
 	dir := t.TempDir()
 	store := NewDisplayPreviewStore(dir)
 	mac := "11:22:33:44:55:66"
-	jpeg, err := binToDisplayPreviewJPEG(makeSolidBin(0x02), false)
+	jpeg, err := binToDisplayPreviewJPEG(makeSolidBin(0x02), false, PaletteInkJoyDisplay)
 	if err != nil {
 		t.Fatal(err)
 	}

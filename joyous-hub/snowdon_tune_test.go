@@ -101,7 +101,7 @@ func TestSnowdonHighlightToneMap(t *testing.T) {
 		LABHighlightEnabled:  true,
 		LABHighlightStrength: 1,
 	}
-	out := ApplyLABProcessing(img, pipe)
+	out := ApplyLABProcessing(img, pipe, PaletteSamsungDisplay, false)
 
 	sky := regionPaletteStats(out, img, func(x, y, w, h int) bool { return y < h/3 })
 	refl := regionPaletteStats(out, img, func(x, y, w, h int) bool {

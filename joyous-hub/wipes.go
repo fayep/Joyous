@@ -56,6 +56,24 @@ func loadEmbeddedWipes() {
 	})
 }
 
+// calibrationWipeGrid returns the square box wipe (wipe_box.png) for calibration charts.
+func calibrationWipeGrid() [][]byte {
+	return wipeGridByName("wipe_box.png")
+}
+
+func wipeGridByName(name string) [][]byte {
+	loadEmbeddedWipes()
+	for i, n := range embeddedWipeNames {
+		if n == name {
+			return embeddedWipes[i]
+		}
+	}
+	if len(embeddedWipes) > 0 {
+		return embeddedWipes[0]
+	}
+	return MakeClockWipe(frameW, frameH)
+}
+
 // randomWipeGrid returns one of the bundled wipe patterns.
 // Falls back to MakeClockWipe if embed loading failed.
 func randomWipeGrid() [][]byte {

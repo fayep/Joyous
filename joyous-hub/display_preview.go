@@ -160,7 +160,7 @@ func (h *Hub) fetchDisplayPreview(mac, binURL string) {
 	if dev, ok := h.devices.Get(inkjoyID(mac)); ok {
 		portrait = dev.Portrait
 	}
-	jpeg, err := binToDisplayPreviewJPEG(bin, portrait)
+	jpeg, err := binToDisplayPreviewJPEG(bin, portrait, h.colorPipeline().InkJoyDisplay)
 	if err != nil {
 		log.Printf("[%s] display preview decode (portrait=%v): %v", mac, portrait, err)
 		return

@@ -49,3 +49,10 @@ func (h *Hub) colorPipeline() ColorPipeline {
 	}
 	return defaultColorPipeline()
 }
+
+func (h *Hub) colorPipelineForImage(imageID string) ColorPipeline {
+	if h.images != nil {
+		return h.images.colorPipelineForID(imageID)
+	}
+	return h.colorPipeline()
+}

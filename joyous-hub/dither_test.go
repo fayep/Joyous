@@ -147,7 +147,7 @@ func TestSamsungTwoPaletteEncode(t *testing.T) {
 	for i := range 4 {
 		img.SetRGBA(i, 0, color.RGBA{uint8(i * 60), 128, 64, 255})
 	}
-	indices := StuckiDither(img, PaletteSamsungDisplay)
+	indices := StuckiDither(img, PaletteSamsungDisplay, stuckiOptions{})
 	out := RenderIndicesToRGB(indices, PaletteSamsungSend)
 	for y := 0; y < out.Bounds().Dy(); y++ {
 		for x := 0; x < out.Bounds().Dx(); x++ {
@@ -184,7 +184,7 @@ func TestStuckiTwoPaletteUsesDisplay(t *testing.T) {
 			img.Set(x, yp, color.RGBA{uint8(y[0]), uint8(y[1]), uint8(y[2]), 255})
 		}
 	}
-	indices := StuckiTwoPalette(img, PaletteSamsungDisplay, ColorPipeline{}, false)
+	indices := StuckiTwoPalette(img, PaletteSamsungDisplay, ColorPipeline{}, false, stuckiOptions{})
 	if indices[4][4] != 2 {
 		t.Fatalf("expected yellow index 2, got %d", indices[4][4])
 	}
@@ -233,7 +233,7 @@ func TestStuckiOutputRange(t *testing.T) {
 			})
 		}
 	}
-	indices := StuckiDither(img, PaletteInkJoy)
+	indices := StuckiDither(img, PaletteInkJoy, stuckiOptions{})
 	for y, row := range indices {
 		for x, v := range row {
 			if v > 5 {
@@ -257,7 +257,7 @@ func TestLABEnhanceRange(t *testing.T) {
 	out := ApplyLABProcessing(img, ColorPipeline{
 		LABChromaEnabled: true, LABChromaStrength: 1,
 		LABHighlightEnabled: true, LABHighlightStrength: 1,
-	})
+	}, PaletteSamsungDisplay, false)
 	bounds := out.Bounds()
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
@@ -274,7 +274,7 @@ func TestLABEnhanceRange(t *testing.T) {
 func TestLABEnhanceChroma(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.SetRGBA(0, 0, color.RGBA{128, 128, 80, 255}) // slightly warm grey
-	out := ApplyLABProcessing(img, ColorPipeline{LABChromaEnabled: true, LABChromaStrength: 1})
+	out := ApplyLABProcessing(img, ColorPipeline{LABChromaEnabled: true, LABChromaStrength: 1}, PaletteSamsungDisplay, false)
 	r, g, b, _ := out.At(0, 0).RGBA()
 	r8, g8, b8 := int(r>>8), int(g>>8), int(b>>8)
 	// The warm hue should be amplified: R and B channels should differ more
@@ -287,13 +287,13 @@ func TestLABEnhanceChroma(t *testing.T) {
 }
 
 func TestStuckiEdgeAttenuation(t *testing.T) {
-	if stuckiEdgeAttenuation(100, 100) != 1 {
+	if stuckiEdgeAttenuation(100, 100, stuckiEdgePreserve) != 1 {
 		t.Fatal("same luminance should allow full error transfer")
 	}
-	if a := stuckiEdgeAttenuation(30, 200); a >= 0.35 {
+	if a := stuckiEdgeAttenuation(30, 200, stuckiEdgePreserve); a >= 0.35 {
 		t.Fatalf("hard edge attenuation = %v, want < 0.35", a)
 	}
-	mid := stuckiEdgeAttenuation(80, 95)
+	mid := stuckiEdgeAttenuation(80, 95, stuckiEdgePreserve)
 	if mid <= 0.4 || mid >= 0.95 {
 		t.Fatalf("mid edge attenuation = %v, want between 0.4 and 0.95", mid)
 	}
@@ -310,7 +310,7 @@ func TestStuckiPreservesLuminanceStep(t *testing.T) {
 			img.Set(x, y, color.RGBA{v, v, v, 255})
 		}
 	}
-	indices := StuckiDither(img, PaletteSamsungDisplay)
+	indices := StuckiDither(img, PaletteSamsungDisplay, stuckiOptionsSamsung(ColorPipeline{}))
 	darkIdx := nearestColor([3]float64{35, 35, 35}, PaletteSamsungDisplay)
 	brightIdx := nearestColor([3]float64{230, 230, 230}, PaletteSamsungDisplay)
 	if darkIdx == brightIdx {

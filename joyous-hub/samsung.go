@@ -285,7 +285,7 @@ func convertToSamsungPNG(raw []byte, profile SamsungDisplayProfile, crop CropRec
 		img = centerCropToSize(img, tw, th)
 	}
 	img = resizeTo(img, tw, th)
-	indices := StuckiTwoPalette(img, pipe.SamsungDisplay, pipe, false)
+	indices := StuckiTwoPalette(img, pipe.SamsungDisplay, pipe, false, stuckiOptionsSamsung(pipe))
 	out := RenderIndicesToRGB(indices, pipe.SamsungSend)
 	return encodePNG(out), nil
 }

@@ -21,7 +21,6 @@ That bunching is expected; use color-primaries-1600x1200 for P2 photography.
 from __future__ import annotations
 
 import argparse
-import math
 from pathlib import Path
 
 import numpy as np
@@ -91,20 +90,13 @@ def nearest_color(rgb: np.ndarray, palette: np.ndarray) -> int:
     return int(np.argmin(np.sum((palette - rgb) ** 2, axis=1)))
 
 
-def make_clock_wipe(cols: int, rows: int) -> np.ndarray:
-    cy, cx = (rows - 1) / 2.0, (cols - 1) / 2.0
-    lo = np.zeros((rows, cols), dtype=np.uint8)
-    max_d = math.sqrt(cy**2 + cx**2)
-    for y in range(rows):
-        dy = y - cy
-        for x in range(cols):
-            dx = x - cx
-            angle = (math.atan2(dx, -dy) + 2 * math.pi) % (2 * math.pi)
-            dist = math.sqrt(dy * dy + dx * dx) / max_d
-            order = (angle / (2 * math.pi) + dist * 0.01) % 1.0
-            step = min(30, int(order * 31))
-            lo[y, x] = step * 8
-    return lo
+def load_box_wipe(cols: int, rows: int) -> np.ndarray:
+    wipe_path = Path(__file__).resolve().parent.parent / "joyous-hub" / "wipes" / "wipe_box.png"
+    if wipe_path.is_file():
+        gray = np.array(Image.open(wipe_path).convert("L"), dtype=np.uint8)
+        if gray.shape == (rows, cols):
+            return gray
+    raise FileNotFoundError(f"missing or wrong-size box wipe: {wipe_path}")
 
 
 def flat_snap_bin(img: Image.Image, palette: np.ndarray) -> bytes:
@@ -115,7 +107,7 @@ def flat_snap_bin(img: Image.Image, palette: np.ndarray) -> bytes:
     for y in range(h):
         for x in range(w):
             hi[y, x] = HI_BYTES[nearest_color(arr[y, x], palette)]
-    lo = make_clock_wipe(w, h)
+    lo = load_box_wipe(w, h)
     # Bin file is bottom-to-top row order.
     out = np.stack([hi[::-1], lo[::-1]], axis=2).reshape(-1)
     return out.tobytes()

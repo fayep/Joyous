@@ -481,7 +481,7 @@ func (h *Hub) renderOverlayPreviewJPEG(ctx context.Context, imageID string, port
 	if err != nil {
 		return nil, err
 	}
-	img, err := decodeBinToImage(bin, portrait)
+	img, err := h.images.decodeBinToImage(bin, portrait)
 	if err != nil {
 		return nil, err
 	}

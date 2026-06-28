@@ -32,6 +32,8 @@ type ColorConfig struct {
 	LABHighlightStrength float64 `json:"lab_highlight_strength"`
 	LABShadowEnabled     bool    `json:"lab_shadow_enabled"`
 	LABShadowStrength    float64 `json:"lab_shadow_strength"`
+	LABDynamicRangeEnabled bool    `json:"lab_dynamic_range_enabled"`
+	LABDynamicRangeStops   float64 `json:"lab_dynamic_range_stops"`
 
 	InkJoyDisplayPreset  string `json:"inkjoy_display_preset"`
 	SamsungDisplayPreset string `json:"samsung_display_preset"`
@@ -50,6 +52,8 @@ type ColorPipeline struct {
 	LABHighlightStrength float64
 	LABShadowEnabled     bool
 	LABShadowStrength    float64
+	LABDynamicRangeEnabled bool
+	LABDynamicRangeStops   float64
 	InkJoyDisplay        [6][3]float64
 	SamsungDisplay       [6][3]float64
 	SamsungSend          [6][3]float64
@@ -86,6 +90,8 @@ func defaultColorConfig() ColorConfig {
 		LABHighlightStrength: 1.0,
 		LABShadowEnabled:     false,
 		LABShadowStrength:    1.0,
+		LABDynamicRangeEnabled: false,
+		LABDynamicRangeStops:   4.5,
 		InkJoyDisplayPreset:  ColorPresetCalibrated,
 		SamsungDisplayPreset: ColorPresetCalibrated,
 		SamsungSendPreset:    ColorPresetCalibrated,
@@ -137,6 +143,9 @@ func normalizeColorConfig(cfg ColorConfig) ColorConfig {
 	if cfg.LABShadowStrength <= 0 {
 		cfg.LABShadowStrength = 1.0
 	}
+	if cfg.LABDynamicRangeStops <= 0 {
+		cfg.LABDynamicRangeStops = 4.5
+	}
 	if cfg.InkJoyDisplayPreset == "" {
 		cfg.InkJoyDisplayPreset = ColorPresetCalibrated
 	}
@@ -179,15 +188,17 @@ func (s *ColorStore) Pipeline() ColorPipeline {
 
 func ResolveColorPipeline(cfg ColorConfig) ColorPipeline {
 	return ColorPipeline{
-		LABChromaEnabled:     cfg.LABChromaEnabled,
-		LABChromaStrength:    cfg.LABChromaStrength,
-		LABHighlightEnabled:  cfg.LABHighlightEnabled,
-		LABHighlightStrength: cfg.LABHighlightStrength,
-		LABShadowEnabled:     cfg.LABShadowEnabled,
-		LABShadowStrength:    cfg.LABShadowStrength,
-		InkJoyDisplay:        resolvePalette(cfg.InkJoyDisplayPreset, cfg.InkJoyDisplay, inkjoyDisplayPresets()),
-		SamsungDisplay:       resolvePalette(cfg.SamsungDisplayPreset, cfg.SamsungDisplay, samsungDisplayPresets()),
-		SamsungSend:          resolvePalette(cfg.SamsungSendPreset, cfg.SamsungSend, samsungSendPresets()),
+		LABChromaEnabled:       cfg.LABChromaEnabled,
+		LABChromaStrength:      cfg.LABChromaStrength,
+		LABHighlightEnabled:    cfg.LABHighlightEnabled,
+		LABHighlightStrength:   cfg.LABHighlightStrength,
+		LABShadowEnabled:       cfg.LABShadowEnabled,
+		LABShadowStrength:      cfg.LABShadowStrength,
+		LABDynamicRangeEnabled: cfg.LABDynamicRangeEnabled,
+		LABDynamicRangeStops:   cfg.LABDynamicRangeStops,
+		InkJoyDisplay:          resolvePalette(cfg.InkJoyDisplayPreset, cfg.InkJoyDisplay, inkjoyDisplayPresets()),
+		SamsungDisplay:         resolvePalette(cfg.SamsungDisplayPreset, cfg.SamsungDisplay, samsungDisplayPresets()),
+		SamsungSend:            resolvePalette(cfg.SamsungSendPreset, cfg.SamsungSend, samsungSendPresets()),
 	}
 }
 
@@ -260,6 +271,9 @@ func validateColorConfig(cfg ColorConfig) error {
 	if cfg.LABShadowStrength < 0 || cfg.LABShadowStrength > 3 {
 		return fmt.Errorf("lab_shadow_strength must be between 0 and 3")
 	}
+	if cfg.LABDynamicRangeStops < 2 || cfg.LABDynamicRangeStops > 6 {
+		return fmt.Errorf("lab_dynamic_range_stops must be between 2 and 6")
+	}
 	for _, preset := range []string{cfg.InkJoyDisplayPreset, cfg.SamsungDisplayPreset, cfg.SamsungSendPreset} {
 		if err := validatePresetName(preset); err != nil {
 			return err
@@ -303,11 +317,24 @@ func colorPresetCatalog() map[string]map[string][6]PaletteRGB {
 	return catalog
 }
 
-func shouldApplyLABProcessing(pipe ColorPipeline, img image.Image, flatRGB bool) bool {
-	if flatRGB || (!pipe.LABChromaEnabled && !pipe.LABHighlightEnabled && !pipe.LABShadowEnabled) {
+func shouldApplyLABProcessing(pipe ColorPipeline, img image.Image, flatRGB bool, dynamicRange bool) bool {
+	if flatRGB || (!pipe.LABChromaEnabled && !pipe.LABHighlightEnabled && !pipe.LABShadowEnabled && !dynamicRange) {
 		return false
 	}
 	return UniqueColors(img) > 6
+}
+
+func displayPaletteLABRange(pal [6][3]float64) (lo, hi float64) {
+	bl := srgbToLAB(paletteRGB01(pal[0]))[0]
+	wl := srgbToLAB(paletteRGB01(pal[1]))[0]
+	if wl <= bl {
+		return 12, 75
+	}
+	return bl, wl
+}
+
+func paletteRGB01(c [3]float64) [3]float64 {
+	return [3]float64{c[0] / 255, c[1] / 255, c[2] / 255}
 }
 
 func defaultColorPipeline() ColorPipeline {

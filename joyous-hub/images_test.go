@@ -208,6 +208,18 @@ func TestColorGuessesPNGUsesFlatSnap(t *testing.T) {
 	if len(bin) != frameW*frameH*2 {
 		t.Fatalf("bin size %d", len(bin))
 	}
+	_, lo1 := FromBin(bin, frameW, frameH)
+	bin2, err := store.ServeBin(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, lo2 := FromBin(bin2, frameW, frameH)
+	if wipeFingerprint(lo1) != wipeFingerprint(lo2) {
+		t.Fatal("flat calibration wipe should be stable across serves")
+	}
+	if wipeFingerprint(lo1) != wipeFingerprint(calibrationWipeGrid()) {
+		t.Fatal("flat calibration should use box wipe")
+	}
 }
 
 // TestRenameImage updates display name in metadata without changing the raw file.
@@ -671,5 +683,49 @@ func TestServeThumbHTTPETagChangesAfterCrop(t *testing.T) {
 	store.ServeThumbHTTP(rec3, req, id)
 	if rec3.Code != http.StatusOK {
 		t.Fatalf("stale etag should return 200, got %d", rec3.Code)
+	}
+}
+
+func TestColorPipelineForMetaChromaOverride(t *testing.T) {
+	store := NewImageStore(t.TempDir())
+	on := true
+	off := false
+	meta := ImageMeta{ChromaBoost: &on}
+	pipe := store.colorPipelineForMeta(meta)
+	if !pipe.LABChromaEnabled {
+		t.Fatal("expected chroma on from per-image override")
+	}
+	meta.ChromaBoost = &off
+	pipe = store.colorPipelineForMeta(meta)
+	if pipe.LABChromaEnabled {
+		t.Fatal("expected chroma off from per-image override")
+	}
+	meta.ChromaBoost = nil
+	pipe = store.colorPipelineForMeta(meta)
+	if pipe.LABChromaEnabled {
+		t.Fatal("expected global default chroma off")
+	}
+}
+
+func TestPatchMetaChromaEvictsCache(t *testing.T) {
+	dir := t.TempDir()
+	store := NewImageStore(dir)
+	id, _ := store.Store(bytes.NewReader([]byte{0x01, 0x02}), "photo.jpg")
+	cacheFile := filepath.Join(dir, "cache", id+".bin")
+	if err := os.MkdirAll(filepath.Join(dir, "cache"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("cached"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PatchMeta(id, nil, "on"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
+		t.Fatal("expected bin cache evicted after chroma change")
+	}
+	meta, err := store.readMeta(id)
+	if err != nil || meta.ChromaBoost == nil || !*meta.ChromaBoost {
+		t.Fatalf("meta=%+v err=%v", meta, err)
 	}
 }

@@ -210,7 +210,7 @@ func (h *Hub) prepareSamsungPNG(imageID, overlayToken string, dev *Device) ([]by
 		}
 		img = drawWeatherOverlay(img, cfg, weather, h.overlayPhotoName(imageID, cfg), dev.Portrait)
 	}
-	return encodeSamsungPNGFromRGBA(img, h.colorPipeline())
+	return encodeSamsungPNGFromRGBA(img, h.colorPipelineForImage(imageID))
 }
 
 func prepareSamsungFrameRGBA(raw []byte, profile SamsungDisplayProfile, crop CropRect, hasCrop bool) (image.Image, error) {
@@ -231,7 +231,7 @@ func prepareSamsungFrameRGBA(raw []byte, profile SamsungDisplayProfile, crop Cro
 }
 
 func encodeSamsungPNGFromRGBA(img image.Image, pipe ColorPipeline) ([]byte, error) {
-	indices := StuckiTwoPalette(img, pipe.SamsungDisplay, pipe, false)
+	indices := StuckiTwoPalette(img, pipe.SamsungDisplay, pipe, false, stuckiOptionsSamsung(pipe))
 	out := RenderIndicesToRGB(indices, pipe.SamsungSend)
 	return encodePNG(out), nil
 }

@@ -137,7 +137,7 @@ func (h *Hub) saveDisplayPreviewFromBin(mac string, bin []byte) error {
 	if dev, ok := h.devices.Get(inkjoyID(mac)); ok {
 		portrait = dev.Portrait
 	}
-	jpeg, err := binToDisplayPreviewJPEG(bin, portrait)
+	jpeg, err := binToDisplayPreviewJPEG(bin, portrait, h.colorPipeline().InkJoyDisplay)
 	if err != nil {
 		return err
 	}

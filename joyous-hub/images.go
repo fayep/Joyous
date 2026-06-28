@@ -36,13 +36,16 @@ type CropRect struct {
 
 // ImageMeta holds persisted metadata for a stored image.
 type ImageMeta struct {
-	ID      string              `json:"id"`
-	Name    string              `json:"name"`
-	Size    int64               `json:"size"`
-	Width   int                  `json:"width,omitempty"`
-	Height  int                  `json:"height,omitempty"`
-	Crops   map[string]CropRect `json:"crops,omitempty"`
-	FlatRGB bool                `json:"flat_rgb,omitempty"` // calibration PNG: per-pixel snap, no Stucki/LAB
+	ID             string              `json:"id"`
+	Name           string              `json:"name"`
+	Size           int64               `json:"size"`
+	Width          int                  `json:"width,omitempty"`
+	Height         int                  `json:"height,omitempty"`
+	Crops          map[string]CropRect `json:"crops,omitempty"`
+	FlatRGB        bool                `json:"flat_rgb,omitempty"` // calibration PNG: per-pixel snap, no Stucki/LAB
+	ChromaBoost    *bool               `json:"chroma_boost,omitempty"` // nil = global color setting
+	PeopleLikely   bool                `json:"people_likely,omitempty"`
+	PeopleAnalyzed bool                `json:"people_analyzed,omitempty"`
 }
 
 // ImageStore manages raw image storage and a bounded converted-bin cache.
@@ -64,6 +67,22 @@ func (s *ImageStore) colorPipeline() ColorPipeline {
 		return s.colors.Pipeline()
 	}
 	return defaultColorPipeline()
+}
+
+func (s *ImageStore) colorPipelineForMeta(meta ImageMeta) ColorPipeline {
+	pipe := s.colorPipeline()
+	if meta.ChromaBoost != nil {
+		pipe.LABChromaEnabled = *meta.ChromaBoost
+	}
+	return pipe
+}
+
+func (s *ImageStore) colorPipelineForID(id string) ColorPipeline {
+	meta, err := s.readMeta(id)
+	if err != nil {
+		return s.colorPipeline()
+	}
+	return s.colorPipelineForMeta(meta)
 }
 
 // ClearBinCache removes converted .bin cache files (e.g. after color pipeline changes).
@@ -115,6 +134,12 @@ func (s *ImageStore) Store(r io.Reader, name string) (string, error) {
 	if w, h, err := imageDisplaySize(data, name); err == nil {
 		meta.Width, meta.Height = w, h
 	}
+	if !meta.FlatRGB && !isStoredBin(name) {
+		if img, err := decodeAnyImage(data); err == nil {
+			meta.PeopleLikely = detectPeopleLikely(img)
+			meta.PeopleAnalyzed = true
+		}
+	}
 	b, _ := json.Marshal(meta)
 	os.WriteFile(s.metaPath(id), b, 0644)
 	return id, nil
@@ -131,13 +156,16 @@ func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, erro
 	if portrait {
 		cacheFile = s.cachePath(id) + ".portrait"
 	}
-	// Cache hit.
-	if bin, err := os.ReadFile(cacheFile); err == nil {
-		s.applyRandomWipeIfConverted(id, bin)
-		return bin, nil
+	meta, _ := s.readMeta(id)
+	// Calibration charts always re-encode so the fixed box wipe is applied.
+	if !meta.FlatRGB {
+		if bin, err := os.ReadFile(cacheFile); err == nil {
+			s.applyRandomWipeIfConverted(id, bin)
+			return bin, nil
+		}
 	}
 
-	// Cache miss — convert.
+	// Cache miss — convert (or flat calibration refresh).
 	bin, err := s.convertToBinOrientation(id, portrait)
 	if err != nil {
 		return nil, err
@@ -154,7 +182,7 @@ func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, erro
 
 func (s *ImageStore) applyRandomWipeIfConverted(id string, bin []byte) {
 	meta, err := s.readMeta(id)
-	if err != nil || isStoredBin(meta.Name) {
+	if err != nil || isStoredBin(meta.Name) || meta.FlatRGB {
 		return
 	}
 	applyRandomWipe(bin)
@@ -226,7 +254,15 @@ func (s *ImageStore) AlbumRevision() string {
 	sort.Slice(imgs, func(i, j int) bool { return imgs[i].ID < imgs[j].ID })
 	h := sha256.New()
 	for _, m := range imgs {
-		fmt.Fprintf(h, "%s|%s|%d|", m.ID, m.Name, m.Size)
+		chroma := "g"
+		if m.ChromaBoost != nil {
+			if *m.ChromaBoost {
+				chroma = "1"
+			} else {
+				chroma = "0"
+			}
+		}
+		fmt.Fprintf(h, "%s|%s|%d|%s|%t|", m.ID, m.Name, m.Size, chroma, m.PeopleLikely)
 		if len(m.Crops) > 0 {
 			keys := make([]string, 0, len(m.Crops))
 			for k := range m.Crops {
@@ -315,11 +351,52 @@ func (s *ImageStore) Rename(id, name string) (ImageMeta, error) {
 	if name == "" {
 		return ImageMeta{}, fmt.Errorf("name required")
 	}
+	return s.PatchMeta(id, &name, "")
+}
+
+// PatchMeta updates display name and/or per-image chroma boost override.
+// chromaMode is "", "global", "on", or "off"; empty string leaves chroma unchanged.
+func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string) (ImageMeta, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return ImageMeta{}, err
 	}
-	meta.Name = name
+	if err := s.ensurePeopleAnalyzed(&meta); err != nil {
+		return ImageMeta{}, err
+	}
+	changed := false
+	if name != nil {
+		n := strings.TrimSpace(*name)
+		if n == "" {
+			return ImageMeta{}, fmt.Errorf("name required")
+		}
+		if meta.Name != n {
+			meta.Name = n
+			changed = true
+		}
+	}
+	switch chromaMode {
+	case "global":
+		if meta.ChromaBoost != nil {
+			meta.ChromaBoost = nil
+			changed = true
+		}
+	case "on":
+		v := true
+		if meta.ChromaBoost == nil || !*meta.ChromaBoost {
+			meta.ChromaBoost = &v
+			changed = true
+		}
+	case "off":
+		v := false
+		if meta.ChromaBoost == nil || *meta.ChromaBoost {
+			meta.ChromaBoost = &v
+			changed = true
+		}
+	}
+	if !changed {
+		return meta, nil
+	}
 	b, err := json.Marshal(meta)
 	if err != nil {
 		return ImageMeta{}, err
@@ -327,8 +404,48 @@ func (s *ImageStore) Rename(id, name string) (ImageMeta, error) {
 	if err := os.WriteFile(s.metaPath(id), b, 0644); err != nil {
 		return ImageMeta{}, err
 	}
-	s.evictOverlayCacheForImage(id)
+	s.evictBinCacheForImage(id)
 	return meta, nil
+}
+
+func (s *ImageStore) ensurePeopleAnalyzed(meta *ImageMeta) error {
+	if meta.PeopleAnalyzed || meta.FlatRGB || isStoredBin(meta.Name) {
+		return nil
+	}
+	raw, err := os.ReadFile(s.rawPath(meta.ID))
+	if err != nil {
+		return nil
+	}
+	img, err := decodeAnyImage(raw)
+	if err != nil {
+		meta.PeopleAnalyzed = true
+		return nil
+	}
+	meta.PeopleLikely = detectPeopleLikely(img)
+	meta.PeopleAnalyzed = true
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.metaPath(meta.ID), b, 0644)
+}
+
+// GetMeta returns metadata for one image, backfilling people detection when needed.
+func (s *ImageStore) GetMeta(id string) (ImageMeta, error) {
+	meta, err := s.readMeta(id)
+	if err != nil {
+		return meta, err
+	}
+	if err := s.ensurePeopleAnalyzed(&meta); err != nil {
+		return ImageMeta{}, err
+	}
+	return meta, nil
+}
+
+func (s *ImageStore) evictBinCacheForImage(id string) {
+	os.Remove(s.cachePath(id))
+	os.Remove(s.cachePath(id) + ".portrait")
+	s.evictOverlayCacheForImage(id)
 }
 
 func (s *ImageStore) evictOverlayCacheForImage(id string) {
@@ -468,7 +585,7 @@ func (s *ImageStore) generatePreview(id, cachePath string) ([]byte, error) {
 			return nil, fmt.Errorf("bin size invalid")
 		}
 		hi, _ := FromBin(raw, frameW, frameH)
-		img = renderHiToImage(hi)
+		img = renderHiToImage(hi, s.colorPipeline().InkJoyDisplay)
 	} else {
 		img, err = decodeAnyImage(raw)
 		if err != nil {
@@ -520,7 +637,7 @@ func (s *ImageStore) generateThumb(id string) ([]byte, error) {
 			return nil, fmt.Errorf("bin size %d invalid", len(raw))
 		}
 		hi, _ := FromBin(raw, frameW, frameH)
-		img = renderHiToImage(hi)
+		img = renderHiToImage(hi, s.colorPipeline().InkJoyDisplay)
 	} else {
 		img, err = decodeAnyImage(raw)
 		if err != nil {
@@ -587,20 +704,24 @@ func resizeToFit(img image.Image, maxW, maxH int) image.Image {
 
 // decodeBinToImage renders a frame .bin to an image. When portrait is true,
 // rotates 90° CW so preview matches upright content (inverse of encode --portrait).
-func decodeBinToImage(bin []byte, portrait bool) (image.Image, error) {
+func decodeBinToImage(bin []byte, portrait bool, display [6][3]float64) (image.Image, error) {
 	if len(bin) != frameW*frameH*2 {
 		return nil, fmt.Errorf("bin size %d != %d (expected %dx%dx2)", len(bin), frameW*frameH*2, frameW, frameH)
 	}
 	hi, _ := FromBin(bin, frameW, frameH)
-	img := renderHiToImage(hi)
+	img := renderHiToImage(hi, display)
 	if portrait {
 		img = rotate90(img)
 	}
 	return img, nil
 }
 
-func binToDisplayPreviewJPEG(bin []byte, portrait bool) ([]byte, error) {
-	img, err := decodeBinToImage(bin, portrait)
+func (s *ImageStore) decodeBinToImage(bin []byte, portrait bool) (image.Image, error) {
+	return decodeBinToImage(bin, portrait, s.colorPipeline().InkJoyDisplay)
+}
+
+func binToDisplayPreviewJPEG(bin []byte, portrait bool, display [6][3]float64) ([]byte, error) {
+	img, err := decodeBinToImage(bin, portrait, display)
 	if err != nil {
 		return nil, err
 	}
@@ -639,8 +760,8 @@ func (s *ImageStore) ServeInkJoyFramePreviewHTTP(w http.ResponseWriter, r *http.
 	w.Write(jpeg)
 }
 
-// renderHiToImage converts hi-byte grid to an RGBA image using the InkJoy palette.
-func renderHiToImage(hi [][]byte) image.Image {
+// renderHiToImage converts hi-byte grid to an RGBA image using the P2 display palette.
+func renderHiToImage(hi [][]byte, display [6][3]float64) image.Image {
 	h := len(hi)
 	if h == 0 {
 		return image.NewRGBA(image.Rect(0, 0, 0, 0))
@@ -653,7 +774,7 @@ func renderHiToImage(hi [][]byte) image.Image {
 			if !ok {
 				idx = 0
 			}
-			c := PaletteInkJoy[idx]
+			c := display[idx]
 			dst.Set(x, y, color.RGBA{uint8(c[0]), uint8(c[1]), uint8(c[2]), 255})
 		}
 	}
@@ -774,11 +895,15 @@ func (s *ImageStore) readMeta(id string) (ImageMeta, error) {
 }
 
 func (s *ImageStore) convertToBinOrientation(id string, portrait bool) ([]byte, error) {
+	meta, err := s.readMeta(id)
+	if err != nil {
+		return nil, err
+	}
 	rgba, flatRGB, err := s.prepareInkJoyFrameRGBA(id, portrait)
 	if err != nil {
 		return nil, err
 	}
-	return encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipeline())
+	return encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipelineForMeta(meta))
 }
 
 func (s *ImageStore) overlayCacheFile(id, token string, portrait bool) string {
@@ -798,6 +923,10 @@ func (s *ImageStore) ServeBinOrientationOverlay(id string, portrait bool, token 
 		s.applyRandomWipeIfConverted(id, bin)
 		return bin, nil
 	}
+	meta, err := s.readMeta(id)
+	if err != nil {
+		return nil, err
+	}
 	rgba, flatRGB, err := s.prepareInkJoyFrameRGBA(id, portrait)
 	if err != nil {
 		return nil, err
@@ -808,7 +937,7 @@ func (s *ImageStore) ServeBinOrientationOverlay(id string, portrait bool, token 
 			return nil, err
 		}
 	}
-	bin, err := encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipeline())
+	bin, err := encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipelineForMeta(meta))
 	if err != nil {
 		return nil, err
 	}
@@ -834,14 +963,15 @@ func (s *ImageStore) prepareInkJoyFrameRGBA(id string, portrait bool) (image.Ima
 		if err != nil {
 			return nil, false, err
 		}
-		img, err := decodeBinToImage(bin, portrait)
+		img, err := s.decodeBinToImage(bin, portrait)
 		return img, meta.FlatRGB, err
 	}
 	cropKey := "4:3"
 	if portrait {
 		cropKey = "3:4"
 	}
-	return prepareInkJoyFrameFromRaw(raw, meta.Crops[cropKey], portrait)
+	img, _, err := prepareInkJoyFrameFromRaw(raw, meta.Crops[cropKey], portrait)
+	return img, meta.FlatRGB, err
 }
 
 func prepareInkJoyFrameFromRaw(raw []byte, crop CropRect, portrait bool) (image.Image, bool, error) {
@@ -866,7 +996,7 @@ func encodeInkJoyBinFromRGBA(img image.Image, flatRGB bool, pipe ColorPipeline) 
 	if flatRGB {
 		hi, lo = snapToPalette(img)
 	} else {
-		indices := StuckiTwoPalette(img, pipe.InkJoyDisplay, pipe, flatRGB)
+		indices := StuckiTwoPalette(img, pipe.InkJoyDisplay, pipe, flatRGB, stuckiOptionsInkJoy(pipe))
 		hi = indicesToHi(indices)
 		lo = randomWipeGrid()
 	}
@@ -884,7 +1014,7 @@ func (s *ImageStore) framePreviewJPEG(id string, portrait bool, overlayToken str
 	if err != nil {
 		return nil, err
 	}
-	img, err := decodeBinToImage(bin, portrait)
+	img, err := s.decodeBinToImage(bin, portrait)
 	if err != nil {
 		return nil, err
 	}
@@ -1035,7 +1165,7 @@ func snapToPalette(img image.Image) (hi, lo [][]byte) {
 	h, w := b.Dy(), b.Dx()
 	hi = make([][]byte, h)
 	lo = make([][]byte, h)
-	wipe := randomWipeGrid()
+	wipe := calibrationWipeGrid()
 	for y := range h {
 		hi[y] = make([]byte, w)
 		for x := range w {

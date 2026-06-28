@@ -35,7 +35,7 @@ PALETTE_SAMSUNG_DISPLAY = np.array(
         [195, 183, 12],
         [121, 6, 0],
         [0, 74, 159],
-        [49, 104, 99],
+        [50, 105, 98],
     ],
     dtype=np.float64,
 )
@@ -53,7 +53,7 @@ PALETTE_INKJOY_SEND = np.array(
     dtype=np.float64,
 )
 
-# InkJoy P2 — on-panel Stucki targets (IMG_0110 primaries, left sample, wood frame).
+# InkJoy P2 — on-panel Stucki targets (IMG_0110 primaries; green uses legacy physical ink).
 PALETTE_INKJOY_DISPLAY = np.array(
     [
         [71, 38, 47],
@@ -61,7 +61,7 @@ PALETTE_INKJOY_DISPLAY = np.array(
         [222, 205, 0],
         [164, 15, 5],
         [30, 106, 188],
-        [104, 150, 102],
+        [46, 91, 65],
     ],
     dtype=np.float64,
 )

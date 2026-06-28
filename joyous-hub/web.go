@@ -267,16 +267,46 @@ func (h *Hub) handleImageDelete(w http.ResponseWriter, r *http.Request, id strin
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
-// handleImageRename serves PATCH /api/images/{id} — updates display name in metadata only.
-func (h *Hub) handleImageRename(w http.ResponseWriter, r *http.Request, id string) {
+// handleImageGet serves GET /api/images/{id} — metadata for one album image.
+func (h *Hub) handleImageGet(w http.ResponseWriter, r *http.Request, id string) {
+	meta, err := h.images.GetMeta(id)
+	if err != nil {
+		code := http.StatusNotFound
+		if !strings.Contains(err.Error(), "not found") {
+			code = http.StatusInternalServerError
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(meta)
+}
+
+// handleImagePatch serves PATCH /api/images/{id} — updates display name and/or chroma override.
+func (h *Hub) handleImagePatch(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
-		Name string `json:"name"`
+		Name            *string `json:"name"`
+		ChromaBoostMode *string `json:"chroma_boost_mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	meta, err := h.images.Rename(id, body.Name)
+	if body.Name == nil && body.ChromaBoostMode == nil {
+		http.Error(w, "name or chroma_boost_mode required", http.StatusBadRequest)
+		return
+	}
+	chromaMode := ""
+	if body.ChromaBoostMode != nil {
+		switch *body.ChromaBoostMode {
+		case "global", "on", "off":
+			chromaMode = *body.ChromaBoostMode
+		default:
+			http.Error(w, "chroma_boost_mode must be global, on, or off", http.StatusBadRequest)
+			return
+		}
+	}
+	meta, err := h.images.PatchMeta(id, body.Name, chromaMode)
 	if err != nil {
 		code := http.StatusBadRequest
 		if strings.Contains(err.Error(), "not found") {
@@ -743,7 +773,14 @@ const indexHTML = `<!DOCTYPE html>
   <div id="tab-color" style="display:none">
     <div class="card" style="max-width:760px">
       <div class="section-label" style="margin-top:0">Pre-dither LAB processing</div>
-      <p style="font-size:.85rem;color:#666;margin:.25rem 0 .75rem">Optional steps before Stucki dithering (skipped for calibration swatches and ≤6-color images). Chroma, highlight, and shadow are independent.</p>
+      <p style="font-size:.85rem;color:#666;margin:.25rem 0 .75rem">Optional steps before Stucki dithering (skipped for calibration swatches and ≤6-color images). Dynamic range, chroma, highlight, and shadow are independent.</p>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-dynamic-range"> Fit dynamic range for Samsung (compress scene luminance to N stops in log space)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Target stops
+        <input type="range" id="clr-lab-dynamic-range-stops" min="2" max="6" step="0.5" value="4.5" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-dynamic-range-stops-val').textContent=this.value">
+        <span id="clr-lab-dynamic-range-stops-val" style="font-family:monospace">4.5</span>
+      </label>
       <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
         <input type="checkbox" id="clr-lab-chroma"> Chroma boost (pulls neutrals toward their hue)
       </label>
@@ -806,6 +843,21 @@ const indexHTML = `<!DOCTYPE html>
         </div>
       </div>
     </div>
+    <!-- Calibration modal -->
+    <div id="calibration-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:1000;align-items:center;justify-content:center;padding:1rem" onclick="if(event.target===this)closeCalibrationModal()">
+      <div style="background:#fff;border-radius:10px;padding:1rem 1.25rem;max-width:min(96vw,1200px);max-height:92vh;overflow:auto">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.75rem">
+          <h3 style="margin:0" id="calibration-modal-title">Calibration chart</h3>
+          <button class="btn btn-sm" onclick="closeCalibrationModal()">Close</button>
+        </div>
+        <p id="calibration-modal-desc" style="font-size:.85rem;color:#666;margin:0 0 .75rem"></p>
+        <img id="calibration-modal-img" alt="Calibration chart" style="display:block;max-width:100%;height:auto;border:1px solid #ddd;border-radius:4px">
+        <div style="display:flex;gap:.5rem;margin-top:1rem;flex-wrap:wrap">
+          <button class="btn btn-sm btn-primary" id="calibration-send-btn" onclick="sendCalibrationChart()">Send to frame</button>
+          <span id="calibration-send-status" style="font-size:.85rem;color:#666;align-self:center"></span>
+        </div>
+      </div>
+    </div>
     <div style="display:flex;gap:1.5rem;align-items:flex-start">
       <div style="min-width:220px">
         <div class="section-label">Frames</div>
@@ -840,6 +892,7 @@ const indexHTML = `<!DOCTYPE html>
           <div id="ij-last-image"><p style="color:#888;font-size:.9rem">Nothing sent yet this session.</p></div>
           <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
             <button class="btn btn-sm" style="background:#6c757d;color:#fff" onclick="ijRefresh()">Refresh display</button>
+            <button class="btn btn-sm" onclick="openCalibrationModal('inkjoy')">Calibration chart</button>
           </div>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">To send from the shared album, use <strong>Album → Send</strong> and pick this frame.</p>
         </div>
@@ -910,6 +963,7 @@ const indexHTML = `<!DOCTYPE html>
           <div id="samsung-preview-wrap"><p style="color:#888;font-size:.9rem">No image uploaded yet.</p></div>
           <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
             <button class="btn btn-primary btn-sm" onclick="samsungPushCurrent()">Push to display</button>
+            <button class="btn btn-sm" onclick="openCalibrationModal('samsung')">Calibration chart</button>
           </div>
           <div id="samsung-upload-zone" style="border:2px dashed #ccc;border-radius:8px;padding:1.5rem;text-align:center;cursor:pointer;margin-top:1rem" onclick="document.getElementById('samsung-file-input').click()">
             Drop image to upload for this frame
@@ -1556,6 +1610,87 @@ zone.addEventListener('drop',async e=>{
   loadImages();
 });
 
+// ── Calibration chart ────────────────────────────────────────────────────────
+let calibrationKind=null;
+
+function openCalibrationModal(kind){
+  calibrationKind=kind;
+  const modal=document.getElementById('calibration-modal');
+  const title=document.getElementById('calibration-modal-title');
+  const desc=document.getElementById('calibration-modal-desc');
+  const img=document.getElementById('calibration-modal-img');
+  const st=document.getElementById('calibration-send-status');
+  const sendBtn=document.getElementById('calibration-send-btn');
+  if(kind==='inkjoy'){
+    title.textContent='InkJoy calibration chart';
+    desc.textContent='Six P1 primary swatches (1600×1200). Send flat to the selected frame, then photograph for P2 palette tuning.';
+    sendBtn.disabled=!ijCurrentId;
+  }else{
+    title.textContent='Samsung calibration chart';
+    desc.textContent='Six P1 primary swatches (2560×1440). Send flat to the selected frame, then photograph for P2 palette tuning.';
+    sendBtn.disabled=!samsungCurrentId;
+  }
+  img.src='/api/calibration/'+kind+'?v=1';
+  if(st) st.textContent='';
+  modal.style.display='flex';
+}
+
+function closeCalibrationModal(){
+  const modal=document.getElementById('calibration-modal');
+  modal.style.display='none';
+  calibrationKind=null;
+}
+
+async function sendCalibrationChart(){
+  const st=document.getElementById('calibration-send-status');
+  const btn=document.getElementById('calibration-send-btn');
+  if(!calibrationKind){return;}
+  if(calibrationKind==='inkjoy'){
+    if(!ijCurrentId){alert('Select an InkJoy frame first.');return;}
+    if(st) st.textContent='Sending…';
+    if(btn) btn.disabled=true;
+    try{
+      const r=await fetch('/api/calibration/inkjoy/send',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({device_id:ijCurrentId})
+      });
+      if(!r.ok) throw new Error(await r.text());
+      const j=await r.json();
+      if(st) st.textContent='Downloading…';
+      const delivered=j.send_id?await waitSendDelivered(j.send_id):false;
+      if(st) st.textContent=delivered?'✓ Sent to frame':'Sent (unconfirmed)';
+      await loadDevicesInner();
+      loadIJFrames();
+    }catch(e){
+      alert('Send failed: '+e.message);
+      if(st) st.textContent='';
+    }finally{
+      if(btn) btn.disabled=!ijCurrentId;
+    }
+    return;
+  }
+  if(!samsungCurrentId){alert('Select a Samsung frame first.');return;}
+  if(st) st.textContent='Pushing…';
+  if(btn) btn.disabled=true;
+  try{
+    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/calibration',{method:'POST'});
+    if(!r.ok) throw new Error(await r.text());
+    const j=await r.json();
+    if(st) st.textContent='Downloading…';
+    const delivered=j.send_id?await waitSendDelivered(j.send_id):false;
+    if(st) st.textContent=delivered?'✓ Sent to display':'Sent (unconfirmed)';
+    await loadDevicesInner();
+    loadSamsungFrames();
+    await reloadSamsungFrame();
+  }catch(e){
+    alert('Send failed: '+e.message);
+    if(st) st.textContent='';
+  }finally{
+    if(btn) btn.disabled=!samsungCurrentId;
+  }
+}
+
 // ── BLE adopt ────────────────────────────────────────────────────────────────
 let adoptTarget = null;
 
@@ -2156,6 +2291,10 @@ function applyColorForm(cfg){
   const chromaStrength=cfg.lab_chroma_strength||1;
   document.getElementById('clr-lab-chroma-strength').value=chromaStrength;
   document.getElementById('clr-lab-chroma-strength-val').textContent=String(chromaStrength);
+  document.getElementById('clr-lab-dynamic-range').checked=!!cfg.lab_dynamic_range_enabled;
+  const drStops=cfg.lab_dynamic_range_stops||4.5;
+  document.getElementById('clr-lab-dynamic-range-stops').value=drStops;
+  document.getElementById('clr-lab-dynamic-range-stops-val').textContent=String(drStops);
   document.getElementById('clr-lab-highlight').checked=!!cfg.lab_highlight_enabled;
   const highlightStrength=cfg.lab_highlight_strength||1;
   document.getElementById('clr-lab-highlight-strength').value=highlightStrength;
@@ -2176,6 +2315,8 @@ function colorFormValues(){
   const out={
     lab_chroma_enabled:document.getElementById('clr-lab-chroma').checked,
     lab_chroma_strength:parseFloat(document.getElementById('clr-lab-chroma-strength').value)||1,
+    lab_dynamic_range_enabled:document.getElementById('clr-lab-dynamic-range').checked,
+    lab_dynamic_range_stops:parseFloat(document.getElementById('clr-lab-dynamic-range-stops').value)||4.5,
     lab_highlight_enabled:document.getElementById('clr-lab-highlight').checked,
     lab_highlight_strength:parseFloat(document.getElementById('clr-lab-highlight-strength').value)||1,
     lab_shadow_enabled:document.getElementById('clr-lab-shadow').checked,
@@ -2730,6 +2871,15 @@ sz.addEventListener('drop',async e=>{
       <option value="9:16">Portrait 9:16</option>
       <option value="1:1">Square 1:1</option>
     </select>
+    <label id="crop-chroma-wrap" style="display:none;align-items:center;gap:.35rem;font-size:.8rem;color:#aaa">
+      Chroma
+      <select id="crop-chroma" onchange="saveChromaBoost()">
+        <option value="global">Global</option>
+        <option value="on">On</option>
+        <option value="off">Off</option>
+      </select>
+    </label>
+    <span id="crop-chroma-hint" style="font-size:.75rem;color:#888;max-width:14rem;line-height:1.3"></span>
     <button class="btn btn-primary btn-sm" onclick="saveCrop()">Save</button>
     <button id="crop-delete-btn" class="btn btn-sm" style="background:#c0392b;color:#fff;display:none" onclick="deleteCrop()">Delete</button>
     <button class="btn btn-sm" onclick="closeCrop()">Close</button>
@@ -2758,6 +2908,7 @@ const FORMATS = {
 };
 
 let cropId=null, cropAR=4/3, cropFmt='4:3';
+let cropMeta=null;
 let cropRect={x:0,y:0,w:1,h:1};    // normalised 0-1 (relative to source image)
 let cropImgAR=1;                    // source image aspect ratio (w/h), set onload
 let imgDisp={x:0,y:0,w:0,h:0};     // image rect in stage pixel coords
@@ -2787,12 +2938,68 @@ function updateDeleteBtn(){
   document.getElementById('crop-delete-btn').style.display = allCrops[cropFmt] ? '' : 'none';
 }
 
+function chromaModeFromMeta(meta){
+  if(!meta||meta.chroma_boost==null) return 'global';
+  return meta.chroma_boost?'on':'off';
+}
+
+function updateCropChromaUI(meta){
+  const wrap=document.getElementById('crop-chroma-wrap');
+  const hint=document.getElementById('crop-chroma-hint');
+  const sel=document.getElementById('crop-chroma');
+  if(!wrap||!hint||!sel) return;
+  if(!meta||meta.flat_rgb){
+    wrap.style.display='none';
+    hint.textContent='';
+    return;
+  }
+  wrap.style.display='inline-flex';
+  sel.value=chromaModeFromMeta(meta);
+  if(meta.people_likely){
+    hint.textContent='People likely — leave chroma off unless you prefer the look';
+    hint.style.color='#e8a060';
+  }else{
+    hint.textContent='No people detected — chroma on is a good fit for landscapes and still life';
+    hint.style.color='#8fbf8f';
+  }
+}
+
+async function saveChromaBoost(){
+  if(!cropId) return;
+  const mode=document.getElementById('crop-chroma').value;
+  const r=await fetch('/api/images/'+cropId,{
+    method:'PATCH',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({chroma_boost_mode:mode})
+  });
+  if(!r.ok){ alert('Chroma save failed: '+(await r.text())); return; }
+  cropMeta=await r.json();
+  const img=images.find(i=>i.id===cropId);
+  if(img){
+    img.chroma_boost=cropMeta.chroma_boost;
+    img.people_likely=cropMeta.people_likely;
+  }
+  updateCropChromaUI(cropMeta);
+}
+
 function openCrop(id){
-  cropId=id; allCrops={...(imageCropsCache[id]||{})};
+  cropId=id; cropMeta=null; allCrops={...(imageCropsCache[id]||{})};
   cropFmt = Object.keys(FORMATS).find(k=>allCrops[k]) || '4:3';
   cropAR  = FORMATS[cropFmt].ar;
   document.getElementById('crop-format').value = cropFmt;
   imgDisp  = {x:0,y:0,w:0,h:0};
+  updateCropChromaUI(null);
+
+  fetch('/api/images/'+id).then(r=>r.ok?r.json():null).then(meta=>{
+    if(!meta||cropId!==id) return;
+    cropMeta=meta;
+    const img=images.find(i=>i.id===id);
+    if(img){
+      img.chroma_boost=meta.chroma_boost;
+      img.people_likely=meta.people_likely;
+    }
+    updateCropChromaUI(meta);
+  }).catch(()=>{});
 
   const img = cropImgEl();
   img.onload = ()=>{
@@ -2811,6 +3018,7 @@ function openCrop(id){
 function closeCrop(){
   cropModal().classList.remove('open');
   cropId=null;
+  cropMeta=null;
   endCropDrag();
   setCropScrollLock(false);
 }

@@ -24,6 +24,18 @@ func TestEmbeddedWipesLoad(t *testing.T) {
 	}
 }
 
+func TestCalibrationWipeIsBox(t *testing.T) {
+	loadEmbeddedWipes()
+	box := calibrationWipeGrid()
+	if len(box) != frameH || len(box[0]) != frameW {
+		t.Fatalf("calibration wipe shape %dx%d", len(box[0]), len(box))
+	}
+	named := wipeGridByName("wipe_box.png")
+	if wipeFingerprint(box) != wipeFingerprint(named) {
+		t.Fatal("calibration wipe should be wipe_box.png")
+	}
+}
+
 func TestApplyLoToBinRoundtrip(t *testing.T) {
 	loadEmbeddedWipes()
 	if len(embeddedWipes) == 0 {

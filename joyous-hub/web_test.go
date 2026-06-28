@@ -443,7 +443,7 @@ func TestRenameImageAPI(t *testing.T) {
 	req := httptest.NewRequest("PATCH", "/api/images/"+id, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	h.handleImageRename(rec, req, id)
+	h.handleImagePatch(rec, req, id)
 	if rec.Code != 200 {
 		t.Fatalf("status %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -457,6 +457,33 @@ func TestRenameImageAPI(t *testing.T) {
 	got, err := h.images.readMeta(id)
 	if err != nil || got.Name != "Beach day" {
 		t.Fatalf("meta=%+v err=%v", got, err)
+	}
+}
+
+func TestChromaBoostAPI(t *testing.T) {
+	h := buildTestHub(t)
+	id, _ := h.images.Store(bytes.NewReader([]byte{0x01, 0x02}), "landscape.jpg")
+
+	body := `{"chroma_boost_mode":"on"}`
+	req := httptest.NewRequest("PATCH", "/api/images/"+id, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.handleImagePatch(rec, req, id)
+	if rec.Code != 200 {
+		t.Fatalf("status %d body=%s", rec.Code, rec.Body.String())
+	}
+	var meta ImageMeta
+	if err := json.NewDecoder(rec.Body).Decode(&meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.ChromaBoost == nil || !*meta.ChromaBoost {
+		t.Fatalf("expected chroma on, got %+v", meta.ChromaBoost)
+	}
+
+	rec2 := httptest.NewRecorder()
+	h.handleImageGet(rec2, httptest.NewRequest("GET", "/api/images/"+id, nil), id)
+	if rec2.Code != 200 {
+		t.Fatalf("get status %d", rec2.Code)
 	}
 }
 

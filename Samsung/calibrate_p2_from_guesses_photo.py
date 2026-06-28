@@ -54,10 +54,14 @@ def load_layout_module(layout: str):
     return mod
 
 
+def _luminance(img: np.ndarray) -> np.ndarray:
+    return 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
+
+
 def detect_display_bounds(img: np.ndarray, *, frame: str = "auto") -> tuple[int, int, int, int]:
     """Return left, top, right, bottom. Screen is darker than bezel (wood or white)."""
     h, w = img.shape[:2]
-    lum = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
+    lum = _luminance(img)
     y0, y1 = int(h * 0.10), int(h * 0.95)
     col_med = np.median(lum[y0:y1], axis=0)
     col_thr = 200 if frame in ("wood", "auto") else 180
@@ -78,6 +82,104 @@ def detect_display_bounds(img: np.ndarray, *, frame: str = "auto") -> tuple[int,
     return disp_l, disp_t, disp_r, disp_b
 
 
+def detect_display_quad(
+    img: np.ndarray, *, frame: str = "auto"
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]]:
+    """Return display corners TL, TR, BL, BR inside wood/white bezel (keystone-aware)."""
+    disp_l, disp_t, disp_r, disp_b = detect_display_bounds(img, frame=frame)
+    lum = _luminance(img)
+    col_thr = 200 if frame in ("wood", "auto") else 180
+
+    left_pts: list[tuple[float, float]] = []
+    right_pts: list[tuple[float, float]] = []
+    y_span = disp_b - disp_t
+    for y in np.linspace(disp_t + y_span * 0.06, disp_b - y_span * 0.06, 20):
+        row = lum[int(y), disp_l:disp_r]
+        if row.size < 20:
+            continue
+        screen = np.where(row < col_thr)[0]
+        if len(screen) < row.size * 0.35:
+            continue
+        left_pts.append((float(disp_l + screen[0]), float(y)))
+        right_pts.append((float(disp_l + screen[-1]), float(y)))
+
+    if len(left_pts) < 4:
+        return (disp_l, disp_t), (disp_r, disp_t), (disp_l, disp_b), (disp_r, disp_b)
+
+    ly = np.array([p[1] for p in left_pts])
+    lx = np.array([p[0] for p in left_pts])
+    ry = np.array([p[1] for p in right_pts])
+    rx = np.array([p[0] for p in right_pts])
+    la, lb = np.polyfit(ly, lx, 1)
+    ra, rb = np.polyfit(ry, rx, 1)
+
+    top_y = float(left_pts[0][1])
+    bot_y = float(left_pts[-1][1])
+    tl = (la * top_y + lb, top_y)
+    tr = (ra * top_y + rb, top_y)
+    bl = (la * bot_y + lb, bot_y)
+    br = (ra * bot_y + rb, bot_y)
+    return tl, tr, bl, br
+
+
+def row_screen_edges(
+    img: np.ndarray,
+    y: float,
+    bounds: tuple[int, int, int, int],
+    *,
+    frame: str = "auto",
+) -> tuple[float, float]:
+    """Left/right screen x at row y, excluding wood bezel (warm tan) on the edges."""
+    disp_l, disp_t, disp_r, disp_b = bounds
+    lum = _luminance(img)
+    col_thr = 200 if frame in ("wood", "auto") else 180
+    iy = int(max(disp_t, min(disp_b - 1, y)))
+    row_rgb = img[iy, disp_l:disp_r].astype(np.float64)
+    row_lum = lum[iy, disp_l:disp_r]
+    r, g, b = row_rgb[:, 0], row_rgb[:, 1], row_rgb[:, 2]
+    # Wood bezel: warm (R≫B), mid luminance. Screen + label: not wood.
+    wood = (r - b > 28) & (row_lum > 110) & (row_lum < 225)
+    screen = (~wood) & (row_lum < col_thr)
+    idx = np.where(screen)[0]
+    if len(idx) < row_rgb.shape[0] * 0.25:
+        return float(disp_l), float(disp_r)
+    return float(disp_l + idx[0]), float(disp_l + idx[-1])
+
+
+def row_bar_edges(
+    img: np.ndarray,
+    y: float,
+    bounds: tuple[int, int, int, int],
+    *,
+    frame: str = "auto",
+) -> tuple[float, float]:
+    """Color-bar left/right at row y (excludes label column and wood margins)."""
+    left, right = row_screen_edges(img, y, bounds, frame=frame)
+    span = right - left
+    # Label column ≈10% of layout; trim wood on the right.
+    return left + span * 0.12, right - span * 0.08
+
+
+def sample_point_perspective(
+    img: np.ndarray,
+    bounds: tuple[int, int, int, int],
+    nx: float,
+    ny: float,
+    layout_mod,
+    *,
+    frame: str = "auto",
+) -> tuple[float, float]:
+    """Map normalized layout coords to photo pixels with per-row edge correction."""
+    disp_l, disp_t, disp_r, disp_b = bounds
+    py = disp_t + ny * (disp_b - disp_t)
+    bar_left, bar_right = row_bar_edges(img, py, bounds, frame=frame)
+    label_frac = layout_mod.LABEL_W / layout_mod.WIDTH
+    bar_nx = (nx - label_frac) / max(1e-6, 1.0 - label_frac)
+    bar_nx = float(np.clip(bar_nx, 0.0, 1.0))
+    px = bar_left + bar_nx * (bar_right - bar_left)
+    return px, py
+
+
 def sample_patch(
     img: np.ndarray, bounds: tuple[int, int, int, int], nx: float, ny: float, patch_frac: float
 ) -> tuple[np.ndarray, float]:
@@ -85,6 +187,11 @@ def sample_patch(
     h, w = img.shape[:2]
     px = disp_l + nx * (disp_r - disp_l)
     py = disp_t + ny * (disp_b - disp_t)
+    return sample_patch_xy(img, px, py, patch_frac)
+
+
+def sample_patch_xy(img: np.ndarray, px: float, py: float, patch_frac: float) -> tuple[np.ndarray, float]:
+    h, w = img.shape[:2]
     pw = max(5, int(w * patch_frac))
     ph = max(5, int(h * patch_frac))
     ix, iy = int(px), int(py)
@@ -129,7 +236,7 @@ def swatch_center(
         cx = layout_mod.LABEL_W + bar_w * (best_i + x_frac) / n
     nx = cx / layout_mod.WIDTH
     ny = (layout_mod.HEADER_H + band_h * (fi + 0.5)) / layout_mod.HEIGHT
-    return nx, ny, best_name
+    return nx, ny, best_name, cx, layout_mod.HEADER_H + band_h * (fi + 0.5)
 
 
 def format_go_display(name: str, palette: np.ndarray) -> str:
@@ -164,6 +271,12 @@ def main() -> None:
         default=None,
         help="horizontal sample point in each swatch bar, 0=left 1=right (default: 0.22 primaries, 0.5 guess grid)",
     )
+    ap.add_argument(
+        "--keystone",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="perspective-correct display quad before sampling (default: on)",
+    )
     ap.add_argument("--debug", type=Path, help="write overlay PNG")
     ap.add_argument("-o", "--output", type=Path, help="write JSON results")
     args = ap.parse_args()
@@ -176,11 +289,13 @@ def main() -> None:
     }[args.layout]
     layout_mod = load_layout_module(layout_key)
     img = np.array(Image.open(args.photo).convert("RGB"))
+    quad = detect_display_quad(img, frame=args.frame)
     bounds = detect_display_bounds(img, frame=args.frame)
+    sample_img = img
     if args.sample_x is not None:
         sample_x = args.sample_x
     elif args.layout == "inkjoy-primaries":
-        sample_x = 0.22  # left of bar — avoids glare on right of photo
+        sample_x = 0.78  # right of bar — avoids glare on left of photo
     elif args.layout == "samsung-primaries":
         sample_x = 0.78  # right of bar — avoids glare on left of photo
     else:
@@ -193,14 +308,23 @@ def main() -> None:
     if draw is not None:
         draw.rectangle(bounds, outline=(255, 0, 0), width=2)
 
-    print(f"Photo {img.shape[1]}×{img.shape[0]}  display bounds {bounds}  sample_x={sample_x:.2f}")
+    mode = "keystone rows" if args.keystone else "bounds"
+    print(
+        f"Photo {img.shape[1]}×{img.shape[0]}  {mode} {bounds}  sample_x={sample_x:.2f}"
+    )
     print(f"{'ink':<8} {'P1 send':>10} {'P2 meas':>10} {'dither':>6}  label")
     print("-" * 52)
 
     for family in COLOR_NAMES:
         p1 = P1_PRIMARY[family]
-        nx, ny, label = swatch_center(layout_mod, family, p1, x_frac=sample_x)
-        med, dither = sample_patch(img, bounds, nx, ny, args.patch)
+        nx, ny, label, cx_px, cy_px = swatch_center(layout_mod, family, p1, x_frac=sample_x)
+        if args.keystone:
+            px, py = sample_point_perspective(
+                sample_img, bounds, nx, ny, layout_mod, frame=args.frame
+            )
+            med, dither = sample_patch_xy(sample_img, px, py, args.patch)
+        else:
+            med, dither = sample_patch(sample_img, bounds, nx, ny, args.patch)
         measured.append([int(med[0]), int(med[1]), int(med[2])])
         send_hex = f"#{p1[0]:02X}{p1[1]:02X}{p1[2]:02X}"
         meas_hex = f"#{int(med[0]):02X}{int(med[1]):02X}{int(med[2]):02X}"
@@ -215,8 +339,14 @@ def main() -> None:
             }
         )
         if draw is not None:
-            px = int(bounds[0] + nx * (bounds[2] - bounds[0]))
-            py = int(bounds[1] + ny * (bounds[3] - bounds[1]))
+            if args.keystone:
+                px, py = sample_point_perspective(
+                    sample_img, bounds, nx, ny, layout_mod, frame=args.frame
+                )
+                px, py = int(px), int(py)
+            else:
+                px = int(bounds[0] + nx * (bounds[2] - bounds[0]))
+                py = int(bounds[1] + ny * (bounds[3] - bounds[1]))
             draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=(0, 255, 0))
             draw.text((px + 6, py - 8), family[:3], fill=(0, 255, 0))
 
@@ -238,6 +368,8 @@ def main() -> None:
         payload = {
             "photo": str(args.photo),
             "layout": args.layout,
+            "keystone": args.keystone,
+            "quad": [[float(x), float(y)] for x, y in quad],
             "bounds": list(bounds),
             "p1_primary": {k: list(v) for k, v in P1_PRIMARY.items()},
             "swatches": rows,

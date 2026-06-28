@@ -27,7 +27,10 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 		hub.handleImageDelete(w, r, r.PathValue("id"))
 	})
 	mux.HandleFunc("PATCH /api/images/{id}", func(w http.ResponseWriter, r *http.Request) {
-		hub.handleImageRename(w, r, r.PathValue("id"))
+		hub.handleImagePatch(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("GET /api/images/{id}", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleImageGet(w, r, r.PathValue("id"))
 	})
 	mux.HandleFunc("GET /images/{file}", func(w http.ResponseWriter, r *http.Request) {
 		file := r.PathValue("file")
@@ -61,6 +64,10 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("GET /api/color", hub.handleColorGet)
 	mux.HandleFunc("PUT /api/color", hub.handleColorPut)
 	mux.HandleFunc("GET /api/color/presets", hub.handleColorPresets)
+	mux.HandleFunc("GET /api/calibration/{kind}", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleCalibrationPNG(w, r, r.PathValue("kind"))
+	})
+	mux.HandleFunc("POST /api/calibration/inkjoy/send", hub.handleInkJoyCalibrationSend)
 	mux.HandleFunc("POST /api/overlay/send", hub.handleOverlaySend)
 	mux.HandleFunc("POST /api/images/{id}/crop", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSaveCrop(w, r, r.PathValue("id"))
@@ -94,6 +101,9 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	})
 	mux.HandleFunc("POST /api/samsung/{frameId}/push", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungPush(w, r, r.PathValue("frameId"))
+	})
+	mux.HandleFunc("POST /api/samsung/{frameId}/calibration", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleSamsungCalibration(w, r, r.PathValue("frameId"))
 	})
 	mux.HandleFunc("PUT /api/samsung/{frameId}/config", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungConfigPut(w, r, r.PathValue("frameId"))

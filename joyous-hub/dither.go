@@ -28,14 +28,15 @@ var PaletteInkJoySend = [6][3]float64{
 	{0, 255, 0},
 }
 
-// PaletteInkJoyDisplay (P2) — on-panel Stucki targets (IMG_0110 primaries, left sample).
+// PaletteInkJoyDisplay (P2) — on-panel Stucki targets (IMG_0110 primaries; green uses legacy
+// physical ink so mid-tone browns dither to red/yellow/black, not measured sage green).
 var PaletteInkJoyDisplay = [6][3]float64{
 	{71, 38, 47},
 	{214, 215, 201},
 	{222, 205, 0},
 	{164, 15, 5},
 	{30, 106, 188},
-	{104, 150, 102},
+	{46, 91, 65},
 }
 
 // PaletteSamsungSend (P1) — pure sRGB primaries written to PNG.
@@ -75,6 +76,27 @@ const (
 	stuckiEdgeSoft = 3.0  // below: full error diffusion
 	stuckiEdgeHard = 22.0 // above: minimum transfer across the edge
 )
+
+// stuckiOptions selects Samsung-tuned Stucki vs classic LTR diffusion for InkJoy.
+type stuckiOptions struct {
+	Serpentine   bool
+	EdgePreserve float64
+	PreDither    bool
+	DynamicRange bool
+}
+
+func stuckiOptionsSamsung(pipe ColorPipeline) stuckiOptions {
+	return stuckiOptions{
+		Serpentine:   true,
+		EdgePreserve: stuckiEdgePreserve,
+		PreDither:    true,
+		DynamicRange: pipe.LABDynamicRangeEnabled,
+	}
+}
+
+func stuckiOptionsInkJoy(pipe ColorPipeline) stuckiOptions {
+	return stuckiOptions{}
+}
 
 // hiBytes maps palette index 0-5 to the hi byte values used in the .bin format.
 var hiBytes = [6]byte{0x01, 0x02, 0x03, 0x04, 0x06, 0x07}
@@ -235,7 +257,7 @@ func UniqueColors(img image.Image) int {
 //	. . * A B
 //	C B A B C
 //	D C B C D
-func StuckiDither(img image.Image, palette [6][3]float64) [][]byte {
+func StuckiDither(img image.Image, palette [6][3]float64, opts stuckiOptions) [][]byte {
 	b := img.Bounds()
 	h, w := b.Dy(), b.Dx()
 
@@ -252,13 +274,16 @@ func StuckiDither(img image.Image, palette [6][3]float64) [][]byte {
 			buf[y+2][base+2] = float64(bv >> 8)
 		}
 	}
-	lum := buildLuminanceGrid(img, h, w)
+	var lum [][]float64
+	if opts.EdgePreserve > 0 {
+		lum = buildLuminanceGrid(img, h, w)
+	}
 
 	out := make([][]byte, h)
 	for y := range h {
 		out[y] = make([]byte, w)
 		by := y + 2
-		rtl := y&1 == 1
+		rtl := opts.Serpentine && y&1 == 1
 		if rtl {
 			for x := w - 1; x >= 0; x-- {
 				bx := (x + 2) * 3
@@ -272,7 +297,7 @@ func StuckiDither(img image.Image, palette [6][3]float64) [][]byte {
 				er := pr - palette[idx][0]
 				eg := pg - palette[idx][1]
 				eb := pb - palette[idx][2]
-				stuckiSpreadError(buf, lum, h, w, by, x+2, x, y, er, eg, eb, true)
+				stuckiSpreadError(buf, lum, h, w, by, x+2, x, y, er, eg, eb, true, opts.EdgePreserve)
 			}
 			continue
 		}
@@ -288,22 +313,27 @@ func StuckiDither(img image.Image, palette [6][3]float64) [][]byte {
 			er := pr - palette[idx][0]
 			eg := pg - palette[idx][1]
 			eb := pb - palette[idx][2]
-			stuckiSpreadError(buf, lum, h, w, by, x+2, x, y, er, eg, eb, false)
+			stuckiSpreadError(buf, lum, h, w, by, x+2, x, y, er, eg, eb, false, opts.EdgePreserve)
 		}
 	}
 	return out
 }
 
-func stuckiSpreadError(buf [][]float64, lum [][]float64, h, w, by, xc, cx, cy int, er, eg, eb float64, rtl bool) {
+func stuckiSpreadError(buf [][]float64, lum [][]float64, h, w, by, xc, cx, cy int, er, eg, eb float64, rtl bool, edgePreserve float64) {
 	const A, B, C, D = 8.0 / 42, 4.0 / 42, 2.0 / 42, 1.0 / 42
-	centerLum := lum[cy][cx]
+	centerLum := 0.0
+	if lum != nil {
+		centerLum = lum[cy][cx]
+	}
 	addErr := func(ry, rx int, wt float64) {
 		if ry >= h+4 || rx < 0 || rx >= w+4 {
 			return
 		}
-		nx, ny := rx-2, ry-2
-		if nx >= 0 && nx < w && ny >= 0 && ny < h {
-			wt *= stuckiEdgeAttenuation(centerLum, lum[ny][nx])
+		if lum != nil && edgePreserve > 0 {
+			nx, ny := rx-2, ry-2
+			if nx >= 0 && nx < w && ny >= 0 && ny < h {
+				wt *= stuckiEdgeAttenuation(centerLum, lum[ny][nx], edgePreserve)
+			}
 		}
 		base := rx * 3
 		buf[ry][base] += er * wt
@@ -358,8 +388,8 @@ func pixelLuminance(c color.Color) float64 {
 
 // stuckiEdgeAttenuation scales error diffusion across an edge. Smooth neighbors
 // get full transfer; hard edges (lightning, cloud boundary) get much less.
-func stuckiEdgeAttenuation(lumA, lumB float64) float64 {
-	if stuckiEdgePreserve <= 0 {
+func stuckiEdgeAttenuation(lumA, lumB, preserve float64) float64 {
+	if preserve <= 0 {
 		return 1
 	}
 	diff := math.Abs(lumA - lumB)
@@ -367,23 +397,23 @@ func stuckiEdgeAttenuation(lumA, lumB float64) float64 {
 		return 1
 	}
 	if diff >= stuckiEdgeHard {
-		return 1 - stuckiEdgePreserve
+		return 1 - preserve
 	}
 	t := (diff - stuckiEdgeSoft) / (stuckiEdgeHard - stuckiEdgeSoft)
-	return 1 - stuckiEdgePreserve*t
+	return 1 - preserve*t
 }
 
 // StuckiTwoPalette runs Stucki error diffusion in displayPalette (P2) space.
 // Map indices to send values with RenderIndicesToRGB (Samsung P1) or indicesToHi (InkJoy).
-func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorPipeline, flatRGB bool) [][]byte {
+func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorPipeline, flatRGB bool, opts stuckiOptions) [][]byte {
 	src := img
-	if shouldApplyLABProcessing(pipe, img, flatRGB) {
-		src = ApplyLABProcessing(img, pipe)
+	if shouldApplyLABProcessing(pipe, img, flatRGB, opts.DynamicRange) {
+		src = ApplyLABProcessing(img, pipe, displayPalette, opts.DynamicRange)
 	}
-	if !flatRGB && stuckiPreDitherNoise > 0 {
+	if opts.PreDither && !flatRGB && stuckiPreDitherNoise > 0 {
 		src = applyPreDitherNoise(src, stuckiPreDitherNoise)
 	}
-	return StuckiDither(src, displayPalette)
+	return StuckiDither(src, displayPalette, opts)
 }
 
 func applyPreDitherNoise(img image.Image, strength float64) *image.RGBA {
@@ -488,12 +518,22 @@ func samsungSendIndexForRGB(r, g, b uint8) int {
 }
 
 // ApplyLABProcessing applies optional LAB chroma, highlight rolloff, and/or shadow lift before dithering.
-func ApplyLABProcessing(img image.Image, pipe ColorPipeline) image.Image {
-	b := img.Bounds()
+// displayPalette sets the black/white L* targets for dynamic-range fitting (P2 inks for the target frame).
+func ApplyLABProcessing(img image.Image, pipe ColorPipeline, displayPalette [6][3]float64, fitDynamicRange bool) image.Image {
+	working := img
+	if fitDynamicRange && pipe.LABDynamicRangeStops > 0 {
+		outLoL, outHiL := displayPaletteDRRange(displayPalette)
+		working = applyLABDynamicRangeFit(working, pipe, outLoL, outHiL)
+	}
+	if !pipe.LABChromaEnabled && !pipe.LABHighlightEnabled && !pipe.LABShadowEnabled {
+		return working
+	}
+
+	b := working.Bounds()
 	out := image.NewRGBA(b)
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		for x := b.Min.X; x < b.Max.X; x++ {
-			r8, g8, b8, a8 := img.At(x, y).RGBA()
+			r8, g8, b8, a8 := working.At(x, y).RGBA()
 			rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
 			lab := srgbToLAB(rgb)
 
@@ -529,6 +569,172 @@ func ApplyLABProcessing(img image.Image, pipe ColorPipeline) image.Image {
 		}
 	}
 	return out
+}
+
+// applyLABDynamicRangeFit compresses scene luminance into a log range of N stops,
+// anchored at 1st/99th percentile L* and mapped to the panel black/white range.
+func applyLABDynamicRangeFit(img image.Image, pipe ColorPipeline, outLoL, outHiL float64) image.Image {
+	b := img.Bounds()
+	inLoL, inHiL := luminancePercentiles(img, 0.01, 0.99)
+	if inHiL-inLoL < 0.5 {
+		inHiL = inLoL + 0.5
+	}
+	stops := pipe.LABDynamicRangeStops
+	if stops <= 0 {
+		stops = 4
+	}
+	if outHiL <= outLoL {
+		outLoL, outHiL = 12, 75
+	}
+
+	out := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r8, g8, b8, a8 := img.At(x, y).RGBA()
+			rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
+			lab := srgbToLAB(rgb)
+			lab[0] = mapLABDynamicRange(lab[0], inLoL, inHiL, outLoL, outHiL, stops)
+			mapped := labToSRGB(lab)
+			out.SetRGBA(x, y, color.RGBA{
+				R: floatTo8(mapped[0]),
+				G: floatTo8(mapped[1]),
+				B: floatTo8(mapped[2]),
+				A: uint8(a8 >> 8),
+			})
+		}
+	}
+	return out
+}
+
+func luminancePercentiles(img image.Image, loPct, hiPct float64) (loL, hiL float64) {
+	const scale = 10
+	const bins = 1001
+	hist := make([]int, bins)
+	b := img.Bounds()
+	total := 0
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r8, g8, b8, _ := img.At(x, y).RGBA()
+			rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
+			L := srgbToLAB(rgb)[0]
+			bin := int(L * scale)
+			if bin < 0 {
+				bin = 0
+			} else if bin >= bins {
+				bin = bins - 1
+			}
+			hist[bin]++
+			total++
+		}
+	}
+	if total == 0 {
+		return 0, 100
+	}
+	loCount := int(float64(total) * loPct)
+	hiCount := int(float64(total) * hiPct)
+	if hiCount >= total {
+		hiCount = total - 1
+	}
+	cum := 0
+	loBin, hiBin := 0, bins-1
+	loFound := false
+	for i, c := range hist {
+		cum += c
+		if !loFound && cum > loCount {
+			loBin = i
+			loFound = true
+		}
+		if cum >= hiCount {
+			hiBin = i
+			break
+		}
+	}
+	return float64(loBin) / scale, float64(hiBin) / scale
+}
+
+func mapLABDynamicRange(L, inLoL, inHiL, outLoL, outHiL, stops float64) float64 {
+	inLoY := labLToLinearY(inLoL)
+	inHiY := labLToLinearY(inHiL)
+	if inHiY <= inLoY*1.001 {
+		inHiY = inLoY * 1.001
+	}
+	outLoY := labLToLinearY(outLoL)
+	outHiY := labLToLinearY(outHiL)
+	outSpanY := outLoY * math.Pow(2, stops)
+	if outSpanY > outHiY {
+		outSpanY = outHiY
+	}
+	if outSpanY <= outLoY*1.001 {
+		outSpanY = outLoY * 1.001
+	}
+
+	Y := labLToLinearY(L)
+	logInLo := math.Log2(inLoY)
+	logInHi := math.Log2(inHiY)
+	denom := logInHi - logInLo
+	if denom < 1e-6 {
+		return outLoL + (outHiL-outLoL)*(L-inLoL)/(inHiL-inLoL)
+	}
+	t := (math.Log2(math.Max(Y, inLoY)) - logInLo) / denom
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+	outY := outLoY * math.Pow(outSpanY/outLoY, t)
+	return linearYToLabL(outY)
+}
+
+func labLToLinearY(L float64) float64 {
+	fy := (L + 16.0) / 116.0
+	if fy <= 0 {
+		return 1e-8
+	}
+	return fy * fy * fy
+}
+
+func linearYToLabL(Y float64) float64 {
+	if Y <= 0 {
+		return 0
+	}
+	return 116.0*math.Cbrt(Y) - 16.0
+}
+
+// displayPaletteDRRange maps scene DR to neutral gray lightness at each ink's luminance
+// (avoids chromatic black/white L* skewing neutrals toward green on InkJoy).
+func displayPaletteDRRange(pal [6][3]float64) (lo, hi float64) {
+	lo = neutralGrayLABL(pal[0])
+	hi = neutralGrayLABL(pal[1])
+	if hi <= lo {
+		return 12, 75
+	}
+	return lo, hi
+}
+
+func neutralGrayLABL(rgb255 [3]float64) float64 {
+	lin := [3]float64{
+		srgbUnitToLinear(rgb255[0] / 255),
+		srgbUnitToLinear(rgb255[1] / 255),
+		srgbUnitToLinear(rgb255[2] / 255),
+	}
+	Y := 0.2126*lin[0] + 0.7152*lin[1] + 0.0722*lin[2]
+	return linearYToLabL(Y)
+}
+
+func srgbUnitToLinear(v float64) float64 {
+	if v <= 0.04045 {
+		return v / 12.92
+	}
+	return math.Pow((v+0.055)/1.055, 2.4)
+}
+
+func labLSpanStops(loL, hiL float64) float64 {
+	loY := labLToLinearY(loL)
+	hiY := labLToLinearY(hiL)
+	if loY <= 0 || hiY <= loY {
+		return 0
+	}
+	return math.Log2(hiY / loY)
 }
 
 // applyLABHighlightTone compresses bright blue skies so they dither with color instead
