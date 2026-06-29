@@ -411,6 +411,9 @@ func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorP
 	if shouldApplyLABProcessing(pipe, img, flatRGB, opts.DynamicRange) {
 		src = ApplyLABProcessing(img, pipe, displayPalette, opts.DynamicRange)
 	}
+	if shouldApplyInkAffinity(pipe, src, flatRGB) {
+		src = ApplyInkAffinity(src, displayPalette, pipe.LABInkAffinityStrength, pipe.PortraitEnhance)
+	}
 	if pipe.PortraitEnhance && pipe.PortraitStrength > 0 && !flatRGB {
 		src = ApplySkinToneProcessing(src, pipe.PortraitStrength)
 	}
