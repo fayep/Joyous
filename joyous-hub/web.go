@@ -842,6 +842,14 @@ const indexHTML = `<!DOCTYPE html>
         <input type="range" id="clr-lab-skin-tone-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-skin-tone-strength-val').textContent=this.value">
         <span id="clr-lab-skin-tone-strength-val" style="font-family:monospace">1</span>
       </label>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-ink-affinity" checked> Ink affinity (nudge hues toward nearest P2 ink before dither)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Ink affinity strength
+        <input type="range" id="clr-lab-ink-affinity-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-ink-affinity-strength-val').textContent=this.value">
+        <span id="clr-lab-ink-affinity-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Ink affinity keeps lightness similar but pulls a*/b* toward the calibrated ink that will carry each region, so Stucki has less impossible color error. Re-send test images after saving.</p>
       <div class="section-label">InkJoy dither palette (P2)</div>
       <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
         <select id="clr-inkjoy-display-preset" onchange="onColorPresetChange('inkjoy_display')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
@@ -2432,6 +2440,10 @@ function applyColorForm(cfg){
   const skinStrength=cfg.lab_skin_tone_strength||1;
   document.getElementById('clr-lab-skin-tone-strength').value=skinStrength;
   document.getElementById('clr-lab-skin-tone-strength-val').textContent=String(skinStrength);
+  document.getElementById('clr-lab-ink-affinity').checked=cfg.lab_ink_affinity_enabled!==false;
+  const inkAffinityStrength=cfg.lab_ink_affinity_strength||1;
+  document.getElementById('clr-lab-ink-affinity-strength').value=inkAffinityStrength;
+  document.getElementById('clr-lab-ink-affinity-strength-val').textContent=String(inkAffinityStrength);
   for(const g of COLOR_GROUPS){
     document.getElementById(g.presetId).value=cfg[g.cfgPreset]||'calibrated';
     const preset=cfg[g.cfgPreset]||'calibrated';
@@ -2452,6 +2464,8 @@ function colorFormValues(){
     lab_shadow_strength:parseFloat(document.getElementById('clr-lab-shadow-strength').value)||1,
     lab_skin_tone_enabled:document.getElementById('clr-lab-skin-tone').checked,
     lab_skin_tone_strength:parseFloat(document.getElementById('clr-lab-skin-tone-strength').value)||1,
+    lab_ink_affinity_enabled:document.getElementById('clr-lab-ink-affinity').checked,
+    lab_ink_affinity_strength:parseFloat(document.getElementById('clr-lab-ink-affinity-strength').value)||1,
     inkjoy_display_preset:document.getElementById('clr-inkjoy-display-preset').value,
     samsung_display_preset:document.getElementById('clr-samsung-display-preset').value,
     samsung_send_preset:document.getElementById('clr-samsung-send-preset').value

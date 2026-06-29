@@ -13,6 +13,9 @@ func TestColorConfigSaveLoad(t *testing.T) {
 	dir := t.TempDir()
 	store := NewColorStore(dir)
 	cfg := defaultColorConfig()
+	if !cfg.LABInkAffinityEnabled {
+		t.Fatal("expected ink affinity on by default")
+	}
 	cfg.LABChromaEnabled = true
 	cfg.LABChromaStrength = 0.5
 	cfg.LABHighlightEnabled = false
