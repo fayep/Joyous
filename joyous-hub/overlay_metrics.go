@@ -1,9 +1,5 @@
 package main
 
-import (
-	"golang.org/x/image/font"
-)
-
 // OverlayLineMetrics describes one rendered overlay row.
 type OverlayLineMetrics struct {
 	Index    int    `json:"index"`
@@ -36,10 +32,7 @@ type OverlayMetricsResponse struct {
 }
 
 func overlayLineWidthPx(ln overlayLine) int {
-	if ln.face == nil || ln.text == "" {
-		return 0
-	}
-	return font.MeasureString(ln.face, ln.text).Ceil()
+	return overlayLineContentWidth(ln)
 }
 
 func overlayMetricsForLines(lines []overlayLine, w, h int) OverlayBoxMetrics {

@@ -750,6 +750,7 @@ const indexHTML = `<!DOCTYPE html>
           <summary style="cursor:pointer;margin-bottom:.35rem">Fields &amp; helpers</summary>
           <div style="line-height:1.5;font-family:ui-monospace,Menlo,monospace;font-size:.75rem">
             <div><b>.City</b> · <b>.Condition</b></div>
+            <div><b>.Rain</b> — cloud + rain icon (1em wide; wrap in <code>{{if gt .Precipitation.Hour 0}}…{{end}}</code> to hide when dry)</div>
             <div><b>.Temperature.Current</b> · <b>.Temperature.Min</b> · <b>.Temperature.Max</b></div>
             <div><b>.Precipitation.Hour</b> (this hour %) · <b>.Precipitation.Max</b> (daily max %)</div>
             <div><b>{{date .Date .DateStyle}}</b> · <b>{{fahrenheit .Temperature.Min}}</b> · <b>{{celsius .Temperature.Current}}</b> · <b>{{pct .Precipitation.Hour}}</b></div>

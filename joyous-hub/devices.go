@@ -490,6 +490,9 @@ func (r *DeviceRegistry) SetSamsungDeepSleep(ip string, active bool) bool {
 		return false
 	}
 	d.DeepSleepActive = active
+	if !active && d.LastAction == "mdc_deep_sleep" {
+		d.LastAction = "mdc_sleep"
+	}
 	return true
 }
 

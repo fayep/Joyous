@@ -78,6 +78,7 @@ func defaultOverlayConfig() OverlayConfig {
 type WeatherSnapshot struct {
 	TempC         float64              `json:"temp_c"` // current °C (alias for Temperature.Current)
 	Condition     string               `json:"condition"`
+	WeatherCode   int                  `json:"weather_code,omitempty"`
 	City          string               `json:"city"`
 	ObservedAt    time.Time            `json:"observed_at"`
 	DisplayDate   time.Time            `json:"display_date"`
@@ -263,6 +264,7 @@ func (f *weatherFetcher) Fetch(ctx context.Context, cfg OverlayConfig) (WeatherS
 	return WeatherSnapshot{
 		TempC:       tempC,
 		Condition:   wmoWeatherText(payload.Current.WeatherCode),
+		WeatherCode: payload.Current.WeatherCode,
 		City:        city,
 		ObservedAt:  observed,
 		DisplayDate: observed,

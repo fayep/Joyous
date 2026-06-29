@@ -92,7 +92,7 @@ func drawWeatherOverlayOutlined(dst *image.RGBA, lines []overlayLine, dw, dh int
 	y := b.Max.Y - marginY - overlayContentHeight(lines)
 	for _, ln := range lines {
 		if ln.face != nil && ln.text != "" {
-			drawBorderedOverlayText(dst, ln.text, x, y, ln.face, float64(ln.fontPx))
+			drawOverlayLineContent(dst, x, y, ln, overlayBorderedFill, true)
 		}
 		y += ln.stepPx
 	}
@@ -118,7 +118,7 @@ func drawWeatherOverlayBox(dst *image.RGBA, lines []overlayLine, dw, dh int) *im
 
 func drawOverlayLines(dst *image.RGBA, x, y int, lines []overlayLine) {
 	for i, ln := range lines {
-		drawOverlayText(dst, ln.text, x, y, ln.face, overlayLineColor(i))
+		drawOverlayLineContent(dst, x, y, ln, overlayLineColor(i), false)
 		y += ln.stepPx
 	}
 }

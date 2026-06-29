@@ -15,6 +15,7 @@ import (
 type OverlayTemplateData struct {
 	City          string
 	Condition     string
+	Rain          string // drawn rain icon strokes; always set when referenced via {{.Rain}}
 	Date          time.Time
 	ObservedAt    time.Time
 	Temperature   OverlayTemperature
@@ -101,6 +102,7 @@ func (weather WeatherSnapshot) templateData(cfg OverlayConfig) OverlayTemplateDa
 	return OverlayTemplateData{
 		City:          weather.City,
 		Condition:     weather.Condition,
+		Rain:          overlayRainGlyph(),
 		Date:          weather.DisplayDate,
 		ObservedAt:    weather.ObservedAt,
 		Temperature:   weather.Temperature,

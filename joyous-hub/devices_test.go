@@ -265,3 +265,19 @@ func TestNoteSamsungDeepSlept(t *testing.T) {
 		t.Fatal("deep sleep should not mark frame active")
 	}
 }
+
+func TestSetSamsungDeepSleepClearsLastAction(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	reg.NoteSamsungSlept("192.168.1.108", true)
+	if !reg.SetSamsungDeepSleep("192.168.1.108", false) {
+		t.Fatal("expected SetSamsungDeepSleep to succeed")
+	}
+	d, _ := reg.Get("samsung:192.168.1.108")
+	if d.DeepSleepActive {
+		t.Fatal("expected deep_sleep_active cleared")
+	}
+	if d.LastAction != "mdc_sleep" {
+		t.Fatalf("LastAction: got %q want mdc_sleep", d.LastAction)
+	}
+}
