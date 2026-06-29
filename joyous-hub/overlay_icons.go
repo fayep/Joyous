@@ -119,11 +119,11 @@ func drawOverlayRainIcon(dst *image.RGBA, x, y, width, fontPx int, col color.Col
 		drawBorderedRainIcon(dst, x, top, width)
 		return
 	}
-	drawRainCloudIcon(dst, x, top, width, col, 2)
+	drawRainCloudIcon(dst, x, top, width, col, rainCloudStrokeWidth)
 }
 
 func drawBorderedRainIcon(dst *image.RGBA, x, y, width int) {
-	drawRainCloudIcon(dst, x+1, y+1, width, overlayBorderedShadow, 2)
-	drawRainCloudIcon(dst, x, y, width, overlayBorderedOutline, 3)
-	drawRainCloudIcon(dst, x, y, width, overlayBorderedFill, 2)
+	drawRainCloudIcon(dst, x+1, y+1, width, overlayBorderedShadow, rainCloudStrokeWidth)
+	drawRainCloudIcon(dst, x, y, width, overlayBorderedOutline, rainCloudStrokeWidthBorder)
+	drawRainCloudIcon(dst, x, y, width, overlayBorderedFill, rainCloudStrokeWidth)
 }

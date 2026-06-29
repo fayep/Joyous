@@ -19,6 +19,9 @@ var rainCloudSVGTemplate []byte
 const (
 	rainCloudViewW = 24
 	rainCloudViewH = 31
+	// SVG art is authored at stroke-width 2; thicker strokes read better on e-ink.
+	rainCloudStrokeWidth       = 3.5
+	rainCloudStrokeWidthBorder = 5.0
 )
 
 func overlayRainIconHeight(width int) int {

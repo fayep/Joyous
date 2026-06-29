@@ -49,7 +49,7 @@ func TestOverlayLineContentWidthWithRainIcon(t *testing.T) {
 }
 
 func TestRenderRainCloudSVG(t *testing.T) {
-	img := renderRainCloudSVG(48, image.White, 2)
+	img := renderRainCloudSVG(48, image.White, rainCloudStrokeWidth)
 	if img == nil {
 		t.Fatal("expected rendered icon")
 	}
