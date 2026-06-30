@@ -20,12 +20,19 @@ Photograph after push; run:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import argparse
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from samsung_palettes import COLOR_NAMES, PALETTE_SAMSUNG_SEND
+from palettes import COLOR_NAMES, PALETTE_SAMSUNG_SEND
 
 WIDTH, HEIGHT = 2560, 1440
 LABEL_W = 220

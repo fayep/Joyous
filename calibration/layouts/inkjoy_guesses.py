@@ -20,13 +20,20 @@ That bunching is expected; use color-primaries-1600x1200 for P2 photography.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import argparse
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from gen_color_guesses import GUESSES, ROW_ORDER
+from layouts.samsung_guesses import GUESSES, ROW_ORDER
 
 WIDTH, HEIGHT = 1600, 1200
 LABEL_W = 140
@@ -131,7 +138,7 @@ def main() -> None:
     print(f"wrote {png_path}")
 
     # Flat snap uses source RGB directly (each swatch → nearest hi byte, no Stucki).
-    from samsung_palettes import PALETTE_INKJOY_SEND
+    from palettes import PALETTE_INKJOY_SEND
 
     bin_path = out_dir / "color-guesses-1600x1200.bin"
     bin_path.write_bytes(flat_snap_bin(img, PALETTE_INKJOY_SEND))
@@ -140,7 +147,7 @@ def main() -> None:
     print("InkJoy push (no hub re-dither):")
     print("  1. Hub album → upload color-guesses-1600x1200.bin")
     print("  2. Send to InkJoy frame from Devices tab")
-    print("  3. Photograph → uv run calibrate_p2_from_guesses_photo.py photo.png --layout inkjoy")
+    print("  3. Photograph → uv run calibration/calibrate_p2_from_photo.py photo.png --layout inkjoy")
 
 
 if __name__ == "__main__":

@@ -18,12 +18,17 @@ Copy the source PNG directly to data/samsung/{frame-id}.png to avoid re-dither o
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+_CAL_DIR = Path(__file__).resolve().parent
+if str(_CAL_DIR) not in sys.path:
+    sys.path.insert(0, str(_CAL_DIR))
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from samsung_palettes import (
+from palettes import (
     COLOR_NAMES,
     PALETTE_SAMSUNG_DISPLAY,
     PALETTE_SAMSUNG_SEND,

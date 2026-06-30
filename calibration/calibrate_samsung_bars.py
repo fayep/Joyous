@@ -14,20 +14,25 @@ Assumes the photo is roughly aligned to palette-bars-2560x1440.png (trimmed fram
 Use --debug-image to write an overlay showing sample patches.
 
 Example:
-    uv run calibrate_from_photo.py ~/photo.png
-    uv run calibrate_from_photo.py photo.png --row "Samsung (hub)" -o calibrated.json
+    uv run calibration/calibrate_samsung_bars.py ~/photo.png
+    uv run calibration/calibrate_samsung_bars.py photo.png --row "Samsung (hub)" -o calibrated.json
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+_CAL_DIR = Path(__file__).resolve().parent
+if str(_CAL_DIR) not in sys.path:
+    sys.path.insert(0, str(_CAL_DIR))
 
 import numpy as np
 from PIL import Image, ImageDraw
 
-from samsung_palettes import (
+from palettes import (
     COLOR_NAMES,
     CROPPED_PHOTO_COL_XS,
     CROPPED_PHOTO_ROW_YS,
