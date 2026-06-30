@@ -51,16 +51,10 @@ P1_PRIMARY: dict[str, tuple[int, int, int]] = {
 }
 
 
-def load_layout_module(layout: str):
-    from layouts import inkjoy_guesses, inkjoy_primaries, samsung_guesses, samsung_primaries
+def load_layout_module(layout: str, width: int | None = None, height: int | None = None):
+    from layouts.chart import resolve_layout
 
-    if layout == "inkjoy":
-        return inkjoy_guesses
-    if layout == "inkjoy-primaries":
-        return inkjoy_primaries
-    if layout == "samsung-primaries":
-        return samsung_primaries
-    return samsung_guesses
+    return resolve_layout(layout, width=width, height=height)
 
 
 def _luminance(img: np.ndarray) -> np.ndarray:
@@ -641,6 +635,7 @@ def sample_point_perspective(
     py = disp_t + ny * (disp_b - disp_t)
     bar_left, bar_right = row_bar_edges(img, py, bounds, frame=frame)
     header_frac = layout_mod.HEADER_H / layout_mod.HEIGHT
+    label_frac = layout_mod.LABEL_W / layout_mod.WIDTH
     bar_nx = (nx - label_frac) / max(1e-6, 1.0 - label_frac)
     bar_nx = float(np.clip(bar_nx, 0.0, 1.0))
     px = bar_left + bar_nx * (bar_right - bar_left)
@@ -722,14 +717,13 @@ def main() -> None:
     ap.add_argument(
         "--layout",
         choices=("2560x1440", "samsung-primaries", "inkjoy", "inkjoy-primaries"),
-        default="2560x1440",
-        help="source grid layout (default: Samsung 2560×1440)",
+        default="inkjoy-primaries",
+        help="chart type / preset size (default: inkjoy-primaries)",
     )
     ap.add_argument(
-        "--frame",
-        choices=("auto", "white", "wood"),
-        default="auto",
-        help="bezel type for display bounds (default: auto)",
+        "--size",
+        default=None,
+        help="override chart WIDTHxHEIGHT (default: preset for --layout)",
     )
     ap.add_argument(
         "--frame",
@@ -741,7 +735,7 @@ def main() -> None:
         "--sample-x",
         type=float,
         default=None,
-        help="horizontal sample point in each swatch bar, 0=left 1=right (default: 0.22 primaries, 0.5 guess grid)",
+        help="horizontal sample point in each swatch bar, 0=left 1=right",
     )
     ap.add_argument(
         "--keystone",
@@ -753,14 +747,9 @@ def main() -> None:
         "--orientation",
         choices=("auto", "landscape", "portrait"),
         default="auto",
-        help="how the chart was sent on the frame (default: auto — portrait when photo is taller than wide)",
+        help="chart orientation on frame (default: auto)",
     )
-    ap.add_argument(
-        "--keystone",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="rectify keystoned wood frame to layout size before sampling (default: on)",
-    )
+    ap.add_argument("--patch", type=float, default=0.012, help="median patch size as fraction of image")
     ap.add_argument(
         "--no-tonal",
         action="store_true",
@@ -771,52 +760,83 @@ def main() -> None:
     ap.add_argument("-o", "--output", type=Path, help="write JSON results")
     args = ap.parse_args()
 
-    layout_key = {
-        "2560x1440": "2560x1440",
-        "samsung-primaries": "samsung-primaries",
-        "inkjoy": "inkjoy",
-        "inkjoy-primaries": "inkjoy-primaries",
-    }[args.layout]
-    layout_mod = load_layout_module(layout_key)
+    from layouts.chart import parse_size
+
+    size_w = size_h = None
+    if args.size:
+        size_w, size_h = parse_size(args.size)
+    layout_mod = load_layout_module(args.layout, width=size_w, height=size_h)
+
     img = np.array(Image.open(args.photo).convert("RGB"))
+    portrait = resolve_orientation(img, args.orientation)
     quad = detect_display_quad(img, frame=args.frame)
     bounds = detect_display_bounds(img, frame=args.frame)
-    sample_img = img
-    sample_img = img
+
+    warp_debug = None
+    warp_bounds = bounds
+    col_boundaries: list[int] = []
+    col_centers: list[float] = []
+    layout_col_xs: list[float] = []
+    out_w, out_h = layout_mod.WIDTH, layout_mod.HEIGHT
+
+    if args.keystone:
+        out_w = layout_mod.HEIGHT if portrait else layout_mod.WIDTH
+        out_h = layout_mod.WIDTH if portrait else layout_mod.HEIGHT
+        warped = warp_quad_to_rect(img, quad, out_w, out_h)
+        sample_img = warped
+        warp_debug = Image.fromarray(warped)
+        if args.layout.endswith("primaries"):
+            warp_bounds = detect_primaries_panel_bounds(warped, frame=args.frame)
+        else:
+            warp_bounds = detect_panel_bounds(warped, frame=args.frame)
+    else:
+        sample_img = img
+
     if args.sample_x is not None:
         sample_x = args.sample_x
-    elif args.layout == "inkjoy-primaries":
-        sample_x = 0.78  # right of bar — avoids glare on left of photo
-    elif args.layout == "samsung-primaries":
-        sample_x = 0.78  # right of bar — avoids glare on left of photo
+    elif args.layout.endswith("primaries"):
+        sample_x = 0.78
     else:
         sample_x = 0.5
 
-    measured = []
+    label_frac = layout_mod.LABEL_W / layout_mod.WIDTH
+    header_frac = layout_mod.HEADER_H / layout_mod.HEIGHT
+
+    measured_raw: list[list[int]] = []
     rows = []
     debug = Image.fromarray(img)
     draw = ImageDraw.Draw(debug) if args.debug else None
     if draw is not None:
         draw.rectangle(bounds, outline=(255, 0, 0), width=2)
 
-    mode = "keystone rows" if args.keystone else "bounds"
+    mode = "keystone" if args.keystone else "bounds"
     print(
-        f"Photo {img.shape[1]}×{img.shape[0]}  {mode} {bounds}  sample_x={sample_x:.2f}"
+        f"Photo {img.shape[1]}×{img.shape[0]}  chart {layout_mod.WIDTH}×{layout_mod.HEIGHT}  "
+        f"{mode}  sample_x={sample_x:.2f}"
     )
     print(f"{'ink':<8} {'P1 send':>10} {'P2 meas':>10} {'dither':>6}  label")
     print("-" * 52)
 
     for family in COLOR_NAMES:
         p1 = P1_PRIMARY[family]
-        nx, ny, label, cx_px, cy_px = swatch_center(layout_mod, family, p1, x_frac=sample_x)
+        nx, ny, label, _, _, _ = swatch_center(layout_mod, family, p1, x_frac=sample_x)
         if args.keystone:
-            px, py = sample_point_perspective(
-                sample_img, bounds, nx, ny, layout_mod, frame=args.frame
+            px, py = sample_point_layout_oriented(
+                nx,
+                ny,
+                sample_img,
+                portrait=portrait,
+                label_frac=label_frac,
+                header_frac=header_frac,
+                content_bounds=warp_bounds,
+                column_centers=col_centers or None,
             )
             med, dither = sample_patch_xy(sample_img, px, py, args.patch)
         else:
             med, dither = sample_patch(sample_img, bounds, nx, ny, args.patch)
-        measured.append([int(med[0]), int(med[1]), int(med[2])])
+            px = bounds[0] + nx * (bounds[2] - bounds[0])
+            py = bounds[1] + ny * (bounds[3] - bounds[1])
+        measured_raw.append([int(med[0]), int(med[1]), int(med[2])])
         send_hex = f"#{p1[0]:02X}{p1[1]:02X}{p1[2]:02X}"
         meas_hex = f"#{int(med[0]):02X}{int(med[1]):02X}{int(med[2]):02X}"
         print(f"{family:<8} {send_hex:>10} {meas_hex:>10} {dither:6.1f}  {label}")
@@ -824,22 +844,24 @@ def main() -> None:
             {
                 "color": family,
                 "p1_rgb": list(p1),
-                "p2_rgb": [int(med[0]), int(med[1]), int(med[2])],
+                "p2_rgb_raw": [int(med[0]), int(med[1]), int(med[2])],
                 "dither": round(dither, 2),
                 "swatch_label": label,
             }
         )
         if draw is not None:
-            if args.keystone:
-                px, py = sample_point_perspective(
-                    sample_img, bounds, nx, ny, layout_mod, frame=args.frame
-                )
-                px, py = int(px), int(py)
-            else:
-                px = int(bounds[0] + nx * (bounds[2] - bounds[0]))
-                py = int(bounds[1] + ny * (bounds[3] - bounds[1]))
-            draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=(0, 255, 0))
-            draw.text((px + 6, py - 8), family[:3], fill=(0, 255, 0))
+            draw.ellipse([int(px) - 4, int(py) - 4, int(px) + 4, int(py) + 4], fill=(0, 255, 0))
+            draw.text((int(px) + 6, int(py) - 8), family[:3], fill=(0, 255, 0))
+
+    if args.no_tonal:
+        measured = measured_raw
+        tonal_note = "none"
+    else:
+        tonal = normalize_p2_tonal([np.array(m, dtype=np.float64) for m in measured_raw])
+        measured = [[int(rgb[0]), int(rgb[1]), int(rgb[2])] for rgb in tonal]
+        tonal_note = "grey-axis from black/white"
+        for row, rgb in zip(rows, measured):
+            row["p2_rgb"] = rgb
 
     p2_arr = np.array(measured, dtype=np.int32)
     var_name = (
@@ -855,21 +877,16 @@ def main() -> None:
         debug.save(args.debug)
         print(f"\nWrote {args.debug}")
 
-    if args.debug_warp and args.keystone and warp_debug is not None:
+    if args.debug_warp and warp_debug is not None:
         args.debug_warp.parent.mkdir(parents=True, exist_ok=True)
         warp_debug.save(args.debug_warp)
         print(f"Wrote {args.debug_warp}")
-
-    if args.debug and args.keystone and warp_debug is not None and not args.debug_warp:
-        bounds_path = args.debug.with_name(args.debug.stem + "-warp" + args.debug.suffix)
-        bounds_path.parent.mkdir(parents=True, exist_ok=True)
-        warp_debug.save(bounds_path)
-        print(f"Wrote {bounds_path}")
 
     if args.output:
         payload = {
             "photo": str(args.photo),
             "layout": args.layout,
+            "chart_size": [layout_mod.WIDTH, layout_mod.HEIGHT],
             "orientation": "portrait" if portrait else "landscape",
             "keystone": args.keystone,
             "tonal_normalize": not args.no_tonal,
@@ -877,9 +894,6 @@ def main() -> None:
             "quad": [[float(x), float(y)] for x, y in quad],
             "bounds": list(bounds),
             "warp_bounds": list(warp_bounds),
-            "column_boundaries": col_boundaries,
-            "column_centers_detected": [round(c, 1) for c in col_centers],
-            "column_centers_layout": [round(x, 1) for x in layout_col_xs],
             "warp_size": [out_w, out_h],
             "sample_x": sample_x,
             "p1_primary": {k: list(v) for k, v in P1_PRIMARY.items()},

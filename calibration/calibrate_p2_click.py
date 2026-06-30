@@ -132,11 +132,17 @@ def _load_image(
     photo: Path,
     *,
     layout: str,
+    size: str | None,
     frame: str,
     orientation: str,
     keystone: bool,
 ) -> tuple[np.ndarray, str]:
-    layout_mod = load_layout_module(layout)
+    from layouts.chart import parse_size
+
+    size_w = size_h = None
+    if size:
+        size_w, size_h = parse_size(size)
+    layout_mod = load_layout_module(layout, width=size_w, height=size_h)
     img = np.array(Image.open(photo).convert("RGB"))
     portrait = resolve_orientation(img, orientation)
     if not keystone:
@@ -452,6 +458,7 @@ def main() -> None:
         choices=("inkjoy-primaries", "samsung-primaries", "inkjoy", "2560x1440"),
         default="inkjoy-primaries",
     )
+    ap.add_argument("--size", default=None, help="override chart WIDTHxHEIGHT")
     ap.add_argument("--frame", choices=("auto", "white", "wood"), default="wood")
     ap.add_argument("--orientation", choices=("auto", "landscape", "portrait"), default="auto")
     ap.add_argument("--keystone", action=argparse.BooleanOptionalAction, default=True)
@@ -463,6 +470,7 @@ def main() -> None:
     img, mode = _load_image(
         args.photo,
         layout=args.layout,
+        size=args.size,
         frame=args.frame,
         orientation=args.orientation,
         keystone=args.keystone,

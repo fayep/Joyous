@@ -5,6 +5,25 @@ Outputs `PaletteInkJoyDisplay` / `PaletteSamsungDisplay` for `joyous-hub/dither.
 
 Hub embeds send charts from `joyous-hub/calibration/*.png` (`calibration.go`).
 
+## Generate charts
+
+Charts are parameterized by size and palette — no per-frame layout modules.
+
+```bash
+# Primaries (one flat swatch per ink)
+uv run calibration/gen_chart.py primaries --size 1600x1200 --palette inkjoy
+uv run calibration/gen_chart.py primaries --size 2560x1440 --palette samsung
+
+# Color-guess grid (many candidate RGBs per ink)
+uv run calibration/gen_chart.py guesses --size 1600x1200
+uv run calibration/gen_chart.py guesses --size 2560x1440 --palette samsung
+
+# Samsung palette comparison bands (InkJoy / Samsung / Spectra 6)
+uv run calibration/gen_palette_bars.py --size 2560x1440
+```
+
+Use `--size WIDTHxHEIGHT` on `calibrate_p2_from_photo.py` and `calibrate_p2_click.py` when the chart size differs from the layout preset.
+
 ## Click calibration (recommended when auto geometry struggles)
 
 Interactive tool: move the cursor to see ink match under the crosshair; click to sample each swatch.
@@ -43,8 +62,11 @@ uv run calibration/calibrate_p2_from_photo.py photo.jpg \
 |------|---------|
 | `calibrate_p2_click.py` | Interactive click sampler |
 | `calibrate_p2_from_photo.py` | Main script |
+| `gen_chart.py` | Primaries / guess charts at any size |
+| `gen_palette_bars.py` | Multi-palette comparison bands |
 | `palettes.py` | P1/P2 constants (canonical) |
-| `layouts/` | Chart generators |
+| `layouts/chart.py` | Parameterized chart layout + render |
+| `layouts/guess_data.py` | Shared color-guess swatch data |
 | `dump_portrait_scan.py` | Column scan debug dump |
 | `test_calibrate_p2.py` | Unit tests |
 
