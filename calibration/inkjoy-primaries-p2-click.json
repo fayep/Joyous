@@ -1,0 +1,20 @@
+{
+  "method": "click",
+  "points_per_ink": 6,
+  "palette_display": [
+    [42, 33, 38],
+    [206, 218, 213],
+    [213, 206, 84],
+    [115, 36, 26],
+    [47, 98, 176],
+    [97, 134, 113]
+  ],
+  "swatches": [
+    {"color": "black", "p2_rgb": [42, 33, 38]},
+    {"color": "white", "p2_rgb": [206, 218, 213]},
+    {"color": "yellow", "p2_rgb": [213, 206, 84]},
+    {"color": "red", "p2_rgb": [115, 36, 26]},
+    {"color": "blue", "p2_rgb": [47, 98, 176]},
+    {"color": "green", "p2_rgb": [97, 134, 113]}
+  ]
+}

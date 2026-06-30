@@ -3,14 +3,14 @@
 # requires-python = ">=3.11"
 # dependencies = ["Pillow", "numpy"]
 # ///
-"""Generate 2560×1440 palette comparison PNG for Samsung EM32DX (16:9).
+"""Generate palette comparison PNG for Samsung EM32DX (default 2560×1440).
 
 Three horizontal bands — InkJoy, Samsung spec, Reflection Spectra 6 — each with
 six labeled swatches (black, white, yellow, red, blue, green).
 
 Outputs:
-  palette-bars-2560x1440.png       — exact source palette RGB (bypass hub dither)
-  palette-bars-hub-samsung.png    — hub two-palette Stucki (P2 dither → P1 send RGB)
+  palette-bars-{WxH}.png           — exact source palette RGB (bypass hub dither)
+  palette-bars-hub-samsung-{WxH}.png — hub two-palette Stucki (P2 dither → P1 send RGB)
 
 Copy the source PNG directly to data/samsung/{frame-id}.png to avoid re-dither on upload.
 """
@@ -18,21 +18,25 @@ Copy the source PNG directly to data/samsung/{frame-id}.png to avoid re-dither o
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+_CAL_DIR = Path(__file__).resolve().parent
+if str(_CAL_DIR) not in sys.path:
+    sys.path.insert(0, str(_CAL_DIR))
 
-from samsung_palettes import (
+import numpy as np
+from PIL import Image, ImageDraw
+
+from palettes import (
     COLOR_NAMES,
     PALETTE_SAMSUNG_DISPLAY,
     PALETTE_SAMSUNG_SEND,
     PALETTES,
 )
+from layouts.chart import parse_size, scaled_margins, scaled_fonts
 
-WIDTH, HEIGHT = 2560, 1440
-LABEL_W = 220
-HEADER_H = 56
+DEFAULT_SIZE = "2560x1440"
 
 
 def nearest_color(rgb: np.ndarray, palette: np.ndarray) -> int:
@@ -76,63 +80,57 @@ def stucki_dither(img: np.ndarray, palette: np.ndarray) -> np.ndarray:
     return out
 
 
-def render_bars(palettes: dict[str, np.ndarray]) -> Image.Image:
-    img = Image.new("RGB", (WIDTH, HEIGHT), (32, 32, 32))
+def render_bars(palettes: dict[str, np.ndarray], *, width: int, height: int) -> Image.Image:
+    label_w, header_h = scaled_margins(width, height)
+    # Palette bars use a wider label column than primaries charts.
+    label_w = max(label_w, round(width * 220 / 2560))
+    header_h = max(header_h, round(height * 56 / 1440))
+    title_font, label_font, tiny_font = scaled_fonts(width)
+    small_font = tiny_font
+
+    img = Image.new("RGB", (width, height), (32, 32, 32))
     draw = ImageDraw.Draw(img)
-    try:
-        title_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 28)
-        label_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 20)
-        small_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 16)
-    except OSError:
-        title_font = ImageFont.load_default()
-        label_font = title_font
-        small_font = title_font
+    pad = max(8, width // 320)
 
     rows = list(palettes.items())
-    band_h = HEIGHT // len(rows)
-    bar_area_w = WIDTH - LABEL_W
+    band_h = height // len(rows)
+    bar_area_w = width - label_w
 
     for row_i, (name, palette) in enumerate(rows):
         y0 = row_i * band_h
         y1 = y0 + band_h
-        draw.rectangle([0, y0, WIDTH, y0 + HEADER_H], fill=(24, 24, 24))
-        draw.text((12, y0 + 12), name, fill=(240, 240, 240), font=title_font)
+        draw.rectangle([0, y0, width, y0 + header_h], fill=(24, 24, 24))
+        draw.text((pad, y0 + pad), name, fill=(240, 240, 240), font=title_font)
         draw.text(
-            (12, y0 + HEADER_H + 8),
+            (pad, y0 + header_h + pad // 2),
             "← photograph this row on Samsung to compare to source swatches",
             fill=(160, 160, 160),
             font=small_font,
         )
 
-        swatch_top = y0 + HEADER_H + 36
-        swatch_h = y1 - swatch_top - 8
+        swatch_top = y0 + header_h + round(height * 36 / 1440)
+        swatch_h = y1 - swatch_top - pad
         bar_w = bar_area_w // 6
 
         for i, cname in enumerate(COLOR_NAMES):
             r, g, b = palette[i]
-            x0 = LABEL_W + i * bar_w
+            x0 = label_w + i * bar_w
             x1 = x0 + bar_w - 2
-            draw.rectangle([x0, swatch_top, x1, y1 - 4], fill=(int(r), int(g), int(b)))
+            draw.rectangle([x0, swatch_top, x1, y1 - pad // 2], fill=(int(r), int(g), int(b)))
             hex_rgb = f"#{int(r):02X}{int(g):02X}{int(b):02X}"
             lum = 0.299 * r + 0.587 * g + 0.114 * b
             fg = (0, 0, 0) if lum > 140 else (255, 255, 255)
-            draw.text((x0 + 8, swatch_top + 8), cname, fill=fg, font=label_font)
-            draw.text((x0 + 8, swatch_top + 32), hex_rgb, fill=fg, font=small_font)
+            draw.text((x0 + pad, swatch_top + pad), cname, fill=fg, font=label_font)
+            draw.text((x0 + pad, swatch_top + pad + round(height * 24 / 1440)), hex_rgb, fill=fg, font=small_font)
 
-        # Legend column: mini chips + RGB tuple
-        draw.rectangle([0, swatch_top, LABEL_W - 8, y1 - 4], fill=(48, 48, 48))
-        draw.text((8, swatch_top + 4), "source", fill=(200, 200, 200), font=small_font)
+        draw.rectangle([0, swatch_top, label_w - pad, y1 - pad // 2], fill=(48, 48, 48))
+        draw.text((pad, swatch_top + pad // 2), "source", fill=(200, 200, 200), font=small_font)
         chip_h = max(18, (swatch_h - 30) // 6)
         for i, cname in enumerate(COLOR_NAMES):
             r, g, b = palette[i]
             cy = swatch_top + 24 + i * chip_h
-            draw.rectangle([8, cy, 28, cy + chip_h - 2], fill=(int(r), int(g), int(b)))
-            draw.text(
-                (34, cy),
-                f"{i+1} {cname}",
-                fill=(220, 220, 220),
-                font=small_font,
-            )
+            draw.rectangle([pad, cy, pad + 20, cy + chip_h - 2], fill=(int(r), int(g), int(b)))
+            draw.text((pad + 26, cy), f"{i+1} {cname}", fill=(220, 220, 220), font=small_font)
 
     return img
 
@@ -151,6 +149,7 @@ def hub_samsung_dither(source: Image.Image) -> Image.Image:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--size", default=DEFAULT_SIZE, help=f"WIDTHxHEIGHT (default {DEFAULT_SIZE})")
     ap.add_argument(
         "-o",
         "--out-dir",
@@ -159,21 +158,23 @@ def main() -> None:
         help="output directory",
     )
     args = ap.parse_args()
+    width, height = parse_size(args.size)
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+    tag = f"{width}x{height}"
 
-    source = render_bars(PALETTES)
-    source_path = out_dir / "palette-bars-2560x1440.png"
+    source = render_bars(PALETTES, width=width, height=height)
+    source_path = out_dir / f"palette-bars-{tag}.png"
     source.save(source_path, optimize=True)
     print(f"wrote {source_path}")
 
     hub = hub_samsung_dither(source)
-    hub_path = out_dir / "palette-bars-hub-samsung.png"
+    hub_path = out_dir / f"palette-bars-hub-samsung-{tag}.png"
     hub.save(hub_path, optimize=True)
     print(f"wrote {hub_path}")
     print()
     print("To push exact swatches (no hub re-dither):")
-    print("  cp palette-bars-2560x1440.png ~/…/data/samsung/<frame-id>.png")
+    print(f"  cp palette-bars-{tag}.png ~/…/data/samsung/<frame-id>.png")
     print("  then POST /api/samsung/<frame-id>/push (or Samsung tab → Push to display)")
     print()
     print("Uploading via Samsung tab re-dithers to PaletteSamsung — use hub-samsung file to preview that.")

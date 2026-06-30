@@ -10,6 +10,8 @@ import (
 	_ "image/png"
 	"math/big"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -56,9 +58,63 @@ func loadEmbeddedWipes() {
 	})
 }
 
-// calibrationWipeGrid returns the square box wipe (wipe_box.png) for calibration charts.
+// calibrationWipeGrid returns the vertical left-to-right sweep for primaries charts.
 func calibrationWipeGrid() [][]byte {
-	return wipeGridByName("wipe_box.png")
+	if g := wipeGridByName("wipe_vertical_sweep.png"); g != nil {
+		return g
+	}
+	return MakeVerticalSweepWipe(frameW, frameH)
+}
+
+func calibrationBlendWipeGrid() [][]byte {
+	if g := wipeGridByName("wipe_blend.png"); g != nil {
+		return g
+	}
+	return calibrationWipeGrid()
+}
+
+// calibrationWhiteWipeGrid primes with the spatial blend wipe (no row/column timing ladder).
+func calibrationWhiteWipeGrid() [][]byte {
+	return calibrationBlendWipeGrid()
+}
+
+// calibrationGreenWipeGrid uses the same blend wipe for a uniform green field.
+func calibrationGreenWipeGrid() [][]byte {
+	return calibrationBlendWipeGrid()
+}
+
+// calibrationGreenPetalsWipeGrid uses the petals spatial wipe on a uniform green field.
+func calibrationGreenPetalsWipeGrid() [][]byte {
+	if g := wipeGridByName("wipe_petals.png"); g != nil {
+		return g
+	}
+	return calibrationWipeGrid()
+}
+
+// calibrationGreenUniformWipeGrid holds every pixel at lo=248 (terminal wipe step).
+func calibrationGreenUniformWipeGrid() [][]byte {
+	return MakeUniformWipe(frameW, frameH, 248)
+}
+
+// flatCalibrationWipeGrid picks a fixed wipe for flat calibration PNGs by filename.
+func flatCalibrationWipeGrid(name string) [][]byte {
+	lower := strings.ToLower(name)
+	if strings.Contains(lower, "white") || strings.Contains(lower, "warm") {
+		return calibrationWhiteWipeGrid()
+	}
+	if strings.Contains(lower, "petals") {
+		return calibrationGreenPetalsWipeGrid()
+	}
+	if strings.Contains(lower, "uniform") {
+		return calibrationGreenUniformWipeGrid()
+	}
+	if strings.Contains(lower, "green") {
+		return calibrationGreenWipeGrid()
+	}
+	if isFlatCalibrationName(name) {
+		return calibrationWipeGrid()
+	}
+	return nil
 }
 
 func wipeGridByName(name string) [][]byte {
@@ -68,10 +124,137 @@ func wipeGridByName(name string) [][]byte {
 			return embeddedWipes[i]
 		}
 	}
-	if len(embeddedWipes) > 0 {
-		return embeddedWipes[0]
+	return nil
+}
+
+const inkJoyGreenHi = 0x07
+
+const (
+	WipeUniform248   = "uniform248" // legacy alias for uniform:248
+	WipeUniformPrefix = "uniform:"
+	WipeRandom       = "random"
+	WipeLuminance    = "luminance" // per-image topo lo grid from pre-DR L* (baked at encode)
+)
+
+// DefaultInkJoyWipe is the lo-byte pattern for panel refresh (whole-frame block fill).
+const DefaultInkJoyWipe = WipeUniform248
+
+// WipeChoice is one selectable InkJoy refresh transition.
+type WipeChoice struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// WipeUniformLevel documents one of the 31 consistent lo-byte levels.
+type WipeUniformLevel struct {
+	ID   string `json:"id"`
+	Step int    `json:"step"`
+	Lo   int    `json:"lo"`
+}
+
+func normalizeInkJoyWipe(selection string) string {
+	selection = strings.TrimSpace(selection)
+	if selection == "" {
+		return WipeUniform248
 	}
-	return MakeClockWipe(frameW, frameH)
+	if selection == WipeUniform248 {
+		return formatUniformWipeID(248)
+	}
+	if lo, ok := parseUniformWipeLo(selection); ok {
+		return formatUniformWipeID(lo)
+	}
+	return selection
+}
+
+func formatUniformWipeID(lo byte) string {
+	return fmt.Sprintf("%s%d", WipeUniformPrefix, lo)
+}
+
+func parseUniformWipeLo(selection string) (byte, bool) {
+	if selection == WipeUniform248 {
+		return 248, true
+	}
+	if !strings.HasPrefix(selection, WipeUniformPrefix) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(selection, WipeUniformPrefix))
+	if err != nil || n < 0 || n > 248 {
+		return 0, false
+	}
+	return normalizeWipeLoByte(byte(n)), true
+}
+
+func normalizeWipeLoByte(lo byte) byte {
+	if lo >= 248 {
+		return 248
+	}
+	return byte((int(lo) / 8) * 8)
+}
+
+func inkJoyWipeUniformLevels() []WipeUniformLevel {
+	levels := make([]WipeUniformLevel, wipeStepCount)
+	for step := range wipeStepCount {
+		lo := wipeStepIndexToByte(step)
+		levels[step] = WipeUniformLevel{
+			ID:   formatUniformWipeID(lo),
+			Step: step,
+			Lo:   int(lo),
+		}
+	}
+	return levels
+}
+
+func inkJoyWipeChoices() []WipeChoice {
+	loadEmbeddedWipes()
+	out := []WipeChoice{
+		{ID: WipeUniformPrefix + "picker", Label: "Uniform lo (consistent — use slider below)"},
+		{ID: WipeLuminance, Label: "Luminance topo (pre-DR)"},
+		{ID: WipeRandom, Label: "Random pattern"},
+	}
+	for _, name := range embeddedWipeNames {
+		out = append(out, WipeChoice{ID: name, Label: wipeDisplayName(name)})
+	}
+	return out
+}
+
+func wipeDisplayName(filename string) string {
+	base := strings.TrimSuffix(filename, ".png")
+	base = strings.TrimPrefix(base, "wipe_")
+	return strings.ReplaceAll(base, "_", " ")
+}
+
+// isImageDerivedInkJoyWipe reports wipes whose lo grid is baked per image at encode time.
+func isImageDerivedInkJoyWipe(selection string) bool {
+	return normalizeInkJoyWipe(selection) == WipeLuminance
+}
+
+// resolveWipeGrid returns the lo grid for a configured InkJoy refresh transition.
+func resolveWipeGrid(selection string) [][]byte {
+	selection = normalizeInkJoyWipe(selection)
+	if selection == WipeRandom {
+		return randomWipeGrid()
+	}
+	if lo, ok := parseUniformWipeLo(selection); ok {
+		return MakeUniformWipe(frameW, frameH, lo)
+	}
+	if g := wipeGridByName(selection); g != nil {
+		return g
+	}
+	return MakeUniformWipe(frameW, frameH, 248)
+}
+
+// resolveWipeGridForEncode returns the lo grid to bake into a converted .bin.
+// Luminance wipe uses scene L* from img before DR compression.
+func resolveWipeGridForEncode(img image.Image, selection string) [][]byte {
+	selection = normalizeInkJoyWipe(selection)
+	if selection == WipeLuminance {
+		return MakeLuminanceLoWipe(img)
+	}
+	return resolveWipeGrid(selection)
+}
+
+func applyInkJoyWipe(bin []byte, selection string) {
+	applyLoToBin(bin, resolveWipeGrid(selection))
 }
 
 // randomWipeGrid returns one of the bundled wipe patterns.
@@ -137,6 +320,16 @@ func applyLoToBin(bin []byte, lo [][]byte) {
 	}
 }
 
-func applyRandomWipe(bin []byte) {
-	applyLoToBin(bin, randomWipeGrid())
+func validateInkJoyWipe(selection string) error {
+	selection = normalizeInkJoyWipe(selection)
+	if selection == WipeRandom || selection == WipeLuminance {
+		return nil
+	}
+	if _, ok := parseUniformWipeLo(selection); ok {
+		return nil
+	}
+	if wipeGridByName(selection) != nil {
+		return nil
+	}
+	return fmt.Errorf("unknown inkjoy_wipe %q", selection)
 }

@@ -165,10 +165,10 @@ func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, erro
 		cacheFile = s.cachePath(id) + ".portrait"
 	}
 	meta, _ := s.readMeta(id)
-	// Calibration charts always re-encode so the fixed box wipe is applied.
-	if !meta.FlatRGB {
+	// Calibration charts always re-encode so the fixed vertical-sweep wipe is applied.
+	if !meta.FlatRGB && !isProgrammaticInkJoyCalibration(meta.Name) {
 		if bin, err := os.ReadFile(cacheFile); err == nil {
-			s.applyRandomWipeIfConverted(id, bin)
+			s.applyWipeIfConverted(id, bin)
 			return bin, nil
 		}
 	}
@@ -184,16 +184,26 @@ func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, erro
 	os.WriteFile(cacheFile, bin, 0644)
 	s.evictCache()
 
-	s.applyRandomWipeIfConverted(id, bin)
+	s.applyWipeIfConverted(id, bin)
 	return bin, nil
 }
 
-func (s *ImageStore) applyRandomWipeIfConverted(id string, bin []byte) {
+func (s *ImageStore) inkjoyWipeSelection() string {
+	if s.colors != nil {
+		return normalizeInkJoyWipe(s.colors.Config().InkJoyWipe)
+	}
+	return DefaultInkJoyWipe
+}
+
+func (s *ImageStore) applyWipeIfConverted(id string, bin []byte) {
 	meta, err := s.readMeta(id)
-	if err != nil || isStoredBin(meta.Name) || meta.FlatRGB {
+	if err != nil || isStoredBin(meta.Name) || meta.FlatRGB || isProgrammaticInkJoyCalibration(meta.Name) {
 		return
 	}
-	applyRandomWipe(bin)
+	if isImageDerivedInkJoyWipe(s.inkjoyWipeSelection()) {
+		return
+	}
+	applyInkJoyWipe(bin, s.inkjoyWipeSelection())
 }
 
 func isStoredBin(name string) bool {
@@ -973,11 +983,24 @@ func (s *ImageStore) convertToBinOrientation(id string, portrait bool) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
+	if isBlackUniform248Calibration(meta.Name) {
+		if portrait {
+			return nil, fmt.Errorf("black uniform calibration is landscape only")
+		}
+		return BuildBlackUniform248Bin(frameW, frameH), nil
+	}
+	if isLoLadderPrimariesCalibration(meta.Name) {
+		if portrait {
+			return nil, fmt.Errorf("lo-ladder calibration is landscape only")
+		}
+		return BuildLoLadderPrimariesBin(frameW, frameH), nil
+	}
 	rgba, flatRGB, err := s.prepareInkJoyFrameRGBA(id, portrait)
 	if err != nil {
 		return nil, err
 	}
-	return encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipelineForMeta(meta))
+	wipe := flatCalibrationWipeGrid(meta.Name)
+	return encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipelineForMeta(meta), wipe, s.inkjoyWipeSelection())
 }
 
 func (s *ImageStore) overlayCacheFile(id, token string, portrait bool) string {
@@ -994,7 +1017,6 @@ type overlayFrameMutator func(img image.Image, flatRGB bool) (image.Image, error
 func (s *ImageStore) ServeBinOrientationOverlay(id string, portrait bool, token string, mutate overlayFrameMutator) ([]byte, error) {
 	cacheFile := s.overlayCacheFile(id, token, portrait)
 	if bin, err := os.ReadFile(cacheFile); err == nil {
-		s.applyRandomWipeIfConverted(id, bin)
 		return bin, nil
 	}
 	meta, err := s.readMeta(id)
@@ -1005,20 +1027,14 @@ func (s *ImageStore) ServeBinOrientationOverlay(id string, portrait bool, token 
 	if err != nil {
 		return nil, err
 	}
-	if mutate != nil {
-		rgba, err = mutate(rgba, flatRGB)
-		if err != nil {
-			return nil, err
-		}
-	}
-	bin, err := encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipelineForMeta(meta))
+	wipe := flatCalibrationWipeGrid(meta.Name)
+	bin, err := encodeInkJoyBinWithOverlay(rgba, flatRGB, s.colorPipelineForMeta(meta), wipe, s.inkjoyWipeSelection(), mutate)
 	if err != nil {
 		return nil, err
 	}
 	os.MkdirAll(s.cacheDir(), 0755)
 	os.WriteFile(cacheFile, bin, 0644)
 	s.evictCache()
-	s.applyRandomWipeIfConverted(id, bin)
 	return bin, nil
 }
 
@@ -1065,14 +1081,17 @@ func prepareInkJoyFrameFromRaw(raw []byte, crop CropRect, portrait bool) (image.
 	return img, false, nil
 }
 
-func encodeInkJoyBinFromRGBA(img image.Image, flatRGB bool, pipe ColorPipeline) ([]byte, error) {
+func encodeInkJoyBinFromRGBA(img image.Image, flatRGB bool, pipe ColorPipeline, flatWipe [][]byte, wipeSelection string) ([]byte, error) {
 	var hi, lo [][]byte
 	if flatRGB {
-		hi, lo = snapToPalette(img)
+		if flatWipe == nil {
+			flatWipe = calibrationWipeGrid()
+		}
+		hi, lo = snapToPaletteWithWipe(img, flatWipe)
 	} else {
 		indices := StuckiTwoPalette(img, pipe.InkJoyDisplay, pipe, flatRGB, stuckiOptionsInkJoy(pipe))
 		hi = indicesToHi(indices)
-		lo = randomWipeGrid()
+		lo = resolveWipeGridForEncode(img, wipeSelection)
 	}
 	return ToBin(hi, lo), nil
 }
@@ -1101,6 +1120,9 @@ func (s *ImageStore) framePreviewJPEG(id string, portrait bool, overlayToken str
 }
 
 func isFlatCalibrationName(name string) bool {
+	if isProgrammaticInkJoyCalibration(name) {
+		return false
+	}
 	lower := strings.ToLower(name)
 	return strings.Contains(lower, "color-guesses") || strings.Contains(lower, "color-primaries")
 }
@@ -1117,7 +1139,11 @@ func convertImageWithCrop(raw []byte, crop CropRect, portrait bool, flatRGB bool
 	if err != nil {
 		return nil, err
 	}
-	return encodeInkJoyBinFromRGBA(img, flatRGB, defaultColorPipeline())
+	var wipe [][]byte
+	if flatRGB {
+		wipe = calibrationWipeGrid()
+	}
+	return encodeInkJoyBinFromRGBA(img, flatRGB, defaultColorPipeline(), wipe, DefaultInkJoyWipe)
 }
 
 // applyCrop extracts the crop rect (normalized 0–1) from img.
@@ -1235,11 +1261,14 @@ func (s *ImageStore) fillDimensions(meta *ImageMeta) {
 func resizeToFrame(img image.Image) image.Image { return resizeTo(img, frameW, frameH) }
 
 func snapToPalette(img image.Image) (hi, lo [][]byte) {
+	return snapToPaletteWithWipe(img, calibrationWipeGrid())
+}
+
+func snapToPaletteWithWipe(img image.Image, wipe [][]byte) (hi, lo [][]byte) {
 	b := img.Bounds()
 	h, w := b.Dy(), b.Dx()
 	hi = make([][]byte, h)
 	lo = make([][]byte, h)
-	wipe := calibrationWipeGrid()
 	for y := range h {
 		hi[y] = make([]byte, w)
 		for x := range w {

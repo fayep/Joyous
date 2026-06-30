@@ -201,6 +201,32 @@ func (t *SendDeliveryTracker) CompleteSamsung(frameID, etag string) {
 	t.mu.Unlock()
 }
 
+func (t *SendDeliveryTracker) Wait(sendID string, timeout time.Duration) sendStatus {
+	t.mu.Lock()
+	d, ok := t.byID[sendID]
+	if !ok {
+		t.mu.Unlock()
+		return ""
+	}
+	done := d.done
+	t.mu.Unlock()
+	if timeout <= 0 {
+		timeout = inkjoySendAckTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if d2, ok := t.byID[sendID]; ok {
+		return d2.Status
+	}
+	return sendStatusFailed
+}
+
 func (t *SendDeliveryTracker) remove(sendID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

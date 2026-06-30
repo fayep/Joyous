@@ -219,7 +219,7 @@ func TestColorGuessesPNGUsesFlatSnap(t *testing.T) {
 		t.Fatal("flat calibration wipe should be stable across serves")
 	}
 	if wipeFingerprint(lo1) != wipeFingerprint(calibrationWipeGrid()) {
-		t.Fatal("flat calibration should use box wipe")
+		t.Fatal("flat calibration should use vertical sweep wipe")
 	}
 }
 

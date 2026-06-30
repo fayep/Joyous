@@ -2,7 +2,6 @@ package main
 
 import (
 	"image"
-	"image/color"
 	"math"
 )
 
@@ -19,31 +18,9 @@ func ApplyInkAffinity(img image.Image, displayPalette [6][3]float64, strength fl
 		return img
 	}
 	palLabs := displayPaletteLAB(displayPalette)
-	b := img.Bounds()
-	out := image.NewRGBA(b)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r8, g8, b8, a8 := img.At(x, y).RGBA()
-			rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
-			lab := srgbToLAB(rgb)
-			inkLab := inkAffinityTargetLAB(lab, palLabs)
-
-			t := inkAffinityWeight(lab, strength, portraitEnhance)
-			newLab := lab
-			newLab[1] = lab[1] + t*(inkLab[1]-lab[1])
-			newLab[2] = lab[2] + t*(inkLab[2]-lab[2])
-			newLab = capInkAffinityShift(lab, newLab, inkAffinityMaxDeltaE*strength)
-
-			mapped := labToSRGB(newLab)
-			out.SetRGBA(x, y, color.RGBA{
-				R: floatTo8(mapped[0]),
-				G: floatTo8(mapped[1]),
-				B: floatTo8(mapped[2]),
-				A: uint8(a8 >> 8),
-			})
-		}
-	}
-	return out
+	return applyInkAffinityToward(img, func(lab [3]float64) [3]float64 {
+		return inkAffinityTargetLAB(lab, palLabs)
+	}, strength, portraitEnhance)
 }
 
 func displayPaletteLAB(pal [6][3]float64) [6][3]float64 {

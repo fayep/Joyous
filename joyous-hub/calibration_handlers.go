@@ -2,9 +2,32 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 )
+
+const (
+	// play_ack 113 can arrive before the panel finishes the wipe; hold before the next play.
+	inkjoyPrePlayTimeout     = 5 * time.Minute
+	inkjoyPrePlaySettleDelay = 90 * time.Second
+)
+
+// waitInkJoyPlayComplete waits for play_ack 113, then an extra settle period so the
+// physical transition can finish before another play is queued.
+func waitInkJoyPlayComplete(h *Hub, sendID string, playTimeout, settleDelay time.Duration) bool {
+	if h.sendDelivery != nil {
+		if h.sendDelivery.Wait(sendID, playTimeout) != sendStatusDelivered {
+			return false
+		}
+	}
+	if settleDelay <= 0 {
+		return true
+	}
+	time.Sleep(settleDelay)
+	return true
+}
 
 func (h *Hub) handleCalibrationPNG(w http.ResponseWriter, r *http.Request, kind string) {
 	if !calibrationKindValid(kind) {
@@ -33,18 +56,87 @@ func (h *Hub) handleInkJoyCalibrationSend(w http.ResponseWriter, r *http.Request
 		http.Error(w, "device_id required", http.StatusBadRequest)
 		return
 	}
-	imageID, err := h.images.ensureInkJoyCalibrationID()
+	calID, err := h.images.ensureInkJoyCalibrationID()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	sendID, err := h.SendImageToDevice(body.DeviceID, imageID, "")
+
+	log.Printf("inkjoy calibration: sending primaries chart (green swatch uses lo=248)")
+
+	sendID, err := h.SendImageToDevice(body.DeviceID, calID, "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true, "send_id": sendID, "image_id": imageID})
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":       true,
+		"send_id":  sendID,
+		"image_id": calID,
+	})
+}
+
+func (h *Hub) handleInkJoyBlack248CalibrationSend(w http.ResponseWriter, r *http.Request) {
+	if h.images == nil {
+		http.Error(w, "images not configured", http.StatusInternalServerError)
+		return
+	}
+	var body struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceID == "" {
+		http.Error(w, "device_id required", http.StatusBadRequest)
+		return
+	}
+	primeID, err := h.images.ensureInkJoyBlackUniform248ID()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("inkjoy calibration: black uniform lo=248 prime")
+	sendID, err := h.SendImageToDevice(body.DeviceID, primeID, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":       true,
+		"send_id":  sendID,
+		"image_id": primeID,
+	})
+}
+
+func (h *Hub) handleInkJoyLoLadderCalibrationSend(w http.ResponseWriter, r *http.Request) {
+	if h.images == nil {
+		http.Error(w, "images not configured", http.StatusInternalServerError)
+		return
+	}
+	var body struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceID == "" {
+		http.Error(w, "device_id required", http.StatusBadRequest)
+		return
+	}
+	calID, err := h.images.ensureInkJoyLoLadderPrimariesID()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("inkjoy calibration: lo-ladder primaries × lo grid (play 2/2)")
+	sendID, err := h.SendImageToDevice(body.DeviceID, calID, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":       true,
+		"send_id":  sendID,
+		"image_id": calID,
+	})
 }
 
 func (h *Hub) handleSamsungCalibration(w http.ResponseWriter, r *http.Request, frameID string) {

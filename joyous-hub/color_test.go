@@ -16,6 +16,9 @@ func TestColorConfigSaveLoad(t *testing.T) {
 	if !cfg.LABInkAffinityEnabled {
 		t.Fatal("expected ink affinity on by default")
 	}
+	if cfg.InkJoyWipe != WipeUniform248 {
+		t.Fatalf("default wipe = %q, want %q", cfg.InkJoyWipe, WipeUniform248)
+	}
 	cfg.LABChromaEnabled = true
 	cfg.LABChromaStrength = 0.5
 	cfg.LABHighlightEnabled = false
@@ -165,6 +168,14 @@ func TestLABDynamicRangeFit(t *testing.T) {
 	if got > 4.6 || got < 2.8 {
 		t.Fatalf("output span %.2f stops (L %.1f–%.1f), want ~4", got, outLo, outHi)
 	}
+
+	pipe.InkJoyDisplay = PaletteInkJoyDisplay
+	inkOut := ApplyLABProcessing(img, pipe, PaletteInkJoyDisplay, true)
+	inkOutLo, inkOutHi := luminancePercentiles(inkOut, 0.01, 0.99)
+	inkGot := labLSpanStops(inkOutLo, inkOutHi)
+	if inkGot > 4.6 || inkGot < 2.8 {
+		t.Fatalf("InkJoy output span %.2f stops (L %.1f–%.1f), want ~4", inkGot, inkOutLo, inkOutHi)
+	}
 }
 
 func TestDisplayPaletteDRRangeValid(t *testing.T) {
@@ -179,8 +190,9 @@ func TestDisplayPaletteDRRangeValid(t *testing.T) {
 func TestDisplayPaletteLABRangeInkJoyVsSamsung(t *testing.T) {
 	inkLo, inkHi := displayPaletteLABRange(PaletteInkJoyDisplay)
 	samLo, samHi := displayPaletteLABRange(PaletteSamsungDisplay)
-	if inkLo <= samLo {
-		t.Fatalf("inkjoy black L* %.1f should be lighter than samsung %.1f", inkLo, samLo)
+	// Click-calibrated InkJoy may be within ~2 L* of Samsung reference black.
+	if inkLo < samLo-2.0 {
+		t.Fatalf("inkjoy black L* %.1f much darker than samsung %.1f", inkLo, samLo)
 	}
 	if inkHi <= samHi {
 		t.Fatalf("inkjoy white L* %.1f should be brighter than samsung %.1f", inkHi, samHi)
