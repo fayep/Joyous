@@ -28,15 +28,14 @@ var PaletteInkJoySend = [6][3]float64{
 	{0, 255, 0},
 }
 
-// PaletteInkJoyDisplay (P2) — on-panel Stucki targets (IMG_0110 primaries; green uses legacy
-// physical ink so mid-tone browns dither to red/yellow/black, not measured sage green).
+// PaletteInkJoyDisplay (P2) — on-panel Stucki targets (IMG_0158 primaries, click calibration).
 var PaletteInkJoyDisplay = [6][3]float64{
-	{71, 38, 47},
-	{214, 215, 201},
-	{222, 205, 0},
-	{164, 15, 5},
-	{30, 106, 188},
-	{46, 91, 65},
+	{42, 33, 38},
+	{206, 218, 213},
+	{213, 206, 84},
+	{115, 36, 26},
+	{47, 98, 176},
+	{97, 134, 113},
 }
 
 // PaletteSamsungSend (P1) — pure sRGB primaries written to PNG.
@@ -68,6 +67,10 @@ const samsungW, samsungH = 2560, 1440
 // before error diffusion. Deterministic per pixel so output is stable for caching.
 const stuckiPreDitherNoise = 3.0
 
+// inkjoyPortraitPreDitherNoise is gentler than Samsung's gradient noise; wipes already
+// provide sub-tone smoothing on InkJoy, so heavy pre-dither fights the lo-byte pattern.
+const inkjoyPortraitPreDitherNoise = 2.0
+
 // stuckiEdgePreserve limits how much quantization error crosses strong luminance
 // edges (lightning vs cloud, tonal steps in gray clouds). 0 = no attenuation.
 const stuckiEdgePreserve = 0.72
@@ -91,12 +94,19 @@ func stuckiOptionsSamsung(pipe ColorPipeline) stuckiOptions {
 		Serpentine:   true,
 		EdgePreserve: stuckiEdgePreserve,
 		PreDither:    true,
-		DynamicRange: pipe.LABDynamicRangeEnabled && !pipe.PortraitEnhance,
+		DynamicRange: pipe.LABDynamicRangeEnabled,
 	}
 }
 
 func stuckiOptionsInkJoy(pipe ColorPipeline) stuckiOptions {
-	return stuckiOptionsSamsung(pipe)
+	opts := stuckiOptions{
+		DynamicRange: pipe.LABDynamicRangeEnabled,
+	}
+	if pipe.PortraitEnhance {
+		opts.PreDither = true
+		opts.PreDitherStrength = inkjoyPortraitPreDitherNoise
+	}
+	return opts
 }
 
 // hiBytes maps palette index 0-5 to the hi byte values used in the .bin format.
@@ -206,6 +216,443 @@ func FromBin(bin []byte, w, h int) (hi, lo [][]byte) {
 		}
 	}
 	return
+}
+
+// wipeStepAt maps a 0..1 position along an axis to lo bytes 0,8,…,248 (31 steps).
+func wipeStepAt(pos float64) byte {
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > 1 {
+		pos = 1
+	}
+	step := int(pos*30 + 0.5)
+	if step > 30 {
+		step = 30
+	}
+	if step == 30 {
+		return 248
+	}
+	return byte(step * 8)
+}
+
+const wipeStepCount = 31
+
+// wipeStepIndexToByte maps step index 0..30 to lo bytes 0,8,…,248.
+func wipeStepIndexToByte(i int) byte {
+	i %= wipeStepCount
+	if i < 0 {
+		i += wipeStepCount
+	}
+	if i >= wipeStepCount-1 {
+		return 248
+	}
+	return byte(i * 8)
+}
+
+// wipeStepIndexFromByte returns the step index for a lo byte.
+func wipeStepIndexFromByte(lo byte) int {
+	if lo >= 248 {
+		return wipeStepCount - 1
+	}
+	return int(lo / 8)
+}
+
+// MakeHorizontalLineWipe assigns one lo step per row (constant across width).
+// stride must be coprime with wipeStepCount so rows 0..30 cycle all 31 steps;
+// adjacent rows land on non-consecutive step indices (stride 14 for 31 steps).
+func MakeHorizontalLineWipe(w, h, stride int) [][]byte {
+	if stride <= 0 {
+		stride = 14
+	}
+	grid := make([][]byte, h)
+	for y := range h {
+		idx := (y % wipeStepCount) * stride % wipeStepCount
+		lo := wipeStepIndexToByte(idx)
+		grid[y] = make([]byte, w)
+		for x := range w {
+			grid[y][x] = lo
+		}
+	}
+	return grid
+}
+
+// MakeVerticalSweepWipe generates a left-to-right curtain: each column shares one lo
+// step (vertical band), earliest at x=0 and latest at x=w-1.
+func MakeVerticalSweepWipe(w, h int) [][]byte {
+	grid := make([][]byte, h)
+	denom := float64(w - 1)
+	if w <= 1 {
+		denom = 1
+	}
+	for y := range h {
+		grid[y] = make([]byte, w)
+		for x := range w {
+			grid[y][x] = wipeStepAt(float64(x) / denom)
+		}
+	}
+	return grid
+}
+
+// MakeLoLadderWipe maps a cols×rows grid of lo octets (0–7, 8–15, …, 248–255) with
+// bandsPerCell horizontal bands stepping lo by 1 top-to-bottom inside each block.
+// Default 4×8×8 tiles the full byte range 0…255.
+func MakeLoLadderWipe(w, h, cols, rows, bandsPerCell int) [][]byte {
+	if cols < 1 {
+		cols = 4
+	}
+	if rows < 1 {
+		rows = 8
+	}
+	if bandsPerCell < 1 {
+		bandsPerCell = 8
+	}
+	cellW := w / cols
+	cellH := h / rows
+	if cellW < 1 {
+		cellW = 1
+	}
+	if cellH < 1 {
+		cellH = 1
+	}
+	grid := make([][]byte, h)
+	for y := range h {
+		grid[y] = make([]byte, w)
+		row := y / cellH
+		if row >= rows {
+			row = rows - 1
+		}
+		band := y % cellH * bandsPerCell / cellH
+		if band >= bandsPerCell {
+			band = bandsPerCell - 1
+		}
+		for x := range w {
+			col := x / cellW
+			if col >= cols {
+				col = cols - 1
+			}
+			idx := row*cols + col
+			v := idx*bandsPerCell + band
+			if v > 255 {
+				v = 255
+			}
+			grid[y][x] = byte(v)
+		}
+	}
+	return grid
+}
+
+// buildLoLadderPrimariesGrids fills a black field (hi=black, lo=248) with a cols×rows
+// lattice. Each cell has bandsPerCell lo bands vertically and primaryCols ink columns
+// horizontally (six primaries by default).
+func buildLoLadderPrimariesGrids(w, h, cols, rows, bandsPerCell, primaryCols int) (hi, lo [][]byte) {
+	if cols < 1 {
+		cols = 4
+	}
+	if rows < 1 {
+		rows = 8
+	}
+	if bandsPerCell < 1 {
+		bandsPerCell = 8
+	}
+	if primaryCols < 1 {
+		primaryCols = 6
+	}
+	const marginX, marginY = 48, 48
+	gridW := w - 2*marginX
+	gridH := h - 2*marginY
+	if gridW < cols {
+		gridW = w
+	}
+	if gridH < rows {
+		gridH = h
+	}
+	cellW := gridW / cols
+	cellH := gridH / rows
+	if cellW < 1 {
+		cellW = 1
+	}
+	if cellH < 1 {
+		cellH = 1
+	}
+	hi = make([][]byte, h)
+	lo = make([][]byte, h)
+	for y := range h {
+		hi[y] = make([]byte, w)
+		lo[y] = make([]byte, w)
+		for x := range w {
+			hi[y][x] = hiBytes[0]
+			lo[y][x] = 248
+		}
+	}
+	for y := range h {
+		for x := range w {
+			mx, my := marginX, marginY
+			if gridW == w {
+				mx = 0
+			}
+			if gridH == h {
+				my = 0
+			}
+			if x < mx || x >= mx+gridW || y < my || y >= my+gridH {
+				continue
+			}
+			gx := x - mx
+			gy := y - my
+			col := gx / cellW
+			row := gy / cellH
+			if col >= cols || row >= rows {
+				continue
+			}
+			cellX0 := col * cellW
+			cellY0 := row * cellH
+			localX := gx - cellX0
+			localY := gy - cellY0
+			band := localY * bandsPerCell / cellH
+			if band >= bandsPerCell {
+				band = bandsPerCell - 1
+			}
+			primary := localX * primaryCols / cellW
+			if primary >= primaryCols {
+				primary = primaryCols - 1
+			}
+			idx := row*cols + col
+			v := idx*bandsPerCell + band
+			if v > 255 {
+				v = 255
+			}
+			hi[y][x] = hiBytes[primary]
+			lo[y][x] = byte(v)
+		}
+	}
+	return hi, lo
+}
+
+// BuildBlackUniform248Bin is a full-frame black image at terminal lo=248.
+func BuildBlackUniform248Bin(w, h int) []byte {
+	hi := make([][]byte, h)
+	lo := make([][]byte, h)
+	for y := range h {
+		hi[y] = make([]byte, w)
+		lo[y] = make([]byte, w)
+		for x := range w {
+			hi[y][x] = hiBytes[0]
+			lo[y][x] = 248
+		}
+	}
+	return ToBin(hi, lo)
+}
+
+// BuildLoLadderPrimariesBin is the InkJoy calibration .bin: black surround at lo=248
+// with 8×4 cells of six primaries × lo 0…255.
+func BuildLoLadderPrimariesBin(w, h int) []byte {
+	hi, lo := buildLoLadderPrimariesGrids(w, h, 8, 4, 8, 6)
+	return ToBin(hi, lo)
+}
+
+// MakeLuminanceLoWipe builds a topo-style lo grid from pre-DR L*.
+// Bright regions start early (low lo); steep luminance ramps use more distinct lo steps.
+func MakeLuminanceLoWipe(img image.Image) [][]byte {
+	b := img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	inLoL, inHiL := luminancePercentiles(img, 0.01, 0.99)
+	if inHiL-inLoL < 0.5 {
+		inHiL = inLoL + 0.5
+	}
+
+	lum := buildLABLGrid(img, w, h)
+	grad := labGradientMagnitude(lum)
+	flatG, steepG := labGradientPercentiles(grad, 0.20, 0.80)
+
+	grid := make([][]byte, h)
+	for y := 0; y < h; y++ {
+		grid[y] = make([]byte, w)
+		for x := 0; x < w; x++ {
+			grid[y][x] = luminanceTopoLo(lum[y][x], grad[y][x], inLoL, inHiL, flatG, steepG)
+		}
+	}
+	return grid
+}
+
+func buildLABLGrid(img image.Image, w, h int) [][]float64 {
+	b := img.Bounds()
+	lum := make([][]float64, h)
+	for y := range h {
+		lum[y] = make([]float64, w)
+		for x := range w {
+			lum[y][x] = pixelLABL(img.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return lum
+}
+
+func pixelLABL(c color.Color) float64 {
+	r8, g8, b8, _ := c.RGBA()
+	rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
+	return srgbToLAB(rgb)[0]
+}
+
+func labGradientMagnitude(lum [][]float64) [][]float64 {
+	h, w := len(lum), len(lum[0])
+	grad := make([][]float64, h)
+	for y := 0; y < h; y++ {
+		grad[y] = make([]float64, w)
+		for x := 0; x < w; x++ {
+			L := lum[y][x]
+			var maxD float64
+			if x > 0 {
+				maxD = math.Max(maxD, math.Abs(L-lum[y][x-1]))
+			}
+			if x+1 < w {
+				maxD = math.Max(maxD, math.Abs(L-lum[y][x+1]))
+			}
+			if y > 0 {
+				maxD = math.Max(maxD, math.Abs(L-lum[y-1][x]))
+			}
+			if y+1 < h {
+				maxD = math.Max(maxD, math.Abs(L-lum[y+1][x]))
+			}
+			grad[y][x] = maxD
+		}
+	}
+	return grad
+}
+
+func labGradientPercentiles(grad [][]float64, loPct, hiPct float64) (flat, steep float64) {
+	const bins = 501
+	hist := make([]int, bins)
+	total := 0
+	maxG := 0.0
+	for _, row := range grad {
+		for _, g := range row {
+			if g > maxG {
+				maxG = g
+			}
+		}
+	}
+	if maxG <= 0 {
+		return 0, 1
+	}
+	scale := float64(bins-1) / maxG
+	for _, row := range grad {
+		for _, g := range row {
+			bin := int(g * scale)
+			if bin < 0 {
+				bin = 0
+			} else if bin >= bins {
+				bin = bins - 1
+			}
+			hist[bin]++
+			total++
+		}
+	}
+	if total == 0 {
+		return 0, 1
+	}
+	loCount := int(float64(total) * loPct)
+	hiCount := int(float64(total) * hiPct)
+	if hiCount >= total {
+		hiCount = total - 1
+	}
+	cum := 0
+	loBin, hiBin := 0, bins-1
+	loFound := false
+	for i, c := range hist {
+		cum += c
+		if !loFound && cum > loCount {
+			loBin = i
+			loFound = true
+		}
+		if cum >= hiCount {
+			hiBin = i
+			break
+		}
+	}
+	return float64(loBin) / scale, float64(hiBin) / scale
+}
+
+func luminanceTopoLo(L, grad, inLo, inHi, flatG, steepG float64) byte {
+	if inHi <= inLo {
+		return 124
+	}
+	t := 1 - clamp01((L-inLo)/(inHi-inLo))
+	g := 0.0
+	if steepG > flatG {
+		g = clamp01((grad - flatG) / (steepG - flatG))
+	} else {
+		g = 1
+	}
+
+	nSteps := 1 + int(math.Round(g*255))
+	var q float64
+	if nSteps > 1 {
+		q = math.Round(t*float64(nSteps-1)) / float64(nSteps-1)
+	} else {
+		q = t
+	}
+	return quantizeLoByte(int(math.Round(q * 255)))
+}
+
+func clamp01(t float64) float64 {
+	if t < 0 {
+		return 0
+	}
+	if t > 1 {
+		return 1
+	}
+	return t
+}
+
+func quantizeLoByte(idx int) byte {
+	if idx < 0 {
+		idx = 0
+	} else if idx > 255 {
+		idx = 255
+	}
+	if idx >= 248 {
+		return 248
+	}
+	coarse := (idx / 8) * 8
+	fine := idx % 8
+	return byte(coarse + fine)
+}
+
+// MakeUniformWipe sets the same lo step on every pixel (full-panel transition, no spatial pattern).
+func MakeUniformWipe(w, h int, lo byte) [][]byte {
+	grid := make([][]byte, h)
+	row := make([]byte, w)
+	for x := range w {
+		row[x] = lo
+	}
+	for y := range h {
+		grid[y] = append([]byte(nil), row...)
+	}
+	return grid
+}
+
+// MakeCheckerboardWipe alternates lo timing on a tile grid (even tiles loA, odd loB).
+// offsetX/offsetY shift the lo phase (half-tile offset crosses the hi checkerboard).
+func MakeCheckerboardWipe(w, h, tileW, tileH, offsetX, offsetY int, loA, loB byte) [][]byte {
+	if tileW < 1 {
+		tileW = 1
+	}
+	if tileH < 1 {
+		tileH = 1
+	}
+	grid := make([][]byte, h)
+	for y := range h {
+		grid[y] = make([]byte, w)
+		ty := (y + offsetY) / tileH
+		for x := range w {
+			tx := (x + offsetX) / tileW
+			if (tx+ty)%2 == 0 {
+				grid[y][x] = loA
+			} else {
+				grid[y][x] = loB
+			}
+		}
+	}
+	return grid
 }
 
 // MakeClockWipe generates the lo-byte clock wipe pattern for a w×h frame.
@@ -413,6 +860,9 @@ func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorP
 	}
 	if shouldApplyInkAffinity(pipe, src, flatRGB) {
 		src = ApplyInkAffinity(src, displayPalette, pipe.LABInkAffinityStrength, pipe.PortraitEnhance)
+	}
+	if shouldApplyInkAffinityMix(pipe, src, flatRGB) {
+		src = ApplyInkAffinityMix(src, displayPalette, pipe.LABInkAffinityMixStrength, pipe.PortraitEnhance)
 	}
 	if pipe.PortraitEnhance && pipe.PortraitStrength > 0 && !flatRGB {
 		src = ApplySkinToneProcessing(src, pipe.PortraitStrength)

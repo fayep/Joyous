@@ -7,6 +7,21 @@ import (
 	"time"
 )
 
+func TestSendDeliveryWait(t *testing.T) {
+	tr := NewSendDeliveryTracker()
+	send := tr.Register("dev", "img")
+	tr.BindInkJoy(send.ID, "m1")
+	done := make(chan sendStatus, 1)
+	go func() {
+		done <- tr.Wait(send.ID, 2*time.Second)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	tr.CompleteInkJoy("m1", true)
+	if status := <-done; status != sendStatusDelivered {
+		t.Fatalf("wait: got %q want delivered", status)
+	}
+}
+
 func TestSendDeliveryInkJoyComplete(t *testing.T) {
 	tr := NewSendDeliveryTracker()
 	send := tr.Register("AABBCCDDEEFF", "img1")

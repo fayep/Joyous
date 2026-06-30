@@ -38,8 +38,10 @@ func (h *Hub) handleColorPut(w http.ResponseWriter, r *http.Request) {
 func (h *Hub) handleColorPresets(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"presets": colorPresetCatalog(),
-		"names":   colorNames,
+		"presets":        colorPresetCatalog(),
+		"names":          colorNames,
+		"wipes":          inkJoyWipeChoices(),
+		"uniform_levels": inkJoyWipeUniformLevels(),
 	})
 }
 

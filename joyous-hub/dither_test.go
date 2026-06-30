@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/png"
 	"math/rand"
+	"os"
 	"testing"
 )
 
@@ -87,6 +88,172 @@ func TestBinByteOrder(t *testing.T) {
 	if bin[lastRowStart] != 0x01 || bin[lastRowStart+1] != 0x00 {
 		t.Errorf("top-left pixel at bin[%d:%d]: got [%02x,%02x] want [0x01,0x00]",
 			lastRowStart, lastRowStart+2, bin[lastRowStart], bin[lastRowStart+1])
+	}
+}
+
+// TestVerticalSweepWipe: left-to-right columns, 31 quantized steps.
+func TestVerticalSweepWipe(t *testing.T) {
+	lo := MakeVerticalSweepWipe(1600, 1200)
+	if len(lo) != 1200 || len(lo[0]) != 1600 {
+		t.Fatalf("shape: got %dx%d", len(lo[0]), len(lo))
+	}
+	if lo[0][0] != 0 || lo[0][1599] != 248 {
+		t.Fatalf("edges: left=%d right=%d", lo[0][0], lo[0][1599])
+	}
+	for y := range 1200 {
+		for x := range 1600 {
+			if lo[y][x] != lo[0][x] {
+				t.Fatalf("column %d not constant at y=%d", x, y)
+			}
+			v := lo[y][x]
+			if v%8 != 0 || v > 248 {
+				t.Errorf("invalid wipe value %d at x=%d", v, x)
+			}
+		}
+	}
+	seen := map[byte]bool{}
+	for _, v := range lo[0] {
+		seen[v] = true
+	}
+	if len(seen) < 31 {
+		t.Errorf("only %d distinct wipe steps in sweep (want 31)", len(seen))
+	}
+}
+
+func TestLoLadderWipe(t *testing.T) {
+	lo := MakeLoLadderWipe(1600, 1200, 8, 4, 8)
+	if len(lo) != 1200 || len(lo[0]) != 1600 {
+		t.Fatalf("shape: got %dx%d", len(lo[0]), len(lo))
+	}
+	if lo[0][0] != 0 {
+		t.Fatalf("tl band0: got %d want 0", lo[0][0])
+	}
+	if lo[299][0] != 7 {
+		t.Fatalf("tl band7: got %d want 7", lo[299][0])
+	}
+	if lo[0][200] != 8 {
+		t.Fatalf("col1 band0: got %d want 8", lo[0][200])
+	}
+	if lo[1199][1599] != 255 {
+		t.Fatalf("br: got %d want 255", lo[1199][1599])
+	}
+	seen := map[byte]struct{}{}
+	for y := range lo {
+		for x := range lo[y] {
+			seen[lo[y][x]] = struct{}{}
+		}
+	}
+	if len(seen) != 256 {
+		t.Fatalf("expected all lo values 0..255, got %d distinct", len(seen))
+	}
+}
+
+func TestLoLadderPrimariesGrid(t *testing.T) {
+	hi, lo := buildLoLadderPrimariesGrids(1600, 1200, 8, 4, 8, 6)
+	if hi[0][0] != 0x01 || lo[0][0] != 248 {
+		t.Fatalf("corner surround: hi=0x%02x lo=%d", hi[0][0], lo[0][0])
+	}
+	mx, my := 48, 48
+	if hi[my][mx] != 0x01 || lo[my][mx] != 0 {
+		t.Fatalf("cell0 tl: hi=0x%02x lo=%d", hi[my][mx], lo[my][mx])
+	}
+	cellW := (1600 - 2*mx) / 8
+	if hi[my][mx+cellW/6+1] != 0x02 {
+		t.Fatalf("cell0 white col: hi=0x%02x", hi[my][mx+cellW/6+1])
+	}
+	cellH := (1200 - 2*my) / 4
+	if lo[my+cellH-1][mx] != 7 {
+		t.Fatalf("cell0 bottom band: lo=%d want 7", lo[my+cellH-1][mx])
+	}
+	bin := BuildLoLadderPrimariesBin(1600, 1200)
+	if len(bin) != 1600*1200*2 {
+		t.Fatalf("bin len %d", len(bin))
+	}
+}
+
+func TestGenLoLadderWipePNG(t *testing.T) {
+	if os.Getenv("WRITE_WIPE_PNGS") == "" {
+		t.Skip("set WRITE_WIPE_PNGS=1 to regenerate wipes/*.png")
+	}
+	lo := MakeLoLadderWipe(frameW, frameH, 8, 4, 8)
+	if err := writeLoGridPNG("wipes/wipe_lo_ladder.png", lo); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeLoGridPNG(path string, lo [][]byte) error {
+	h, w := len(lo), len(lo[0])
+	img := image.NewGray(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			img.SetGray(x, y, color.Gray{Y: lo[y][x]})
+		}
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return png.Encode(f, img)
+}
+
+func TestUniformWipe(t *testing.T) {
+	lo := MakeUniformWipe(1600, 1200, 248)
+	if len(lo) != 1200 || len(lo[0]) != 1600 {
+		t.Fatalf("shape: got %dx%d", len(lo[0]), len(lo))
+	}
+	for y := range 1200 {
+		for x := range 1600 {
+			if lo[y][x] != 248 {
+				t.Fatalf("uniform wipe at %d,%d: got %d", x, y, lo[y][x])
+			}
+		}
+	}
+}
+
+func TestCheckerboardWipe(t *testing.T) {
+	lo := MakeCheckerboardWipe(400, 400, 100, 100, 0, 0, 0, 248)
+	if lo[0][0] != 0 || lo[0][100] != 248 {
+		t.Fatalf("top row tiles: %d %d", lo[0][0], lo[0][100])
+	}
+	if lo[100][0] != 248 || lo[100][100] != 0 {
+		t.Fatalf("second row tiles: %d %d", lo[100][0], lo[100][100])
+	}
+	crossed := MakeCheckerboardWipe(400, 400, 200, 200, 100, 100, 0, 248)
+	if crossed[0][0] == crossed[0][100] {
+		t.Fatal("half-tile offset should vary lo within one hi tile width")
+	}
+}
+
+func TestHorizontalLineWipe(t *testing.T) {
+	lo := MakeHorizontalLineWipe(400, 62, 14)
+	seen := make(map[int]struct{})
+	for y := 0; y < 62; y++ {
+		idx := wipeStepIndexFromByte(lo[y][0])
+		if y < wipeStepCount {
+			seen[idx] = struct{}{}
+		}
+		for x := 1; x < 400; x++ {
+			if lo[y][x] != lo[y][0] {
+				t.Fatalf("row %d not constant across width", y)
+			}
+		}
+		if y > 0 {
+			prev := wipeStepIndexFromByte(lo[y-1][0])
+			diff := idx - prev
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff > wipeStepCount/2 {
+				diff = wipeStepCount - diff
+			}
+			if diff <= 1 {
+				t.Fatalf("rows %d-%d adjacent step indices %d and %d", y-1, y, prev, idx)
+			}
+		}
+	}
+	if len(seen) != wipeStepCount {
+		t.Fatalf("first %d rows: got %d distinct steps, want %d", wipeStepCount, len(seen), wipeStepCount)
 	}
 }
 
@@ -299,23 +466,26 @@ func TestStuckiEdgeAttenuation(t *testing.T) {
 	}
 }
 
-func TestStuckiOptionsInkJoyMatchesSamsungQuality(t *testing.T) {
+func TestStuckiOptionsInkJoyUsesClassicStucki(t *testing.T) {
 	pipe := ColorPipeline{}
 	ij := stuckiOptionsInkJoy(pipe)
+	if ij.Serpentine || ij.EdgePreserve > 0 || ij.PreDither {
+		t.Fatalf("InkJoy landscape should use classic Stucki, got %+v", ij)
+	}
 	sg := stuckiOptionsSamsung(pipe)
-	if !ij.Serpentine || !ij.PreDither || ij.EdgePreserve <= 0 {
-		t.Fatalf("InkJoy should use full Stucki tuning, got %+v", ij)
+	if !sg.Serpentine || !sg.PreDither || sg.EdgePreserve <= 0 {
+		t.Fatalf("Samsung should use full Stucki tuning, got %+v", sg)
 	}
-	if ij.Serpentine != sg.Serpentine || ij.EdgePreserve != sg.EdgePreserve {
-		t.Fatal("InkJoy and Samsung serpentine/edge settings should match")
-	}
-	if ij.PreDitherStrength != sg.PreDitherStrength {
-		t.Fatalf("InkJoy pre-dither strength should match Samsung, got %v vs %v", ij.PreDitherStrength, sg.PreDitherStrength)
-	}
-	plain := stuckiOptionsInkJoy(ColorPipeline{})
 	portrait := stuckiOptionsInkJoy(ColorPipeline{PortraitEnhance: true})
-	if portrait.PreDitherStrength != plain.PreDitherStrength {
-		t.Fatal("people photos should not reduce pre-dither strength")
+	if !portrait.PreDither || portrait.PreDitherStrength != inkjoyPortraitPreDitherNoise {
+		t.Fatalf("InkJoy portrait pre-dither = %+v, want strength %v", portrait, inkjoyPortraitPreDitherNoise)
+	}
+	if portrait.Serpentine || portrait.EdgePreserve > 0 {
+		t.Fatal("InkJoy portrait should not use Samsung serpentine/edge tuning")
+	}
+	dr := stuckiOptionsInkJoy(ColorPipeline{LABDynamicRangeEnabled: true, PortraitEnhance: true})
+	if !dr.DynamicRange {
+		t.Fatal("InkJoy portrait photos should still use dynamic range when enabled")
 	}
 }
 

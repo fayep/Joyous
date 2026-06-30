@@ -808,7 +808,7 @@ const indexHTML = `<!DOCTYPE html>
       <div class="section-label" style="margin-top:0">Pre-dither LAB processing</div>
       <p style="font-size:.85rem;color:#666;margin:.25rem 0 .75rem">Optional steps before Stucki dithering (skipped for calibration swatches and ≤6-color images). Dynamic range, chroma, highlight, and shadow are independent.</p>
       <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
-        <input type="checkbox" id="clr-lab-dynamic-range"> Fit dynamic range for Samsung (compress scene luminance to N stops in log space)
+        <input type="checkbox" id="clr-lab-dynamic-range"> Fit dynamic range (InkJoy &amp; Samsung — compress scene luminance to N stops in log space)
       </label>
       <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Target stops
         <input type="range" id="clr-lab-dynamic-range-stops" min="2" max="6" step="0.5" value="4.5" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-dynamic-range-stops-val').textContent=this.value">
@@ -850,6 +850,23 @@ const indexHTML = `<!DOCTYPE html>
         <span id="clr-lab-ink-affinity-strength-val" style="font-family:monospace">1</span>
       </label>
       <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Ink affinity keeps lightness similar but pulls a*/b* toward the calibrated ink that will carry each region, so Stucki has less impossible color error. Re-send test images after saving.</p>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-ink-affinity-mix"> Stucki 2×2 mix affinity (nudge toward nearest four-ink average — ~126 mixtures from 6 primaries)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Mix affinity strength
+        <input type="range" id="clr-lab-ink-affinity-mix-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-ink-affinity-mix-strength-val').textContent=this.value">
+        <span id="clr-lab-ink-affinity-mix-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Runs after primary ink affinity. Targets colors Stucki can actually render in a 2×2 tile (e.g. brown from black+red+yellow), not just the six primaries.</p>
+      <div class="section-label">InkJoy refresh wipe</div>
+      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Transition pattern
+        <select id="clr-inkjoy-wipe" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px" onchange="onInkJoyWipePatternChange()"></select>
+      </label>
+      <label id="clr-inkjoy-uniform-wrap" style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Uniform lo level (step 0 = lo 0 … step 30 = lo 248)
+        <input type="range" id="clr-inkjoy-uniform-step" min="0" max="30" step="1" value="30" style="width:100%;margin-top:.35rem" oninput="updateInkJoyUniformLoLabel()">
+        <span id="clr-inkjoy-uniform-step-val" style="font-family:monospace">step 30 · lo 248</span>
+      </label>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Uniform lo fills the whole frame with one sub-tone step (31 levels). Lower lo may read brighter if the panel runs more refresh phases — try step 0 vs 30 on the same photo. Spatial patterns (box, clock, …) also vary lo by region. <strong>Random</strong> picks a bundled pattern each send.</p>
       <div class="section-label">InkJoy dither palette (P2)</div>
       <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
         <select id="clr-inkjoy-display-preset" onchange="onColorPresetChange('inkjoy_display')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
@@ -941,6 +958,7 @@ const indexHTML = `<!DOCTYPE html>
           <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
             <button class="btn btn-sm" style="background:#6c757d;color:#fff" onclick="ijRefresh()">Refresh display</button>
             <button class="btn btn-sm" onclick="openCalibrationModal('inkjoy')">Calibration chart</button>
+            <button class="btn btn-sm" onclick="openCalibrationModal('inkjoy-lo-ladder')">lo ladder chart</button>
           </div>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">To send from the shared album, use <strong>Album → Send</strong> and pick this frame.</p>
         </div>
@@ -1636,6 +1654,16 @@ async function postDisplay(deviceId,imageId,onLongWait){
 
 const SEND_DELIVERY_TIMEOUT_MS=180000;
 
+async function readJSONResponse(r){
+  const text=await r.text();
+  let j={};
+  try{ j=JSON.parse(text); }catch(_){}
+  if(!r.ok){
+    throw new Error(j.error||text||r.statusText||'request failed');
+  }
+  return j;
+}
+
 async function waitSendDelivered(sendId,onTick){
   if(!sendId) return false;
   const deadline=Date.now()+SEND_DELIVERY_TIMEOUT_MS;
@@ -1756,14 +1784,20 @@ function openCalibrationModal(kind){
   const sendBtn=document.getElementById('calibration-send-btn');
   if(kind==='inkjoy'){
     title.textContent='InkJoy calibration chart';
-    desc.textContent='Six P1 primary swatches (1600×1200). Send flat to the selected frame, then photograph for P2 palette tuning.';
+    desc.textContent='Six P1 primary swatches (1600×1200). Vertical-sweep wipe on non-green inks; green pixels use lo=248. Photograph for P2 palette tuning.';
     sendBtn.disabled=!ijCurrentId;
+    img.src='/api/calibration/inkjoy?v=2';
+  }else if(kind==='inkjoy-lo-ladder'){
+    title.textContent='InkJoy lo ladder chart';
+    desc.textContent='Two plays from the browser: (1) full-screen black at lo=248, wait for refresh + 90s settle, then (2) 8×4 lo ladder boxes. Color-tab wipe is ignored.';
+    sendBtn.disabled=!ijCurrentId;
+    img.src='/api/calibration/inkjoy-lo-ladder?v=1';
   }else{
     title.textContent='Samsung calibration chart';
     desc.textContent='Six P1 primary swatches (2560×1440). Send flat to the selected frame, then photograph for P2 palette tuning.';
     sendBtn.disabled=!samsungCurrentId;
+    img.src='/api/calibration/'+kind+'?v=1';
   }
-  img.src='/api/calibration/'+kind+'?v=1';
   if(st) st.textContent='';
   modal.style.display='flex';
 }
@@ -1780,19 +1814,49 @@ async function sendCalibrationChart(){
   if(!calibrationKind){return;}
   if(calibrationKind==='inkjoy'){
     if(!ijCurrentId){alert('Select an InkJoy frame first.');return;}
-    if(st) st.textContent='Sending…';
+    if(st) st.textContent='Sending primaries…';
     if(btn) btn.disabled=true;
     try{
-      const r=await fetch('/api/calibration/inkjoy/send',{
+      const j=await readJSONResponse(await fetch('/api/calibration/inkjoy/send',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({device_id:ijCurrentId})
-      });
-      if(!r.ok) throw new Error(await r.text());
-      const j=await r.json();
-      if(st) st.textContent='Downloading…';
+      }));
       const delivered=j.send_id?await waitSendDelivered(j.send_id):false;
-      if(st) st.textContent=delivered?'✓ Sent to frame':'Sent (unconfirmed)';
+      if(st) st.textContent=delivered?'✓ Primaries sent':'Sent (unconfirmed)';
+      await loadDevicesInner();
+      loadIJFrames();
+    }catch(e){
+      alert('Send failed: '+e.message);
+      if(st) st.textContent='';
+    }finally{
+      if(btn) btn.disabled=!ijCurrentId;
+    }
+    return;
+  }
+  if(calibrationKind==='inkjoy-lo-ladder'){
+    if(!ijCurrentId){alert('Select an InkJoy frame first.');return;}
+    if(btn) btn.disabled=true;
+    try{
+      if(st) st.textContent='Push 1/2: black prime…';
+      const j1=await readJSONResponse(await fetch('/api/calibration/inkjoy-black-248/send',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({device_id:ijCurrentId})
+      }));
+      if(st) st.textContent='Push 1/2: waiting for download…';
+      const primeDelivered=j1.send_id?await waitSendDelivered(j1.send_id):false;
+      if(st) st.textContent='Push 1/2: settle (90s)…';
+      await new Promise(res=>setTimeout(res,90000));
+      if(st) st.textContent='Push 2/2: lo ladder…';
+      const j2=await readJSONResponse(await fetch('/api/calibration/inkjoy-lo-ladder/send',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({device_id:ijCurrentId})
+      }));
+      if(st) st.textContent='Push 2/2: waiting for download…';
+      const delivered=j2.send_id?await waitSendDelivered(j2.send_id):false;
+      if(st) st.textContent=delivered?'✓ Both plays sent':(primeDelivered?'Play 2 unconfirmed':'Sent (unconfirmed)');
       await loadDevicesInner();
       loadIJFrames();
     }catch(e){
@@ -2444,6 +2508,12 @@ function applyColorForm(cfg){
   const inkAffinityStrength=cfg.lab_ink_affinity_strength||1;
   document.getElementById('clr-lab-ink-affinity-strength').value=inkAffinityStrength;
   document.getElementById('clr-lab-ink-affinity-strength-val').textContent=String(inkAffinityStrength);
+  document.getElementById('clr-lab-ink-affinity-mix').checked=!!cfg.lab_ink_affinity_mix_enabled;
+  const inkMixStrength=cfg.lab_ink_affinity_mix_strength||1;
+  document.getElementById('clr-lab-ink-affinity-mix-strength').value=inkMixStrength;
+  document.getElementById('clr-lab-ink-affinity-mix-strength-val').textContent=String(inkMixStrength);
+  fillInkJoyWipeSelect(cfg.inkjoy_wipe||'uniform:248');
+  applyInkJoyUniformWipe(cfg.inkjoy_wipe||'uniform:248');
   for(const g of COLOR_GROUPS){
     document.getElementById(g.presetId).value=cfg[g.cfgPreset]||'calibrated';
     const preset=cfg[g.cfgPreset]||'calibrated';
@@ -2466,6 +2536,9 @@ function colorFormValues(){
     lab_skin_tone_strength:parseFloat(document.getElementById('clr-lab-skin-tone-strength').value)||1,
     lab_ink_affinity_enabled:document.getElementById('clr-lab-ink-affinity').checked,
     lab_ink_affinity_strength:parseFloat(document.getElementById('clr-lab-ink-affinity-strength').value)||1,
+    lab_ink_affinity_mix_enabled:document.getElementById('clr-lab-ink-affinity-mix').checked,
+    lab_ink_affinity_mix_strength:parseFloat(document.getElementById('clr-lab-ink-affinity-mix-strength').value)||1,
+    inkjoy_wipe:inkjoyWipeFormValue(),
     inkjoy_display_preset:document.getElementById('clr-inkjoy-display-preset').value,
     samsung_display_preset:document.getElementById('clr-samsung-display-preset').value,
     samsung_send_preset:document.getElementById('clr-samsung-send-preset').value
@@ -2489,6 +2562,74 @@ async function loadColorPresets(){
   const r=await fetch('/api/color/presets');
   if(!r.ok) throw new Error(await r.text());
   colorPresets=await r.json();
+}
+
+function fillInkJoyWipeSelect(selected){
+  const sel=document.getElementById('clr-inkjoy-wipe');
+  if(!sel) return;
+  const wipes=colorPresets&&colorPresets.wipes?colorPresets.wipes:[
+    {id:'uniform:picker',label:'Uniform lo (consistent)'},
+    {id:'random',label:'Random pattern'}
+  ];
+  sel.innerHTML='';
+  for(const w of wipes){
+    const o=document.createElement('option');
+    o.value=w.id;
+    o.textContent=w.label;
+    sel.appendChild(o);
+  }
+  if(isUniformInkJoyWipe(selected)){
+    sel.value='uniform:picker';
+  }else if(selected){
+    sel.value=selected;
+  }
+  onInkJoyWipePatternChange();
+}
+
+function isUniformInkJoyWipe(id){
+  return !id||id==='uniform248'||id.startsWith('uniform:');
+}
+
+function uniformLoFromStep(step){
+  const s=Math.max(0,Math.min(30,parseInt(step,10)||0));
+  return s>=30?248:s*8;
+}
+
+function uniformStepFromLo(lo){
+  const n=parseInt(lo,10);
+  if(isNaN(n)||n>=248) return 30;
+  return Math.max(0,Math.min(30,Math.round(n/8)));
+}
+
+function updateInkJoyUniformLoLabel(){
+  const step=document.getElementById('clr-inkjoy-uniform-step').value;
+  const lo=uniformLoFromStep(step);
+  document.getElementById('clr-inkjoy-uniform-step-val').textContent='step '+step+' · lo '+lo;
+}
+
+function onInkJoyWipePatternChange(){
+  const wrap=document.getElementById('clr-inkjoy-uniform-wrap');
+  const uniform=document.getElementById('clr-inkjoy-wipe').value==='uniform:picker';
+  if(wrap) wrap.style.display=uniform?'block':'none';
+}
+
+function applyInkJoyUniformWipe(inkjoyWipe){
+  let step=30;
+  if(inkjoyWipe==='uniform248'||inkjoyWipe==='uniform:248') step=30;
+  else if(inkjoyWipe&&inkjoyWipe.startsWith('uniform:')){
+    step=uniformStepFromLo(inkjoyWipe.split(':')[1]);
+  }
+  document.getElementById('clr-inkjoy-uniform-step').value=String(step);
+  updateInkJoyUniformLoLabel();
+}
+
+function inkjoyWipeFormValue(){
+  const pattern=document.getElementById('clr-inkjoy-wipe').value;
+  if(pattern==='uniform:picker'){
+    const lo=uniformLoFromStep(document.getElementById('clr-inkjoy-uniform-step').value);
+    return 'uniform:'+lo;
+  }
+  return pattern||'uniform:248';
 }
 
 async function loadColorTab(){

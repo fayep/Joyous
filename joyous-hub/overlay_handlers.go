@@ -205,15 +205,20 @@ func (h *Hub) prepareSamsungPNG(imageID, overlayToken string, dev *Device) ([]by
 	if err != nil {
 		return nil, err
 	}
+	pipe := h.colorPipelineForImage(imageID)
 	if overlayToken != "" {
 		cfg := h.overlay.Config()
 		weather, err := h.fetchOverlayWeather(context.Background())
 		if err != nil {
 			return nil, err
 		}
-		img = drawWeatherOverlay(img, cfg, weather, h.overlayPhotoName(imageID, cfg), dev.Portrait)
+		photoName := h.overlayPhotoName(imageID, cfg)
+		portrait := dev.Portrait
+		return encodeSamsungPNGWithOverlay(img, func(base image.Image) image.Image {
+			return drawWeatherOverlay(base, cfg, weather, photoName, portrait)
+		}, pipe)
 	}
-	return encodeSamsungPNGFromRGBA(img, h.colorPipelineForImage(imageID))
+	return encodeSamsungPNGFromRGBA(img, pipe)
 }
 
 func prepareSamsungFrameRGBA(raw []byte, profile SamsungDisplayProfile, crop CropRect, hasCrop bool) (image.Image, error) {

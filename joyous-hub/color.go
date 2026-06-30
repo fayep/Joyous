@@ -38,6 +38,10 @@ type ColorConfig struct {
 	LABSkinToneStrength    float64 `json:"lab_skin_tone_strength"`
 	LABInkAffinityEnabled  bool    `json:"lab_ink_affinity_enabled"`
 	LABInkAffinityStrength float64 `json:"lab_ink_affinity_strength"`
+	LABInkAffinityMixEnabled  bool    `json:"lab_ink_affinity_mix_enabled"`
+	LABInkAffinityMixStrength float64 `json:"lab_ink_affinity_mix_strength"`
+
+	InkJoyWipe string `json:"inkjoy_wipe"` // uniform:0–uniform:248, uniform248, random, luminance, or wipe PNG name
 
 	InkJoyDisplayPreset  string `json:"inkjoy_display_preset"`
 	SamsungDisplayPreset string `json:"samsung_display_preset"`
@@ -62,6 +66,8 @@ type ColorPipeline struct {
 	PortraitStrength       float64
 	LABInkAffinityEnabled  bool
 	LABInkAffinityStrength float64
+	LABInkAffinityMixEnabled  bool
+	LABInkAffinityMixStrength float64
 	InkJoyDisplay        [6][3]float64
 	SamsungDisplay       [6][3]float64
 	SamsungSend          [6][3]float64
@@ -104,6 +110,9 @@ func defaultColorConfig() ColorConfig {
 		LABSkinToneStrength:    1.0,
 		LABInkAffinityEnabled:  true,
 		LABInkAffinityStrength: 1.0,
+		LABInkAffinityMixEnabled:  false,
+		LABInkAffinityMixStrength: 1.0,
+		InkJoyWipe:                DefaultInkJoyWipe,
 		InkJoyDisplayPreset:  ColorPresetCalibrated,
 		SamsungDisplayPreset: ColorPresetCalibrated,
 		SamsungSendPreset:    ColorPresetCalibrated,
@@ -167,6 +176,10 @@ func normalizeColorConfig(cfg ColorConfig) ColorConfig {
 	if cfg.LABInkAffinityStrength <= 0 {
 		cfg.LABInkAffinityStrength = 1.0
 	}
+	if cfg.LABInkAffinityMixStrength <= 0 {
+		cfg.LABInkAffinityMixStrength = 1.0
+	}
+	cfg.InkJoyWipe = normalizeInkJoyWipe(cfg.InkJoyWipe)
 	if cfg.InkJoyDisplayPreset == "" {
 		cfg.InkJoyDisplayPreset = ColorPresetCalibrated
 	}
@@ -219,6 +232,8 @@ func ResolveColorPipeline(cfg ColorConfig) ColorPipeline {
 		LABDynamicRangeStops:   cfg.LABDynamicRangeStops,
 		LABInkAffinityEnabled:  cfg.LABInkAffinityEnabled,
 		LABInkAffinityStrength: cfg.LABInkAffinityStrength,
+		LABInkAffinityMixEnabled:  cfg.LABInkAffinityMixEnabled,
+		LABInkAffinityMixStrength: cfg.LABInkAffinityMixStrength,
 		InkJoyDisplay:          resolvePalette(cfg.InkJoyDisplayPreset, cfg.InkJoyDisplay, inkjoyDisplayPresets()),
 		SamsungDisplay:         resolvePalette(cfg.SamsungDisplayPreset, cfg.SamsungDisplay, samsungDisplayPresets()),
 		SamsungSend:            resolvePalette(cfg.SamsungSendPreset, cfg.SamsungSend, samsungSendPresets()),
@@ -302,6 +317,12 @@ func validateColorConfig(cfg ColorConfig) error {
 	}
 	if cfg.LABInkAffinityStrength < 0 || cfg.LABInkAffinityStrength > 3 {
 		return fmt.Errorf("lab_ink_affinity_strength must be between 0 and 3")
+	}
+	if cfg.LABInkAffinityMixStrength < 0 || cfg.LABInkAffinityMixStrength > 3 {
+		return fmt.Errorf("lab_ink_affinity_mix_strength must be between 0 and 3")
+	}
+	if err := validateInkJoyWipe(cfg.InkJoyWipe); err != nil {
+		return err
 	}
 	for _, preset := range []string{cfg.InkJoyDisplayPreset, cfg.SamsungDisplayPreset, cfg.SamsungSendPreset} {
 		if err := validatePresetName(preset); err != nil {
