@@ -101,6 +101,8 @@ func NewOverlayStore(dataDir string) *OverlayStore {
 
 func (s *OverlayStore) path() string { return filepath.Join(s.dir, overlayConfigFile) }
 
+func (s *OverlayStore) DataDir() string { return s.dir }
+
 func (s *OverlayStore) load() {
 	data, err := os.ReadFile(s.path())
 	if err != nil {
@@ -409,7 +411,11 @@ func (h *Hub) fetchOverlayWeather(ctx context.Context) (WeatherSnapshot, error) 
 		return WeatherSnapshot{}, nil
 	}
 	if h.weather == nil {
-		h.weather = &weatherFetcher{client: &http.Client{Timeout: 12 * time.Second}}
+		dataDir := ""
+		if h.overlay != nil {
+			dataDir = h.overlay.DataDir()
+		}
+		h.weather = newWeatherClient(dataDir)
 	}
 	return h.weather.Fetch(ctx, cfg)
 }
