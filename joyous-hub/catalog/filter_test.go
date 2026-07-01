@@ -82,6 +82,59 @@ func TestSmartAlbumCRUD(t *testing.T) {
 	}
 }
 
+func TestTagLogicCombinations(t *testing.T) {
+	dir := t.TempDir()
+	db, err := catalog.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	for _, spec := range []struct {
+		id   string
+		tags []string
+	}{
+		{"a", []string{"bedroom", "kids"}},
+		{"b", []string{"bedroom"}},
+		{"c", []string{"vacation"}},
+		{"d", []string{"kids", "vacation"}},
+	} {
+		if err := db.UpsertImage(catalog.Image{
+			ID: spec.id, Name: spec.id + ".jpg", RelPath: catalog.DefaultRelPath(spec.id),
+			AddedAt: now, UpdatedAt: now,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.SetImageTags(spec.id, spec.tags); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// bedroom AND NOT kids → b only
+	ids, err := db.ListFilteredImages(catalog.AlbumAll, catalog.Filter{
+		TagsAll:  []string{"bedroom"},
+		TagsNone: []string{"kids"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0].ID != "b" {
+		t.Fatalf("bedroom and not kids: %+v", ids)
+	}
+
+	// bedroom OR vacation → a, b, c, d
+	ids2, err := db.ListFilteredImages(catalog.AlbumAll, catalog.Filter{
+		TagsAny: []string{"bedroom", "vacation"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids2) != 4 {
+		t.Fatalf("bedroom or vacation: %+v", ids2)
+	}
+}
+
 func TestExcludeIDsFilter(t *testing.T) {
 	dir := t.TempDir()
 	db, err := catalog.Open(dir)

@@ -651,6 +651,9 @@ const indexHTML = `<!DOCTYPE html>
   }
   .album-chip button{border:0;background:transparent;cursor:pointer;color:#666;font-size:14px;line-height:1;padding:0 2px}
   .album-chip-exclude{background:rgba(225,72,63,.14);color:#7a2e28}
+  .album-chip-tag-all{background:rgba(31,39,64,.12);color:#1f2740}
+  .album-chip-tag-any{background:rgba(66,103,178,.14);color:#2a4478}
+  .album-chip-tag-none{background:rgba(225,72,63,.14);color:#7a2e28}
   .album-toolbar-actions{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto}
   .album-tb-btn{
     border:0;border-radius:6px;padding:7px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;
@@ -1619,6 +1622,7 @@ function initAlbumGridTap(){
 
 let albums=[], currentAlbumId='all', draftFilter=emptyAlbumFilter(), knownTags=[];
 let albumReorderBusy=false, albumDragId=null, albumFilterEditing=false;
+let albumTagAddMode='all';
 const albumFormatOptions=['4:3','3:4','16:9','9:16'];
 
 function emptyAlbumFilter(){
@@ -1741,15 +1745,49 @@ function addDraftTag(){
   if(!input) return;
   const t=input.value.trim();
   if(!t) return;
-  if(!draftFilter.tags_all) draftFilter.tags_all=[];
-  if(!draftFilter.tags_all.includes(t)) draftFilter.tags_all.push(t);
+  const modeSel=document.getElementById('album-tag-mode');
+  if(modeSel) albumTagAddMode=modeSel.value;
+  const key=albumTagModeKey(albumTagAddMode);
+  if(!draftFilter[key]) draftFilter[key]=[];
+  removeDraftTagFromAll(t);
+  if(!draftFilter[key].includes(t)) draftFilter[key].push(t);
   input.value='';
   renderAlbumToolbar();
 }
 
-function removeDraftTag(tag){
+function albumTagModeKey(mode){
+  if(mode==='any') return 'tags_any';
+  if(mode==='none') return 'tags_none';
+  return 'tags_all';
+}
+
+function removeDraftTagFromAll(tag){
   draftFilter.tags_all=(draftFilter.tags_all||[]).filter(t=>t!==tag);
+  draftFilter.tags_any=(draftFilter.tags_any||[]).filter(t=>t!==tag);
+  draftFilter.tags_none=(draftFilter.tags_none||[]).filter(t=>t!==tag);
+}
+
+function removeDraftTag(tag, mode){
+  const key=albumTagModeKey(mode||'all');
+  draftFilter[key]=(draftFilter[key]||[]).filter(t=>t!==tag);
   renderAlbumToolbar();
+  reloadDraftFilterView();
+}
+
+function renderDraftTagChips(f, editable){
+  const specs=[
+    {mode:'all', list:f.tags_all||[], cls:'album-chip-tag-all', prefix:'', title:'must have'},
+    {mode:'any', list:f.tags_any||[], cls:'album-chip-tag-any', prefix:'any ', title:'any of'},
+    {mode:'none', list:f.tags_none||[], cls:'album-chip-tag-none', prefix:'not ', title:'must not'},
+  ];
+  return specs.map(spec=>spec.list.map(t=>{
+    const label=spec.prefix+escHtml(t);
+    if(editable){
+      return '<span class="album-chip '+spec.cls+'" title="'+spec.title+'">'+label+
+        ' <button type="button" aria-label="Remove tag" onclick=\'removeDraftTag('+JSON.stringify(t)+','+JSON.stringify(spec.mode)+')\'>&times;</button></span>';
+    }
+    return '<span class="album-chip '+spec.cls+'" title="'+spec.title+'">'+label+'</span>';
+  }).join('')).join('');
 }
 
 function excludeChipLabel(id){
@@ -1805,13 +1843,7 @@ function renderAlbumToolbar(){
   const smart=isSmartAlbumView();
   const editable=isAllPhotosAlbum()||albumFilterEditing;
   const f=draftFilter;
-  const chips=(f.tags_all||[]).map(t=>{
-    const label=escHtml(t);
-    if(editable){
-      return '<span class="album-chip">'+label+' <button type="button" aria-label="Remove tag" onclick="removeDraftTag('+JSON.stringify(t)+')">&times;</button></span>';
-    }
-    return '<span class="album-chip">'+label+'</span>';
-  }).join('');
+  const chips=renderDraftTagChips(f, editable);
   const fmtRow=albumFormatOptions.map(fmt=>{
     const on=(f.formats_any||[]).includes(fmt);
     if(!editable){
@@ -1847,11 +1879,17 @@ function renderAlbumToolbar(){
     const title=' title="Except '+escHtml(id)+'"';
     if(editable){
       return '<span class="album-chip album-chip-exclude"'+title+'>'+label+
-        ' <button type="button" aria-label="Remove exclusion" onclick="removeDraftExclude('+JSON.stringify(id)+')">&times;</button></span>';
+        ' <button type="button" aria-label="Remove exclusion" onclick=\'removeDraftExclude('+JSON.stringify(id)+')\'>&times;</button></span>';
     }
     return '<span class="album-chip album-chip-exclude"'+title+'>Except '+label+'</span>';
   }).join('');
+  const tagModeOpts=[
+    {v:'all', label:'must have (and)'},
+    {v:'any', label:'any of (or)'},
+    {v:'none', label:'must not (not)'},
+  ].map(o=>'<option value="'+o.v+'"'+(albumTagAddMode===o.v?' selected':'')+'>'+o.label+'</option>').join('');
   const filterRow=editable?(
+    '<label>Tag rule <select id="album-tag-mode" onchange="albumTagAddMode=this.value">'+tagModeOpts+'</select></label>'+
     '<label>Tag <input type="text" id="album-tag-input" list="album-tag-suggestions" placeholder="Add tag…" onkeydown="if(event.key===\'Enter\'){event.preventDefault();addDraftTag();}">'+
     '<datalist id="album-tag-suggestions">'+tagList+'</datalist></label>'+
     '<button type="button" class="album-tb-btn secondary" onclick="addDraftTag()">Add</button>'+
