@@ -203,14 +203,16 @@ Null/absent fields = no constraint.
 
 ### Phase 4 — Album UI
 
-- [ ] Sidebar: “All photos” + smart albums list + “New smart album”.
-- [ ] Smart album editor: name, filter chips (tags, orientation, formats).
-- [ ] Wall renders current album’s image list.
-- [ ] Drag-drop calls `PATCH /api/albums/{id}/order`.
-- [ ] Unsaved filter → “Save as smart album”.
-- [ ] Tag editing on image card or detail (PATCH tags).
+- [x] Sidebar: “All photos” + smart albums list + “New smart album”.
+- [x] Smart album editor: name, filter chips (tags, orientation, formats).
+- [x] Wall renders current album’s image list.
+- [x] Drag-drop calls `PATCH /api/albums/{id}/order`.
+- [x] Unsaved filter → “Save as smart album”.
+- [x] Tag editing on image card or detail (PATCH tags).
 
 **Exit:** User-visible smart albums and per-album reorder.
+
+**Upgrade:** [docs/migrations/sqlite-catalog-upgrade.md](../migrations/sqlite-catalog-upgrade.md)
 
 ---
 

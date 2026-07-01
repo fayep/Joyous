@@ -47,11 +47,11 @@ type Image struct {
 
 // Album is a saved collection (all photos, smart, or manual).
 type Album struct {
-	ID          string
-	Name        string
-	Kind        string
-	FilterJSON  string
-	DefaultSort string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Kind        string    `json:"kind"`
+	FilterJSON  string    `json:"filter_json"`
+	DefaultSort string    `json:"default_sort"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
