@@ -569,7 +569,7 @@ const indexHTML = `<!DOCTYPE html>
     .album-outer:hover .album-print{
       box-shadow:0 26px 46px -8px rgba(40,28,12,.42),0 4px 10px rgba(0,0,0,.18);
     }
-    .album-outer:hover .album-menu{opacity:1;transform:translateY(0);pointer-events:auto}
+    .album-outer:hover .album-menu{opacity:1;max-height:88px;padding:8px 2px 6px;pointer-events:auto}
   }
   .album-outer-selected{
     transform:translateY(-6px) rotate(0deg) scale(1.075)!important;z-index:1000!important;
@@ -577,9 +577,9 @@ const indexHTML = `<!DOCTYPE html>
   .album-outer-selected .album-print{
     box-shadow:0 26px 46px -8px rgba(40,28,12,.42),0 4px 10px rgba(0,0,0,.18);
   }
-  .album-outer-selected .album-menu{opacity:1;transform:translateY(0);pointer-events:auto}
+  .album-outer-selected .album-menu{opacity:1;max-height:88px;padding:8px 2px 6px;pointer-events:auto}
   .album-print{
-    width:calc(var(--photo-w) + 24px);max-width:calc(var(--photo-w) + 24px);box-sizing:border-box;overflow:hidden;
+    width:calc(var(--photo-w) + 24px);max-width:calc(var(--photo-w) + 24px);box-sizing:border-box;overflow:visible;
     background:#fdfbf6;padding:12px 12px 0;border-radius:2px;position:relative;
     box-shadow:0 7px 16px -4px rgba(50,38,20,.28),0 1px 3px rgba(0,0,0,.12);
     transition:box-shadow .26s ease;
@@ -589,12 +589,14 @@ const indexHTML = `<!DOCTYPE html>
   }
   .album-img img{width:100%;height:100%;object-fit:contain;display:block}
   .album-menu{
-    position:absolute;left:0;right:0;bottom:9px;display:flex;justify-content:center;gap:6px;
-    opacity:0;transform:translateY(8px);pointer-events:none;
-    transition:opacity .2s ease,transform .2s ease;
+    display:flex;flex-wrap:wrap;justify-content:center;align-content:center;gap:5px;
+    width:100%;box-sizing:border-box;max-height:0;opacity:0;overflow:hidden;
+    padding:0 2px;pointer-events:none;
+    transition:max-height .22s ease,opacity .2s ease,padding .22s ease;
   }
-  .album-btn{border:0;cursor:pointer;font:600 12px/1 inherit;color:#fff;background:#1f2740;padding:7px 11px;border-radius:6px}
-  .album-btn-delete{background:#e1483f;padding:7px 10px;font-size:13px;line-height:1}
+  .album-btn{border:0;cursor:pointer;font:600 11px/1.2 inherit;color:#fff;background:#1f2740;padding:6px 9px;border-radius:6px;white-space:nowrap}
+  .album-btn-exclude{background:#fff;color:#6e4f1a;border:1px solid #c9a96a}
+  .album-btn-delete{background:#e1483f;padding:6px 9px;font-size:11px;line-height:1.2}
   .album-caption-wrap{
     width:var(--photo-w);max-width:100%;margin:0 auto;overflow:hidden;box-sizing:border-box;
   }
@@ -648,6 +650,7 @@ const indexHTML = `<!DOCTYPE html>
     color:#1f2740;padding:4px 8px;border-radius:999px;font-size:12px;
   }
   .album-chip button{border:0;background:transparent;cursor:pointer;color:#666;font-size:14px;line-height:1;padding:0 2px}
+  .album-chip-exclude{background:rgba(225,72,63,.14);color:#7a2e28}
   .album-toolbar-actions{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto}
   .album-tb-btn{
     border:0;border-radius:6px;padding:7px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;
@@ -1619,7 +1622,7 @@ let albumReorderBusy=false, albumDragId=null, albumFilterEditing=false;
 const albumFormatOptions=['4:3','3:4','16:9','9:16'];
 
 function emptyAlbumFilter(){
-  return {tags_all:[],tags_any:[],tags_none:[],orientation:'',formats_any:[],no_saved_crops:null};
+  return {tags_all:[],tags_any:[],tags_none:[],orientation:'',formats_any:[],no_saved_crops:null,exclude_ids:[]};
 }
 
 function cloneAlbumFilter(f){
@@ -1636,7 +1639,8 @@ function parseAlbumFilterJSON(raw){
       tags_none:f.tags_none||[],
       orientation:f.orientation||'',
       formats_any:f.formats_any||[],
-      no_saved_crops:f.no_saved_crops===true?true:null
+      no_saved_crops:f.no_saved_crops===true?true:null,
+      exclude_ids:f.exclude_ids||[]
     };
   }catch(e){
     return emptyAlbumFilter();
@@ -1646,7 +1650,8 @@ function parseAlbumFilterJSON(raw){
 function albumFilterActive(f){
   f=f||draftFilter;
   return !!(f.tags_all&&f.tags_all.length)||!!(f.tags_any&&f.tags_any.length)||!!(f.tags_none&&f.tags_none.length)||
-    !!f.orientation||!!(f.formats_any&&f.formats_any.length)||f.no_saved_crops===true;
+    !!f.orientation||!!(f.formats_any&&f.formats_any.length)||f.no_saved_crops===true||
+    !!(f.exclude_ids&&f.exclude_ids.length);
 }
 
 function currentAlbumMeta(){
@@ -1674,6 +1679,7 @@ function buildImagesURL(){
   if(f.orientation) p.set('orientation',f.orientation);
   (f.formats_any||[]).forEach(fmt=>p.append('format',fmt));
   if(f.no_saved_crops===true) p.set('no_saved_crops','1');
+  (f.exclude_ids||[]).forEach(id=>p.append('exclude',id));
   const q=p.toString();
   return '/api/images'+(q?'?'+q:'');
 }
@@ -1746,6 +1752,36 @@ function removeDraftTag(tag){
   renderAlbumToolbar();
 }
 
+function excludeChipLabel(id){
+  const img=images.find(i=>i.id===id);
+  if(img) return img.name||id.slice(0,8);
+  return id.slice(0,8)+'…';
+}
+
+function canExcludeFromFilter(){
+  return isAllPhotosAlbum()||isSmartAlbumView();
+}
+
+async function reloadDraftFilterView(){
+  if(isAllPhotosAlbum()) await loadImages();
+  else if(isSmartAlbumView()) await updateSmartAlbumFilter(false);
+}
+
+async function addDraftExclude(imageId){
+  if(!imageId) return;
+  if(!draftFilter.exclude_ids) draftFilter.exclude_ids=[];
+  if(draftFilter.exclude_ids.includes(imageId)) return;
+  draftFilter.exclude_ids.push(imageId);
+  renderAlbumToolbar();
+  await reloadDraftFilterView();
+}
+
+async function removeDraftExclude(imageId){
+  draftFilter.exclude_ids=(draftFilter.exclude_ids||[]).filter(id=>id!==imageId);
+  renderAlbumToolbar();
+  await reloadDraftFilterView();
+}
+
 function applyAlbumFilters(){
   if(isSmartAlbumView()&&!albumFilterEditing) return;
   if(isAllPhotosAlbum()) loadImages();
@@ -1806,6 +1842,15 @@ function renderAlbumToolbar(){
   const noCropsChip=f.no_saved_crops?'<span class="album-chip">No saved crops</span>':'';
   const noCropsEdit=editable?('<label><input type="checkbox"'+(f.no_saved_crops?' checked':'')+
     ' onchange="draftFilter.no_saved_crops=this.checked?true:null"> No saved crops</label>'):'';
+  const excludeChips=(f.exclude_ids||[]).map(id=>{
+    const label=escHtml(excludeChipLabel(id));
+    const title=' title="Except '+escHtml(id)+'"';
+    if(editable){
+      return '<span class="album-chip album-chip-exclude"'+title+'>'+label+
+        ' <button type="button" aria-label="Remove exclusion" onclick="removeDraftExclude('+JSON.stringify(id)+')">&times;</button></span>';
+    }
+    return '<span class="album-chip album-chip-exclude"'+title+'>Except '+label+'</span>';
+  }).join('');
   const filterRow=editable?(
     '<label>Tag <input type="text" id="album-tag-input" list="album-tag-suggestions" placeholder="Add tag…" onkeydown="if(event.key===\'Enter\'){event.preventDefault();addDraftTag();}">'+
     '<datalist id="album-tag-suggestions">'+tagList+'</datalist></label>'+
@@ -1814,11 +1859,10 @@ function renderAlbumToolbar(){
     noCropsEdit+
   '<div class="album-chip-row">'+fmtRow+'</div>'
   ):'';
-  const extraChips=(!editable&&noCropsChip)?noCropsChip:'';
   const title=smart&&!editable?('<strong style="margin-right:8px">'+escHtml(currentAlbumMeta().name||'')+'</strong>'):'';
   el.innerHTML='<div class="album-toolbar-inner">'+
     title+
-    (chips||extraChips?'<div class="album-chip-row">'+chips+extraChips+'</div>':'')+
+    (chips||excludeChips||noCropsChip?'<div class="album-chip-row">'+chips+excludeChips+noCropsChip+'</div>':'')+
     filterRow+
     (actions?'<div class="album-toolbar-actions">'+actions+'</div>':'')+
     '</div>';
@@ -1842,7 +1886,8 @@ async function saveDraftAsSmartAlbum(){
   }
 }
 
-async function updateSmartAlbumFilter(){
+async function updateSmartAlbumFilter(finishEdit){
+  if(finishEdit===undefined) finishEdit=true;
   if(!isSmartAlbumView()) return;
   try{
     const r=await fetch('/api/albums/'+encodeURIComponent(currentAlbumId),{
@@ -1851,9 +1896,12 @@ async function updateSmartAlbumFilter(){
       body:JSON.stringify({filter:draftFilter})
     });
     if(!r.ok) throw new Error(await r.text());
-    albumFilterEditing=false;
+    if(finishEdit) albumFilterEditing=false;
     await loadAlbums();
-    selectAlbum(currentAlbumId);
+    draftFilter=parseAlbumFilterJSON(currentAlbumMeta()?.filter_json);
+    renderAlbumSidebar();
+    renderAlbumToolbar();
+    await loadImages();
   }catch(e){
     alert('Update album failed: '+e.message);
   }
@@ -2040,17 +2088,20 @@ function renderAlbumGrid(){
     const name=escHtml(img.name);
     const tags=(img.tags&&img.tags.length)?'<div class="album-tags" title="'+escHtml(img.tags.join(', '))+'">'+escHtml(img.tags.join(' · '))+'</div>':'';
     const sz=albumPhotoSize(img);
+    const excludeBtn=canExcludeFromFilter()?
+      '<button type="button" class="album-btn album-btn-exclude" onclick="event.stopPropagation();addDraftExclude(\''+img.id+'\')">Exclude</button>':'';
     return '<div class="album-outer'+(sz.portrait?' album-outer-portrait':'')+'" id="card-'+img.id+'" style="'+albumStackVars(i)+'">'+
       '<div class="album-print" style="--photo-w:'+sz.w+'px;--photo-h:'+sz.h+'px">'+
         '<div class="album-img">'+
           '<img src="/images/'+img.id+'/preview" alt="'+name+'" loading="lazy">'+
-          '<div class="album-menu">'+
-            '<button type="button" class="album-btn" onclick="event.stopPropagation();editAlbumTags(\''+img.id+'\')">Tags</button>'+
-            '<button type="button" class="album-btn" onclick="event.stopPropagation();openCrop(\''+img.id+'\')">Frame</button>'+
-            '<button type="button" class="album-btn" onclick="event.stopPropagation();downloadAlbumImage(\''+img.id+'\','+JSON.stringify(img.name)+')">Save</button>'+
-            '<button type="button" class="album-btn" id="send-btn-'+img.id+'" onclick="sendImageToFrame(event,\''+img.id+'\')">Send</button>'+
-            '<button type="button" class="album-btn album-btn-delete" onclick="event.stopPropagation();deleteImg(\''+img.id+'\')">&times;</button>'+
-          '</div>'+
+        '</div>'+
+        '<div class="album-menu">'+
+          excludeBtn+
+          '<button type="button" class="album-btn" onclick="event.stopPropagation();editAlbumTags(\''+img.id+'\')">Tags</button>'+
+          '<button type="button" class="album-btn" onclick="event.stopPropagation();openCrop(\''+img.id+'\')">Frame</button>'+
+          '<button type="button" class="album-btn" onclick="event.stopPropagation();downloadAlbumImage(\''+img.id+'\','+JSON.stringify(img.name)+')">Save</button>'+
+          '<button type="button" class="album-btn" id="send-btn-'+img.id+'" onclick="sendImageToFrame(event,\''+img.id+'\')">Send</button>'+
+          '<button type="button" class="album-btn album-btn-delete" onclick="event.stopPropagation();deleteImg(\''+img.id+'\')">Delete</button>'+
         '</div>'+
         '<div class="album-caption-wrap">'+
           '<div class="album-caption" title="'+name+'">'+name+'</div>'+

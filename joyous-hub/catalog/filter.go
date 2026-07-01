@@ -15,6 +15,7 @@ type Filter struct {
 	FormatsAny   []string `json:"formats_any,omitempty"`
 	PeopleLikely *bool    `json:"people_likely,omitempty"`
 	NoSavedCrops *bool    `json:"no_saved_crops,omitempty"` // true: no rows in image_crops; false: has crops
+	ExcludeIDs   []string `json:"exclude_ids,omitempty"`    // omit these image ids from results
 }
 
 func (f Filter) normalized() Filter {
@@ -26,6 +27,21 @@ func (f Filter) normalized() Filter {
 	out.FormatsAny = normTags(f.FormatsAny) // format keys like 4:3 kept as-is except trim
 	for i, k := range out.FormatsAny {
 		out.FormatsAny[i] = strings.TrimSpace(k)
+	}
+	out.ExcludeIDs = normIDs(f.ExcludeIDs)
+	return out
+}
+
+func normIDs(in []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, id := range in {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
 	}
 	return out
 }
@@ -123,6 +139,14 @@ func (db *DB) imageIDsMatchingFilter(f Filter) ([]string, error) {
 		} else {
 			where = append(where, `EXISTS (SELECT 1 FROM image_crops c WHERE c.image_id = i.id)`)
 		}
+	}
+	if len(f.ExcludeIDs) > 0 {
+		placeholders := strings.Repeat("?,", len(f.ExcludeIDs))
+		placeholders = placeholders[:len(placeholders)-1]
+		for _, id := range f.ExcludeIDs {
+			args = append(args, id)
+		}
+		where = append(where, fmt.Sprintf(`i.id NOT IN (%s)`, placeholders))
 	}
 
 	q := `SELECT i.id FROM images i`
@@ -257,8 +281,8 @@ func (db *DB) listAlbumMemberIDsOrdered(album Album) ([]string, error) {
 }
 
 // QueryFilterFromParams builds a filter from HTTP query parameters.
-// Repeated tag= means tags_all; tag_any= for any; tag_none= for exclusion.
-func QueryFilterFromParams(tagsAll, tagsAny, tagsNone, formats []string, orientation string, peopleLikely, noSavedCrops *bool) Filter {
+// Repeated tag= means tags_all; tag_any= for any; tag_none= for exclusion; exclude= omits image ids.
+func QueryFilterFromParams(tagsAll, tagsAny, tagsNone, formats, exclude []string, orientation string, peopleLikely, noSavedCrops *bool) Filter {
 	return Filter{
 		TagsAll:      tagsAll,
 		TagsAny:      tagsAny,
@@ -267,5 +291,6 @@ func QueryFilterFromParams(tagsAll, tagsAny, tagsNone, formats []string, orienta
 		FormatsAny:   formats,
 		PeopleLikely: peopleLikely,
 		NoSavedCrops: noSavedCrops,
+		ExcludeIDs:   exclude,
 	}.normalized()
 }

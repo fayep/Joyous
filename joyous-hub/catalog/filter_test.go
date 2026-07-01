@@ -82,6 +82,43 @@ func TestSmartAlbumCRUD(t *testing.T) {
 	}
 }
 
+func TestExcludeIDsFilter(t *testing.T) {
+	dir := t.TempDir()
+	db, err := catalog.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	for _, spec := range []struct {
+		id, orient string
+	}{
+		{"p1", "portrait"},
+		{"p2", "portrait"},
+		{"p3", "portrait"},
+		{"land", "landscape"},
+	} {
+		if err := db.UpsertImage(catalog.Image{
+			ID: spec.id, Name: spec.id + ".jpg", RelPath: catalog.DefaultRelPath(spec.id),
+			Orientation: spec.orient, AddedAt: now, UpdatedAt: now,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ids, err := db.ListFilteredImages(catalog.AlbumAll, catalog.Filter{
+		Orientation: "portrait",
+		ExcludeIDs:  []string{"p2", "p3"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0].ID != "p1" {
+		t.Fatalf("portrait excluding p2,p3: %+v", ids)
+	}
+}
+
 func TestNoSavedCropsFilter(t *testing.T) {
 	dir := t.TempDir()
 	db, err := catalog.Open(dir)

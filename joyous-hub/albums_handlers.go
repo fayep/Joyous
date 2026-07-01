@@ -190,6 +190,7 @@ func parseImageListFilter(r *http.Request) (albumID string, f catalog.Filter) {
 		r.URL.Query()["tag_any"],
 		r.URL.Query()["tag_none"],
 		r.URL.Query()["format"],
+		r.URL.Query()["exclude"],
 		r.URL.Query().Get("orientation"),
 		parseOptionalBoolParam(r.URL.Query().Get("people_likely")),
 		parseOptionalBoolParam(r.URL.Query().Get("no_saved_crops")),
