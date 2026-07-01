@@ -112,7 +112,10 @@ func main() {
 	if err := devices.Load(); err != nil {
 		log.Printf("warn: load devices: %v", err)
 	}
-	imageStore := NewImageStore(*dataDir)
+	imageStore, err := NewImageStoreE(*dataDir)
+	if err != nil {
+		log.Fatalf("image store: %v", err)
+	}
 	colorStore := NewColorStore(*dataDir)
 	imageStore.SetColorStore(colorStore)
 	displayPreview := NewDisplayPreviewStore(*dataDir)
