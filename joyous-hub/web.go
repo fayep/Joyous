@@ -1619,7 +1619,7 @@ let albumReorderBusy=false, albumDragId=null, albumFilterEditing=false;
 const albumFormatOptions=['4:3','3:4','16:9','9:16'];
 
 function emptyAlbumFilter(){
-  return {tags_all:[],tags_any:[],tags_none:[],orientation:'',formats_any:[]};
+  return {tags_all:[],tags_any:[],tags_none:[],orientation:'',formats_any:[],no_saved_crops:null};
 }
 
 function cloneAlbumFilter(f){
@@ -1635,7 +1635,8 @@ function parseAlbumFilterJSON(raw){
       tags_any:f.tags_any||[],
       tags_none:f.tags_none||[],
       orientation:f.orientation||'',
-      formats_any:f.formats_any||[]
+      formats_any:f.formats_any||[],
+      no_saved_crops:f.no_saved_crops===true?true:null
     };
   }catch(e){
     return emptyAlbumFilter();
@@ -1645,7 +1646,7 @@ function parseAlbumFilterJSON(raw){
 function albumFilterActive(f){
   f=f||draftFilter;
   return !!(f.tags_all&&f.tags_all.length)||!!(f.tags_any&&f.tags_any.length)||!!(f.tags_none&&f.tags_none.length)||
-    !!f.orientation||!!(f.formats_any&&f.formats_any.length);
+    !!f.orientation||!!(f.formats_any&&f.formats_any.length)||f.no_saved_crops===true;
 }
 
 function currentAlbumMeta(){
@@ -1672,6 +1673,7 @@ function buildImagesURL(){
   (f.tags_none||[]).forEach(t=>p.append('tag_none',t));
   if(f.orientation) p.set('orientation',f.orientation);
   (f.formats_any||[]).forEach(fmt=>p.append('format',fmt));
+  if(f.no_saved_crops===true) p.set('no_saved_crops','1');
   const q=p.toString();
   return '/api/images'+(q?'?'+q:'');
 }
@@ -1801,17 +1803,22 @@ function renderAlbumToolbar(){
     const label=o||'Any orientation';
     return '<option value="'+o+'"'+(f.orientation===o?' selected':'')+'>'+label+'</option>';
   }).join('');
+  const noCropsChip=f.no_saved_crops?'<span class="album-chip">No saved crops</span>':'';
+  const noCropsEdit=editable?('<label><input type="checkbox"'+(f.no_saved_crops?' checked':'')+
+    ' onchange="draftFilter.no_saved_crops=this.checked?true:null"> No saved crops</label>'):'';
   const filterRow=editable?(
     '<label>Tag <input type="text" id="album-tag-input" list="album-tag-suggestions" placeholder="Add tag…" onkeydown="if(event.key===\'Enter\'){event.preventDefault();addDraftTag();}">'+
     '<datalist id="album-tag-suggestions">'+tagList+'</datalist></label>'+
     '<button type="button" class="album-tb-btn secondary" onclick="addDraftTag()">Add</button>'+
     '<label>Orientation <select id="album-orient" onchange="draftFilter.orientation=this.value">'+orientOpts+'</select></label>'+
+    noCropsEdit+
   '<div class="album-chip-row">'+fmtRow+'</div>'
   ):'';
+  const extraChips=(!editable&&noCropsChip)?noCropsChip:'';
   const title=smart&&!editable?('<strong style="margin-right:8px">'+escHtml(currentAlbumMeta().name||'')+'</strong>'):'';
   el.innerHTML='<div class="album-toolbar-inner">'+
     title+
-    (chips?'<div class="album-chip-row">'+chips+'</div>':'')+
+    (chips||extraChips?'<div class="album-chip-row">'+chips+extraChips+'</div>':'')+
     filterRow+
     (actions?'<div class="album-toolbar-actions">'+actions+'</div>':'')+
     '</div>';

@@ -168,18 +168,22 @@ func (h *Hub) handleAlbumOrder(w http.ResponseWriter, r *http.Request, id string
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
+func parseOptionalBoolParam(v string) *bool {
+	if v == "1" || v == "true" {
+		b := true
+		return &b
+	}
+	if v == "0" || v == "false" {
+		b := false
+		return &b
+	}
+	return nil
+}
+
 func parseImageListFilter(r *http.Request) (albumID string, f catalog.Filter) {
 	albumID = r.URL.Query().Get("album_id")
 	if albumID == "" {
 		albumID = catalog.AlbumAll
-	}
-	var people *bool
-	if v := r.URL.Query().Get("people_likely"); v == "1" || v == "true" {
-		b := true
-		people = &b
-	} else if v == "0" || v == "false" {
-		b := false
-		people = &b
 	}
 	f = catalog.QueryFilterFromParams(
 		r.URL.Query()["tag"],
@@ -187,7 +191,8 @@ func parseImageListFilter(r *http.Request) (albumID string, f catalog.Filter) {
 		r.URL.Query()["tag_none"],
 		r.URL.Query()["format"],
 		r.URL.Query().Get("orientation"),
-		people,
+		parseOptionalBoolParam(r.URL.Query().Get("people_likely")),
+		parseOptionalBoolParam(r.URL.Query().Get("no_saved_crops")),
 	)
 	return albumID, f
 }

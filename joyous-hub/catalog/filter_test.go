@@ -82,6 +82,37 @@ func TestSmartAlbumCRUD(t *testing.T) {
 	}
 }
 
+func TestNoSavedCropsFilter(t *testing.T) {
+	dir := t.TempDir()
+	db, err := catalog.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	if err := db.UpsertImage(catalog.Image{ID: "plain", Name: "plain.jpg", RelPath: catalog.DefaultRelPath("plain"), AddedAt: now, UpdatedAt: now}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertImage(catalog.Image{ID: "framed", Name: "framed.jpg", RelPath: catalog.DefaultRelPath("framed"), AddedAt: now, UpdatedAt: now}, map[string]catalog.Crop{
+		"4:3": {X: 0, Y: 0, W: 1, H: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	noCrops := true
+	ids, err := db.ListFilteredImages(catalog.AlbumAll, catalog.Filter{NoSavedCrops: &noCrops})
+	if err != nil || len(ids) != 1 || ids[0].ID != "plain" {
+		t.Fatalf("no_saved_crops=true: %+v err=%v", ids, err)
+	}
+
+	hasCrops := false
+	ids2, err := db.ListFilteredImages(catalog.AlbumAll, catalog.Filter{NoSavedCrops: &hasCrops})
+	if err != nil || len(ids2) != 1 || ids2[0].ID != "framed" {
+		t.Fatalf("no_saved_crops=false: %+v err=%v", ids2, err)
+	}
+}
+
 func TestPerAlbumOrderIsolation(t *testing.T) {
 	dir := t.TempDir()
 	db, err := catalog.Open(dir)

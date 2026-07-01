@@ -87,7 +87,7 @@ func (db *DB) ListFilteredImages(albumID string, extra Filter) ([]Image, error) 
 func (f Filter) isEmpty() bool {
 	f = f.normalized()
 	return len(f.TagsAll) == 0 && len(f.TagsAny) == 0 && len(f.TagsNone) == 0 &&
-		f.Orientation == "" && len(f.FormatsAny) == 0 && f.PeopleLikely == nil
+		f.Orientation == "" && len(f.FormatsAny) == 0 && f.PeopleLikely == nil && f.NoSavedCrops == nil
 }
 
 // SetAlbumOrder rebuilds explicit sort keys for albumID from a full ID list (tests / migration).
