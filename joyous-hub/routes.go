@@ -20,6 +20,27 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	})
 	mux.HandleFunc("POST /api/devices/discover", hub.handleDiscover)
 	mux.HandleFunc("GET /api/ui/revision", hub.handleUIRevision)
+	mux.HandleFunc("GET /api/tags", hub.handleTagsList)
+	mux.HandleFunc("GET /api/albums", hub.handleAlbumsList)
+	mux.HandleFunc("POST /api/albums", hub.handleAlbumsCreate)
+	mux.HandleFunc("GET /api/albums/{id}", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleAlbumGet(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("PATCH /api/albums/{id}", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleAlbumPatch(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("DELETE /api/albums/{id}", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleAlbumDelete(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("GET /api/albums/{id}/images", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleAlbumImages(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("GET /api/albums/{id}/count", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleAlbumCount(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("PATCH /api/albums/{id}/order", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleAlbumOrder(w, r, r.PathValue("id"))
+	})
 	mux.HandleFunc("GET /api/images", hub.handleImages)
 	mux.HandleFunc("GET /api/images/revision", hub.handleImagesRevision)
 	mux.HandleFunc("POST /api/images", hub.handleImageUpload)

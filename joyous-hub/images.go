@@ -22,6 +22,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"joyous-hub/catalog"
 )
 
 const frameW, frameH = 1600, 1200
@@ -48,18 +50,38 @@ type ImageMeta struct {
 	PeopleLikely     bool `json:"people_likely,omitempty"`
 	PeopleAnalyzed   bool `json:"people_analyzed,omitempty"`
 	PeopleDetectVer  int  `json:"people_detect_ver,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
 }
 
 // ImageStore manages raw image storage and a bounded converted-bin cache.
 type ImageStore struct {
 	dir      string
+	cat      *catalog.DB
 	CacheMax int64 // max total bytes in cache dir; exported so tests can override
 	colors   *ColorStore
 }
 
 // NewImageStore creates an ImageStore rooted at dir.
 func NewImageStore(dir string) *ImageStore {
-	return &ImageStore{dir: dir, CacheMax: defaultCacheMax}
+	s, err := NewImageStoreE(dir)
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+// NewImageStoreE opens the SQLite catalog under dir.
+func NewImageStoreE(dir string) (*ImageStore, error) {
+	cat, err := catalog.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	s := &ImageStore{dir: dir, cat: cat, CacheMax: defaultCacheMax}
+	if err := s.migrateCatalogFromJSON(); err != nil {
+		cat.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *ImageStore) SetColorStore(c *ColorStore) { s.colors = c }
@@ -148,8 +170,10 @@ func (s *ImageStore) Store(r io.Reader, name string) (string, error) {
 			meta.PeopleDetectVer = peopleDetectVersion
 		}
 	}
-	b, _ := json.Marshal(meta)
-	os.WriteFile(s.metaPath(id), b, 0644)
+	if err := s.persistMeta(meta); err != nil {
+		os.Remove(s.rawPath(id))
+		return "", err
+	}
 	return id, nil
 }
 
@@ -233,8 +257,28 @@ func (s *ImageStore) ServeBinOrientationHTTP(w http.ResponseWriter, r *http.Requ
 	w.Write(bin)
 }
 
-// ListImages returns metadata for all stored images.
+// ListImages returns metadata for all stored images in album display order.
 func (s *ImageStore) ListImages() ([]ImageMeta, error) {
+	return s.ListImagesQuery(catalog.AlbumAll, catalog.Filter{})
+}
+
+// ListImagesQuery returns images for an album with an optional filter.
+func (s *ImageStore) ListImagesQuery(albumID string, f catalog.Filter) ([]ImageMeta, error) {
+	if s.cat != nil {
+		imgs, err := s.cat.ListFilteredImages(albumID, f)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]ImageMeta, len(imgs))
+		for i, img := range imgs {
+			out[i] = catalogToMeta(img)
+		}
+		return out, nil
+	}
+	return s.listImagesLegacy()
+}
+
+func (s *ImageStore) listImagesLegacy() ([]ImageMeta, error) {
 	entries, err := os.ReadDir(s.rawDir())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -269,7 +313,6 @@ func (s *ImageStore) AlbumRevision() string {
 	if len(imgs) == 0 {
 		return "empty"
 	}
-	sort.Slice(imgs, func(i, j int) bool { return imgs[i].ID < imgs[j].ID })
 	h := sha256.New()
 	for _, m := range imgs {
 		chroma := "g"
@@ -294,24 +337,32 @@ func (s *ImageStore) AlbumRevision() string {
 		}
 		h.Write([]byte{'\n'})
 	}
+	if s.cat != nil {
+		if orderRev, err := s.cat.AlbumOrderRevision(catalog.AlbumAll); err == nil && orderRev != "" {
+			h.Write([]byte(orderRev))
+		}
+		if tagRev, err := s.cat.TagsRevision(); err == nil && tagRev != "" {
+			h.Write([]byte(tagRev))
+		}
+		if albRev, err := s.cat.AlbumsRevision(); err == nil && albRev != "" {
+			h.Write([]byte(albRev))
+		}
+	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
 // SetCrop stores a crop rect for the given aspect ratio key (e.g. "4:3") and
 // invalidates the thumbnail so it regenerates with the new crop applied.
 func (s *ImageStore) SetCrop(id, format string, rect CropRect) error {
-	metaData, err := os.ReadFile(s.metaPath(id))
+	meta, err := s.readMeta(id)
 	if err != nil {
 		return fmt.Errorf("image %s not found", id)
 	}
-	var meta ImageMeta
-	json.Unmarshal(metaData, &meta)
 	if meta.Crops == nil {
 		meta.Crops = make(map[string]CropRect)
 	}
 	meta.Crops[format] = rect
-	b, _ := json.Marshal(meta)
-	if err := os.WriteFile(s.metaPath(id), b, 0644); err != nil {
+	if err := s.persistMeta(meta); err != nil {
 		return err
 	}
 	// Invalidate thumbnail so next ServeThumb regenerates with the new crop.
@@ -321,17 +372,14 @@ func (s *ImageStore) SetCrop(id, format string, rect CropRect) error {
 
 // DeleteCrop removes one saved crop by format key and invalidates the thumbnail.
 func (s *ImageStore) DeleteCrop(id, format string) error {
-	metaData, err := os.ReadFile(s.metaPath(id))
+	meta, err := s.readMeta(id)
 	if err != nil {
 		return fmt.Errorf("image %s not found", id)
 	}
-	var meta ImageMeta
-	json.Unmarshal(metaData, &meta)
 	if meta.Crops != nil {
 		delete(meta.Crops, format)
 	}
-	b, _ := json.Marshal(meta)
-	if err := os.WriteFile(s.metaPath(id), b, 0644); err != nil {
+	if err := s.persistMeta(meta); err != nil {
 		return err
 	}
 	os.Remove(s.thumbPath(id))
@@ -340,12 +388,10 @@ func (s *ImageStore) DeleteCrop(id, format string) error {
 
 // GetCrops returns all stored crop rects for an image.
 func (s *ImageStore) GetCrops(id string) (map[string]CropRect, error) {
-	metaData, err := os.ReadFile(s.metaPath(id))
+	meta, err := s.readMeta(id)
 	if err != nil {
 		return nil, fmt.Errorf("image %s not found", id)
 	}
-	var meta ImageMeta
-	json.Unmarshal(metaData, &meta)
 	if meta.Crops == nil {
 		return map[string]CropRect{}, nil
 	}
@@ -369,12 +415,13 @@ func (s *ImageStore) Rename(id, name string) (ImageMeta, error) {
 	if name == "" {
 		return ImageMeta{}, fmt.Errorf("name required")
 	}
-	return s.PatchMeta(id, &name, "")
+	return s.PatchMeta(id, &name, "", nil)
 }
 
-// PatchMeta updates display name and/or per-image chroma boost override.
+// PatchMeta updates display name, chroma override, and/or tags.
 // chromaMode is "", "global", "on", or "off"; empty string leaves chroma unchanged.
-func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string) (ImageMeta, error) {
+// tags non-nil replaces the image tag set.
+func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string, tags *[]string) (ImageMeta, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return ImageMeta{}, err
@@ -412,14 +459,14 @@ func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string) (Imag
 			changed = true
 		}
 	}
+	if tags != nil {
+		meta.Tags = *tags
+		changed = true
+	}
 	if !changed {
 		return meta, nil
 	}
-	b, err := json.Marshal(meta)
-	if err != nil {
-		return ImageMeta{}, err
-	}
-	if err := os.WriteFile(s.metaPath(id), b, 0644); err != nil {
+	if err := s.persistMeta(meta); err != nil {
 		return ImageMeta{}, err
 	}
 	s.evictBinCacheForImage(id)
@@ -447,11 +494,7 @@ func (s *ImageStore) ensurePeopleAnalyzed(meta *ImageMeta) error {
 	meta.PeopleLikely = detectPeopleLikely(img)
 	meta.PeopleAnalyzed = true
 	meta.PeopleDetectVer = peopleDetectVersion
-	b, err := json.Marshal(meta)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(s.metaPath(meta.ID), b, 0644); err != nil {
+	if err := s.persistMeta(*meta); err != nil {
 		return err
 	}
 	if oldLikely != meta.PeopleLikely {
@@ -493,12 +536,26 @@ func (s *ImageStore) evictOverlayCacheForImage(id string) {
 
 // DeleteImage removes the stored raw file, its metadata, bin cache, and all thumb files.
 func (s *ImageStore) DeleteImage(id string) error {
+	if s.cat != nil {
+		_ = s.cat.DeleteImage(id)
+	}
 	os.Remove(s.rawPath(id))
 	os.Remove(s.metaPath(id))
 	os.Remove(s.cachePath(id))
 	os.Remove(s.thumbPath(id))
 	os.Remove(s.previewPath(id))
 	return nil
+}
+
+// MoveAlbumImage inserts id immediately before targetID in an album.
+func (s *ImageStore) MoveAlbumImage(albumID, id, targetID string) error {
+	if s.cat == nil {
+		return fmt.Errorf("catalog not available")
+	}
+	if albumID == "" {
+		albumID = catalog.AlbumAll
+	}
+	return s.cat.MoveInAlbum(albumID, id, targetID)
 }
 
 const thumbW, thumbH = 320, 240
@@ -967,6 +1024,12 @@ func resizeTo(img image.Image, w, h int) image.Image {
 // ── conversion ───────────────────────────────────────────────────────────────
 
 func (s *ImageStore) readMeta(id string) (ImageMeta, error) {
+	if s.cat != nil {
+		img, err := s.cat.GetImage(id)
+		if err == nil {
+			return catalogToMeta(img), nil
+		}
+	}
 	var meta ImageMeta
 	data, err := os.ReadFile(s.metaPath(id))
 	if err != nil {
@@ -1254,8 +1317,10 @@ func (s *ImageStore) fillDimensions(meta *ImageMeta) {
 		return
 	}
 	meta.Width, meta.Height = w, h
-	b, _ := json.Marshal(meta)
-	os.WriteFile(s.metaPath(meta.ID), b, 0644)
+	_ = s.persistMeta(*meta)
+	if s.cat != nil {
+		_ = s.cat.UpdateDimensions(meta.ID, w, h)
+	}
 }
 
 func resizeToFrame(img image.Image) image.Image { return resizeTo(img, frameW, frameH) }

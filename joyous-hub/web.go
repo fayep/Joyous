@@ -223,7 +223,12 @@ func (h *Hub) handleDeviceDelete(w http.ResponseWriter, r *http.Request, id stri
 
 // handleImages serves GET /api/images.
 func (h *Hub) handleImages(w http.ResponseWriter, r *http.Request) {
-	imgs, _ := h.images.ListImages()
+	albumID, f := parseImageListFilter(r)
+	imgs, err := h.images.ListImagesQuery(albumID, f)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if imgs == nil {
 		imgs = []ImageMeta{}
 	}
@@ -286,15 +291,16 @@ func (h *Hub) handleImageGet(w http.ResponseWriter, r *http.Request, id string) 
 // handleImagePatch serves PATCH /api/images/{id} — updates display name and/or chroma override.
 func (h *Hub) handleImagePatch(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
-		Name            *string `json:"name"`
-		ChromaBoostMode *string `json:"chroma_boost_mode"`
+		Name            *string   `json:"name"`
+		ChromaBoostMode *string   `json:"chroma_boost_mode"`
+		Tags            *[]string `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if body.Name == nil && body.ChromaBoostMode == nil {
-		http.Error(w, "name or chroma_boost_mode required", http.StatusBadRequest)
+	if body.Name == nil && body.ChromaBoostMode == nil && body.Tags == nil {
+		http.Error(w, "name, chroma_boost_mode, or tags required", http.StatusBadRequest)
 		return
 	}
 	chromaMode := ""
@@ -307,7 +313,7 @@ func (h *Hub) handleImagePatch(w http.ResponseWriter, r *http.Request, id string
 			return
 		}
 	}
-	meta, err := h.images.PatchMeta(id, body.Name, chromaMode)
+	meta, err := h.images.PatchMeta(id, body.Name, chromaMode, body.Tags)
 	if err != nil {
 		code := http.StatusBadRequest
 		if strings.Contains(err.Error(), "not found") {
@@ -563,7 +569,7 @@ const indexHTML = `<!DOCTYPE html>
     .album-outer:hover .album-print{
       box-shadow:0 26px 46px -8px rgba(40,28,12,.42),0 4px 10px rgba(0,0,0,.18);
     }
-    .album-outer:hover .album-menu{opacity:1;transform:translateY(0);pointer-events:auto}
+    .album-outer:hover .album-menu{opacity:1;max-height:88px;padding:8px 2px 6px;pointer-events:auto}
   }
   .album-outer-selected{
     transform:translateY(-6px) rotate(0deg) scale(1.075)!important;z-index:1000!important;
@@ -571,9 +577,9 @@ const indexHTML = `<!DOCTYPE html>
   .album-outer-selected .album-print{
     box-shadow:0 26px 46px -8px rgba(40,28,12,.42),0 4px 10px rgba(0,0,0,.18);
   }
-  .album-outer-selected .album-menu{opacity:1;transform:translateY(0);pointer-events:auto}
+  .album-outer-selected .album-menu{opacity:1;max-height:88px;padding:8px 2px 6px;pointer-events:auto}
   .album-print{
-    width:calc(var(--photo-w) + 24px);max-width:calc(var(--photo-w) + 24px);box-sizing:border-box;overflow:hidden;
+    width:calc(var(--photo-w) + 24px);max-width:calc(var(--photo-w) + 24px);box-sizing:border-box;overflow:visible;
     background:#fdfbf6;padding:12px 12px 0;border-radius:2px;position:relative;
     box-shadow:0 7px 16px -4px rgba(50,38,20,.28),0 1px 3px rgba(0,0,0,.12);
     transition:box-shadow .26s ease;
@@ -583,12 +589,14 @@ const indexHTML = `<!DOCTYPE html>
   }
   .album-img img{width:100%;height:100%;object-fit:contain;display:block}
   .album-menu{
-    position:absolute;left:0;right:0;bottom:9px;display:flex;justify-content:center;gap:6px;
-    opacity:0;transform:translateY(8px);pointer-events:none;
-    transition:opacity .2s ease,transform .2s ease;
+    display:flex;flex-wrap:wrap;justify-content:center;align-content:center;gap:5px;
+    width:100%;box-sizing:border-box;max-height:0;opacity:0;overflow:hidden;
+    padding:0 2px;pointer-events:none;
+    transition:max-height .22s ease,opacity .2s ease,padding .22s ease;
   }
-  .album-btn{border:0;cursor:pointer;font:600 12px/1 inherit;color:#fff;background:#1f2740;padding:7px 11px;border-radius:6px}
-  .album-btn-delete{background:#e1483f;padding:7px 10px;font-size:13px;line-height:1}
+  .album-btn{border:0;cursor:pointer;font:600 11px/1.2 inherit;color:#fff;background:#1f2740;padding:6px 9px;border-radius:6px;white-space:nowrap}
+  .album-btn-exclude{background:#fff;color:#6e4f1a;border:1px solid #c9a96a}
+  .album-btn-delete{background:#e1483f;padding:6px 9px;font-size:11px;line-height:1.2}
   .album-caption-wrap{
     width:var(--photo-w);max-width:100%;margin:0 auto;overflow:hidden;box-sizing:border-box;
   }
@@ -607,9 +615,70 @@ const indexHTML = `<!DOCTYPE html>
     background:transparent;outline:none;
   }
   .album-empty{text-align:center;color:#6e6450;padding:3rem 1.5rem;font-size:15px;margin:0}
+  .album-shell{display:flex;flex:1;min-height:calc(100vh - 64px);width:100%}
+  .album-sidebar{
+    flex:0 0 220px;background:rgba(255,255,255,.35);border-right:1px solid rgba(0,0,0,.08);
+    padding:20px 0 16px;display:flex;flex-direction:column;gap:8px;
+  }
+  .album-sidebar-head{padding:0 16px 8px;font:600 13px/1.2 inherit;color:#5c5345;letter-spacing:.04em;text-transform:uppercase}
+  .album-nav{list-style:none;margin:0;padding:0;flex:1;overflow-y:auto}
+  .album-nav li{margin:0}
+  .album-nav-btn{
+    display:block;width:100%;text-align:left;border:0;background:transparent;
+    padding:10px 16px;font:inherit;font-size:14px;color:#3d3830;cursor:pointer;
+  }
+  .album-nav-btn:hover{background:rgba(255,255,255,.45)}
+  .album-nav-btn.active{background:rgba(255,255,255,.65);font-weight:600;color:#1f2740}
+  .album-sidebar-btn{
+    margin:4px 12px 0;border:1px dashed #a89b88;background:rgba(255,255,255,.25);
+    border-radius:8px;padding:10px 12px;font:inherit;font-size:13px;color:#5c5345;cursor:pointer;
+  }
+  .album-sidebar-btn:hover{background:rgba(255,255,255,.5)}
+  .album-main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .album-toolbar{max-width:1180px;margin:0 auto;padding:16px 40px 0;width:100%;box-sizing:border-box}
+  .album-toolbar-inner{
+    display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;
+    background:rgba(255,255,255,.32);border-radius:10px;padding:12px 14px;font-size:13px;color:#4a4135;
+  }
+  .album-toolbar label{display:flex;align-items:center;gap:6px;color:#6e6450}
+  .album-toolbar select,.album-toolbar input[type=text]{
+    font:inherit;font-size:13px;padding:6px 8px;border:1px solid #c4b9a8;border-radius:6px;background:rgba(255,255,255,.7);
+  }
+  .album-chip-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .album-chip{
+    display:inline-flex;align-items:center;gap:4px;background:rgba(31,39,64,.12);
+    color:#1f2740;padding:4px 8px;border-radius:999px;font-size:12px;
+  }
+  .album-chip button{border:0;background:transparent;cursor:pointer;color:#666;font-size:14px;line-height:1;padding:0 2px}
+  .album-chip-exclude{background:rgba(225,72,63,.14);color:#7a2e28}
+  .album-chip-tag-all{background:rgba(31,39,64,.12);color:#1f2740}
+  .album-chip-tag-any{background:rgba(66,103,178,.14);color:#2a4478}
+  .album-chip-tag-none{background:rgba(225,72,63,.14);color:#7a2e28}
+  .album-toolbar-actions{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto}
+  .album-tb-btn{
+    border:0;border-radius:6px;padding:7px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;
+    background:#1f2740;color:#fff;
+  }
+  .album-tb-btn.secondary{background:rgba(255,255,255,.55);color:#3d3830;border:1px solid #c4b9a8}
+  .album-tb-btn.danger{background:#e1483f}
+  .album-reorder-hint{text-align:center;font-size:12px;color:#7a7265;margin:0;padding:8px 16px 0}
+  .album-outer.album-dragging{opacity:.45;z-index:2000!important}
+  .album-outer.album-drop-before::before{
+    content:'';position:absolute;left:-6px;top:8%;bottom:8%;width:4px;background:#1f2740;border-radius:2px;z-index:50;
+  }
+  .album-tags{font-size:12px;color:#8a8069;text-align:center;padding:0 4px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  @media (max-width:900px){
+    .album-shell{flex-direction:column}
+    .album-sidebar{flex:none;width:100%;border-right:0;border-bottom:1px solid rgba(0,0,0,.08);max-height:180px}
+    .album-nav{display:flex;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;padding:0 8px 8px}
+    .album-nav li{flex:0 0 auto}
+    .album-nav-btn{white-space:nowrap;padding:8px 14px;border-radius:8px}
+    .album-sidebar-btn{margin:0 8px 8px;align-self:flex-start}
+  }
   @media (max-width:640px){
     .album-upload-wrap{padding:20px 16px 8px}
     .album-grid{padding:20px 12px 60px}
+    .album-toolbar{padding:12px 16px 0}
   }
   /* album fullscreen zoom */
   #album-zoom{
@@ -706,13 +775,24 @@ const indexHTML = `<!DOCTYPE html>
     <div id="device-list"><p>Loading…</p></div>
   </div>
   <div id="tab-album" class="album-wall">
-    <div class="album-upload-wrap">
-      <div id="upload-zone" class="album-upload" onclick="document.getElementById('file-input').click()">
-        Drop images here or click to upload <span class="album-upload-mono">(.bin, .png, .jpg)</span>
+    <div class="album-shell">
+      <aside class="album-sidebar">
+        <div class="album-sidebar-head">Albums</div>
+        <ul class="album-nav" id="album-nav"></ul>
+        <button type="button" class="album-sidebar-btn" onclick="createSmartAlbum()">+ New smart album</button>
+      </aside>
+      <div class="album-main">
+        <div class="album-toolbar" id="album-toolbar"></div>
+        <div class="album-upload-wrap">
+          <div id="upload-zone" class="album-upload" onclick="document.getElementById('file-input').click()">
+            Drop images here or click to upload <span class="album-upload-mono">(.bin, .png, .jpg)</span>
+          </div>
+        </div>
+        <p class="album-reorder-hint" id="album-reorder-hint" hidden>Drag a photo onto the left edge of another to reorder</p>
+        <div id="image-grid" class="album-grid"></div>
+        <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg" multiple>
       </div>
     </div>
-    <div id="image-grid" class="album-grid"></div>
-    <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg" multiple>
   </div>
   <div id="album-zoom" aria-hidden="true">
     <button type="button" class="album-zoom-close" aria-label="Close" onclick="closeAlbumZoom()">&times;</button>
@@ -1086,6 +1166,8 @@ let joyousUIRevision=JOYOUS_UI_REVISION;
 function joyousUIBusy(){
   if(albumCaptionEditingId) return true;
   if(albumZoomId) return true;
+  if(albumReorderBusy) return true;
+  if(albumFilterEditing) return true;
   const m=document.getElementById('crop-modal');
   return !!(m&&m.classList.contains('open'));
 }
@@ -1229,6 +1311,7 @@ let albumRevision=null;
 async function refreshAlbumTab(){
   if(albumCaptionEditingId) return;
   if(albumZoomId) return;
+  if(albumReorderBusy) return;
   const m=document.getElementById('crop-modal');
   if(m&&m.classList.contains('open')) return;
   try{
@@ -1537,45 +1620,555 @@ function initAlbumGridTap(){
   grid.addEventListener('click',albumGridTap);
 }
 
-async function loadImages(){
-  const r=await fetch('/api/images'); images=await r.json();
-  images.forEach(img=>{ imageCropsCache[img.id]=img.crops||{}; });
+let albums=[], currentAlbumId='all', draftFilter=emptyAlbumFilter(), knownTags=[];
+let albumReorderBusy=false, albumDragId=null, albumFilterEditing=false;
+let albumTagAddMode='all';
+const albumFormatOptions=['4:3','3:4','16:9','9:16'];
+
+function emptyAlbumFilter(){
+  return {tags_all:[],tags_any:[],tags_none:[],orientation:'',formats_any:[],no_saved_crops:null,exclude_ids:[]};
+}
+
+function cloneAlbumFilter(f){
+  return JSON.parse(JSON.stringify(f||emptyAlbumFilter()));
+}
+
+function parseAlbumFilterJSON(raw){
+  try{
+    if(!raw||raw==='{}') return emptyAlbumFilter();
+    const f=JSON.parse(raw);
+    return {
+      tags_all:f.tags_all||[],
+      tags_any:f.tags_any||[],
+      tags_none:f.tags_none||[],
+      orientation:f.orientation||'',
+      formats_any:f.formats_any||[],
+      no_saved_crops:f.no_saved_crops===true?true:null,
+      exclude_ids:f.exclude_ids||[]
+    };
+  }catch(e){
+    return emptyAlbumFilter();
+  }
+}
+
+function albumFilterActive(f){
+  f=f||draftFilter;
+  return !!(f.tags_all&&f.tags_all.length)||!!(f.tags_any&&f.tags_any.length)||!!(f.tags_none&&f.tags_none.length)||
+    !!f.orientation||!!(f.formats_any&&f.formats_any.length)||f.no_saved_crops===true||
+    !!(f.exclude_ids&&f.exclude_ids.length);
+}
+
+function currentAlbumMeta(){
+  return albums.find(a=>a.id===currentAlbumId);
+}
+
+function isAllPhotosAlbum(){
+  return currentAlbumId==='all';
+}
+
+function isSmartAlbumView(){
+  const a=currentAlbumMeta();
+  return !!(a&&a.kind==='smart');
+}
+
+function buildImagesURL(){
+  if(!isAllPhotosAlbum()){
+    return '/api/albums/'+encodeURIComponent(currentAlbumId)+'/images';
+  }
+  const f=draftFilter;
+  const p=new URLSearchParams();
+  (f.tags_all||[]).forEach(t=>p.append('tag',t));
+  (f.tags_any||[]).forEach(t=>p.append('tag_any',t));
+  (f.tags_none||[]).forEach(t=>p.append('tag_none',t));
+  if(f.orientation) p.set('orientation',f.orientation);
+  (f.formats_any||[]).forEach(fmt=>p.append('format',fmt));
+  if(f.no_saved_crops===true) p.set('no_saved_crops','1');
+  (f.exclude_ids||[]).forEach(id=>p.append('exclude',id));
+  const q=p.toString();
+  return '/api/images'+(q?'?'+q:'');
+}
+
+async function loadAlbums(){
+  try{
+    const r=await fetch('/api/albums');
+    if(!r.ok) return;
+    albums=await r.json()||[];
+    renderAlbumSidebar();
+  }catch(e){}
+}
+
+async function loadAllTags(){
+  try{
+    const r=await fetch('/api/tags');
+    if(!r.ok) return;
+    knownTags=await r.json()||[];
+    renderAlbumToolbar();
+  }catch(e){}
+}
+
+function renderAlbumSidebar(){
+  const nav=document.getElementById('album-nav');
+  if(!nav) return;
+  const smart=albums.filter(a=>a.kind==='smart');
+  let html='<li><button type="button" class="album-nav-btn'+(currentAlbumId==='all'?' active':'')+'" onclick="selectAlbum(\'all\')">All photos</button></li>';
+  smart.forEach(a=>{
+    const name=escHtml(a.name||a.id);
+    html+='<li><button type="button" class="album-nav-btn'+(currentAlbumId===a.id?' active':'')+'" onclick="selectAlbum(\''+a.id+'\')">'+name+'</button></li>';
+  });
+  nav.innerHTML=html;
+}
+
+function selectAlbum(id){
+  currentAlbumId=id||'all';
+  albumFilterEditing=false;
+  if(isAllPhotosAlbum()){
+    /* keep draftFilter for unsaved browse filters */
+  }else{
+    const a=currentAlbumMeta();
+    draftFilter=parseAlbumFilterJSON(a&&a.filter_json);
+  }
+  renderAlbumSidebar();
+  renderAlbumToolbar();
+  loadImages();
+}
+
+function toggleAlbumFormat(fmt){
+  if(!draftFilter.formats_any) draftFilter.formats_any=[];
+  const i=draftFilter.formats_any.indexOf(fmt);
+  if(i>=0) draftFilter.formats_any.splice(i,1);
+  else draftFilter.formats_any.push(fmt);
+  renderAlbumToolbar();
+}
+
+function addDraftTag(){
+  const input=document.getElementById('album-tag-input');
+  if(!input) return;
+  const t=input.value.trim();
+  if(!t) return;
+  const modeSel=document.getElementById('album-tag-mode');
+  if(modeSel) albumTagAddMode=modeSel.value;
+  const key=albumTagModeKey(albumTagAddMode);
+  if(!draftFilter[key]) draftFilter[key]=[];
+  removeDraftTagFromAll(t);
+  if(!draftFilter[key].includes(t)) draftFilter[key].push(t);
+  input.value='';
+  renderAlbumToolbar();
+}
+
+function albumTagModeKey(mode){
+  if(mode==='any') return 'tags_any';
+  if(mode==='none') return 'tags_none';
+  return 'tags_all';
+}
+
+function removeDraftTagFromAll(tag){
+  draftFilter.tags_all=(draftFilter.tags_all||[]).filter(t=>t!==tag);
+  draftFilter.tags_any=(draftFilter.tags_any||[]).filter(t=>t!==tag);
+  draftFilter.tags_none=(draftFilter.tags_none||[]).filter(t=>t!==tag);
+}
+
+function removeDraftTag(tag, mode){
+  const key=albumTagModeKey(mode||'all');
+  draftFilter[key]=(draftFilter[key]||[]).filter(t=>t!==tag);
+  renderAlbumToolbar();
+  reloadDraftFilterView();
+}
+
+function renderDraftTagChips(f, editable){
+  const specs=[
+    {mode:'all', list:f.tags_all||[], cls:'album-chip-tag-all', prefix:'', title:'must have'},
+    {mode:'any', list:f.tags_any||[], cls:'album-chip-tag-any', prefix:'any ', title:'any of'},
+    {mode:'none', list:f.tags_none||[], cls:'album-chip-tag-none', prefix:'not ', title:'must not'},
+  ];
+  return specs.map(spec=>spec.list.map(t=>{
+    const label=spec.prefix+escHtml(t);
+    if(editable){
+      return '<span class="album-chip '+spec.cls+'" title="'+spec.title+'">'+label+
+        ' <button type="button" aria-label="Remove tag" onclick=\'removeDraftTag('+JSON.stringify(t)+','+JSON.stringify(spec.mode)+')\'>&times;</button></span>';
+    }
+    return '<span class="album-chip '+spec.cls+'" title="'+spec.title+'">'+label+'</span>';
+  }).join('')).join('');
+}
+
+function excludeChipLabel(id){
+  const img=images.find(i=>i.id===id);
+  if(img) return img.name||id.slice(0,8);
+  return id.slice(0,8)+'…';
+}
+
+function canExcludeFromFilter(){
+  return isAllPhotosAlbum()||isSmartAlbumView();
+}
+
+async function reloadDraftFilterView(){
+  if(isAllPhotosAlbum()) await loadImages();
+  else if(isSmartAlbumView()) await updateSmartAlbumFilter(false);
+}
+
+async function addDraftExclude(imageId){
+  if(!imageId) return;
+  if(!draftFilter.exclude_ids) draftFilter.exclude_ids=[];
+  if(draftFilter.exclude_ids.includes(imageId)) return;
+  draftFilter.exclude_ids.push(imageId);
+  renderAlbumToolbar();
+  await reloadDraftFilterView();
+}
+
+async function removeDraftExclude(imageId){
+  draftFilter.exclude_ids=(draftFilter.exclude_ids||[]).filter(id=>id!==imageId);
+  renderAlbumToolbar();
+  await reloadDraftFilterView();
+}
+
+function applyAlbumFilters(){
+  if(isSmartAlbumView()&&!albumFilterEditing) return;
+  if(isAllPhotosAlbum()) loadImages();
+  else updateSmartAlbumFilter();
+}
+
+function clearAlbumFilters(){
+  draftFilter=emptyAlbumFilter();
+  albumFilterEditing=false;
+  if(isAllPhotosAlbum()){
+    renderAlbumToolbar();
+    loadImages();
+    return;
+  }
+  updateSmartAlbumFilter();
+}
+
+function renderAlbumToolbar(){
+  const el=document.getElementById('album-toolbar');
+  if(!el) return;
+  const smart=isSmartAlbumView();
+  const editable=isAllPhotosAlbum()||albumFilterEditing;
+  const f=draftFilter;
+  const chips=renderDraftTagChips(f, editable);
+  const fmtRow=albumFormatOptions.map(fmt=>{
+    const on=(f.formats_any||[]).includes(fmt);
+    if(!editable){
+      return on?'<span class="album-chip">'+escHtml(fmt)+'</span>':'';
+    }
+    return '<label><input type="checkbox"'+(on?' checked':'')+' onchange="toggleAlbumFormat('+JSON.stringify(fmt)+')"> '+escHtml(fmt)+'</label>';
+  }).join('');
+  const tagList=knownTags.map(t=>'<option value="'+escHtml(t)+'">').join('');
+  let actions='';
+  if(editable){
+    actions+='<button type="button" class="album-tb-btn secondary" onclick="clearAlbumFilters()">Clear</button>';
+    actions+='<button type="button" class="album-tb-btn" onclick="applyAlbumFilters()">Apply</button>';
+    if(isAllPhotosAlbum()&&albumFilterActive()){
+      actions+='<button type="button" class="album-tb-btn" onclick="saveDraftAsSmartAlbum()">Save as smart album</button>';
+    }
+    if(smart&&albumFilterEditing){
+      actions+='<button type="button" class="album-tb-btn secondary" onclick="albumFilterEditing=false;selectAlbum(currentAlbumId)">Cancel</button>';
+    }
+  }else if(smart){
+    actions+='<button type="button" class="album-tb-btn secondary" onclick="albumFilterEditing=true;renderAlbumToolbar()">Edit filters</button>';
+    actions+='<button type="button" class="album-tb-btn secondary" onclick="renameSmartAlbum()">Rename</button>';
+    actions+='<button type="button" class="album-tb-btn danger" onclick="deleteSmartAlbum()">Delete</button>';
+  }
+  const orientOpts=['','portrait','landscape','square'].map(o=>{
+    const label=o||'Any orientation';
+    return '<option value="'+o+'"'+(f.orientation===o?' selected':'')+'>'+label+'</option>';
+  }).join('');
+  const noCropsChip=f.no_saved_crops?'<span class="album-chip">No saved crops</span>':'';
+  const noCropsEdit=editable?('<label><input type="checkbox"'+(f.no_saved_crops?' checked':'')+
+    ' onchange="draftFilter.no_saved_crops=this.checked?true:null"> No saved crops</label>'):'';
+  const excludeChips=(f.exclude_ids||[]).map(id=>{
+    const label=escHtml(excludeChipLabel(id));
+    const title=' title="Except '+escHtml(id)+'"';
+    if(editable){
+      return '<span class="album-chip album-chip-exclude"'+title+'>'+label+
+        ' <button type="button" aria-label="Remove exclusion" onclick=\'removeDraftExclude('+JSON.stringify(id)+')\'>&times;</button></span>';
+    }
+    return '<span class="album-chip album-chip-exclude"'+title+'>Except '+label+'</span>';
+  }).join('');
+  const tagModeOpts=[
+    {v:'all', label:'must have (and)'},
+    {v:'any', label:'any of (or)'},
+    {v:'none', label:'must not (not)'},
+  ].map(o=>'<option value="'+o.v+'"'+(albumTagAddMode===o.v?' selected':'')+'>'+o.label+'</option>').join('');
+  const filterRow=editable?(
+    '<label>Tag rule <select id="album-tag-mode" onchange="albumTagAddMode=this.value">'+tagModeOpts+'</select></label>'+
+    '<label>Tag <input type="text" id="album-tag-input" list="album-tag-suggestions" placeholder="Add tag…" onkeydown="if(event.key===\'Enter\'){event.preventDefault();addDraftTag();}">'+
+    '<datalist id="album-tag-suggestions">'+tagList+'</datalist></label>'+
+    '<button type="button" class="album-tb-btn secondary" onclick="addDraftTag()">Add</button>'+
+    '<label>Orientation <select id="album-orient" onchange="draftFilter.orientation=this.value">'+orientOpts+'</select></label>'+
+    noCropsEdit+
+  '<div class="album-chip-row">'+fmtRow+'</div>'
+  ):'';
+  const title=smart&&!editable?('<strong style="margin-right:8px">'+escHtml(currentAlbumMeta().name||'')+'</strong>'):'';
+  el.innerHTML='<div class="album-toolbar-inner">'+
+    title+
+    (chips||excludeChips||noCropsChip?'<div class="album-chip-row">'+chips+excludeChips+noCropsChip+'</div>':'')+
+    filterRow+
+    (actions?'<div class="album-toolbar-actions">'+actions+'</div>':'')+
+    '</div>';
+}
+
+async function saveDraftAsSmartAlbum(){
+  const name=prompt('Smart album name');
+  if(!name||!name.trim()) return;
+  try{
+    const r=await fetch('/api/albums',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:name.trim(),filter:draftFilter})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    const a=await r.json();
+    await loadAlbums();
+    selectAlbum(a.id);
+  }catch(e){
+    alert('Create album failed: '+e.message);
+  }
+}
+
+async function updateSmartAlbumFilter(finishEdit){
+  if(finishEdit===undefined) finishEdit=true;
+  if(!isSmartAlbumView()) return;
+  try{
+    const r=await fetch('/api/albums/'+encodeURIComponent(currentAlbumId),{
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({filter:draftFilter})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    if(finishEdit) albumFilterEditing=false;
+    await loadAlbums();
+    draftFilter=parseAlbumFilterJSON(currentAlbumMeta()?.filter_json);
+    renderAlbumSidebar();
+    renderAlbumToolbar();
+    await loadImages();
+  }catch(e){
+    alert('Update album failed: '+e.message);
+  }
+}
+
+async function renameSmartAlbum(){
+  const a=currentAlbumMeta();
+  if(!a) return;
+  const name=prompt('Album name', a.name||'');
+  if(!name||!name.trim()||name.trim()===a.name) return;
+  try{
+    const r=await fetch('/api/albums/'+encodeURIComponent(currentAlbumId),{
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:name.trim()})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    await loadAlbums();
+    renderAlbumSidebar();
+    renderAlbumToolbar();
+  }catch(e){
+    alert('Rename failed: '+e.message);
+  }
+}
+
+async function deleteSmartAlbum(){
+  const a=currentAlbumMeta();
+  if(!a) return;
+  if(!confirm('Delete smart album “'+(a.name||a.id)+'”? Photos are not deleted.')) return;
+  try{
+    const r=await fetch('/api/albums/'+encodeURIComponent(currentAlbumId),{method:'DELETE'});
+    if(!r.ok) throw new Error(await r.text());
+    currentAlbumId='all';
+    draftFilter=emptyAlbumFilter();
+    albumFilterEditing=false;
+    await loadAlbums();
+    selectAlbum('all');
+  }catch(e){
+    alert('Delete album failed: '+e.message);
+  }
+}
+
+async function createSmartAlbum(){
+  if(albumFilterActive()){
+    await saveDraftAsSmartAlbum();
+    return;
+  }
+  const name=prompt('Smart album name');
+  if(!name||!name.trim()) return;
+  try{
+    const r=await fetch('/api/albums',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:name.trim(),filter:emptyAlbumFilter()})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    const a=await r.json();
+    await loadAlbums();
+    selectAlbum(a.id);
+    albumFilterEditing=true;
+    renderAlbumToolbar();
+  }catch(e){
+    alert('Create album failed: '+e.message);
+  }
+}
+
+function updateAlbumReorderHint(){
+  const hint=document.getElementById('album-reorder-hint');
+  if(!hint) return;
+  const show=images.length>1&&!albumCaptionEditingId;
+  hint.hidden=!show;
+}
+
+function setupAlbumDrag(card, imageId){
+  if(card.dataset.albumDrag){
+    card.draggable=images.length>=2;
+    return;
+  }
+  card.dataset.albumDrag='1';
+  card.addEventListener('dragstart',e=>{
+    if(albumCaptionEditingId||albumReorderBusy){
+      e.preventDefault();
+      return;
+    }
+    albumDragId=imageId;
+    e.dataTransfer.effectAllowed='move';
+    card.classList.add('album-dragging');
+  });
+  card.addEventListener('dragend',()=>{
+    card.classList.remove('album-dragging');
+    document.querySelectorAll('.album-drop-before').forEach(el=>el.classList.remove('album-drop-before'));
+    albumDragId=null;
+  });
+  card.addEventListener('dragover',e=>{
+    if(!albumDragId||albumDragId===imageId) return;
+    const rect=card.getBoundingClientRect();
+    if(e.clientX>rect.left+rect.width*0.35) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect='move';
+    document.querySelectorAll('.album-drop-before').forEach(el=>el.classList.remove('album-drop-before'));
+    card.classList.add('album-drop-before');
+  });
+  card.addEventListener('dragleave',e=>{
+    if(!card.contains(e.relatedTarget)) card.classList.remove('album-drop-before');
+  });
+  card.addEventListener('drop',async e=>{
+    e.preventDefault();
+    e.stopPropagation();
+    card.classList.remove('album-drop-before');
+    const draggedId=albumDragId;
+    if(!draggedId||draggedId===imageId) return;
+    const rect=card.getBoundingClientRect();
+    if(e.clientX>rect.left+rect.width*0.35) return;
+    await saveAlbumMove(draggedId, imageId);
+  });
+  card.draggable=images.length>=2;
+}
+
+async function saveAlbumMove(draggedId, targetId){
+  if(draggedId===targetId) return;
+  albumReorderBusy=true;
+  const prev=images.slice();
+  const from=prev.findIndex(i=>i.id===draggedId);
+  const to=prev.findIndex(i=>i.id===targetId);
+  if(from<0||to<0){ albumReorderBusy=false; return; }
+  const next=prev.slice();
+  const item=next.splice(from,1)[0];
+  let insertAt=to;
+  if(from<to) insertAt--;
+  next.splice(insertAt,0,item);
+  images=next;
+  renderAlbumGrid();
+  try{
+    const r=await fetch('/api/albums/'+encodeURIComponent(currentAlbumId)+'/order',{
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({move:{id:draggedId,target:targetId}})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    await syncAlbumRevision();
+  }catch(e){
+    images=prev;
+    renderAlbumGrid();
+    alert('Reorder failed: '+e.message);
+  }finally{
+    albumReorderBusy=false;
+  }
+}
+
+async function editAlbumTags(imageId){
+  const img=images.find(i=>i.id===imageId);
+  const cur=(img&&img.tags)?img.tags.join(', '):'';
+  const s=prompt('Tags (comma-separated)', cur);
+  if(s===null) return;
+  const tags=s.split(',').map(t=>t.trim()).filter(Boolean);
+  try{
+    const r=await fetch('/api/images/'+imageId,{
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({tags})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    const meta=await r.json();
+    if(img) img.tags=meta.tags||[];
+    renderAlbumGrid();
+    loadAllTags();
+  }catch(e){
+    alert('Tags update failed: '+e.message);
+  }
+}
+
+function renderAlbumGrid(){
   const el=document.getElementById('image-grid');
+  if(!el) return;
   if(!images||!images.length){
     albumSelectedId=null;
     if(albumZoomId) closeAlbumZoom();
-    el.innerHTML='<p class="album-empty">No images uploaded yet.</p>';
+    const msg=albumFilterActive()?'No photos match these filters.':'No images uploaded yet.';
+    el.innerHTML='<p class="album-empty">'+msg+'</p>';
+    updateAlbumReorderHint();
     return;
   }
   el.innerHTML=images.map((img,i)=>{
     const name=escHtml(img.name);
+    const tags=(img.tags&&img.tags.length)?'<div class="album-tags" title="'+escHtml(img.tags.join(', '))+'">'+escHtml(img.tags.join(' · '))+'</div>':'';
     const sz=albumPhotoSize(img);
+    const excludeBtn=canExcludeFromFilter()?
+      '<button type="button" class="album-btn album-btn-exclude" onclick="event.stopPropagation();addDraftExclude(\''+img.id+'\')">Exclude</button>':'';
     return '<div class="album-outer'+(sz.portrait?' album-outer-portrait':'')+'" id="card-'+img.id+'" style="'+albumStackVars(i)+'">'+
       '<div class="album-print" style="--photo-w:'+sz.w+'px;--photo-h:'+sz.h+'px">'+
         '<div class="album-img">'+
           '<img src="/images/'+img.id+'/preview" alt="'+name+'" loading="lazy">'+
-          '<div class="album-menu">'+
-            '<button type="button" class="album-btn" onclick="event.stopPropagation();openCrop(\''+img.id+'\')">Frame</button>'+
-            '<button type="button" class="album-btn" onclick="event.stopPropagation();downloadAlbumImage(\''+img.id+'\','+JSON.stringify(img.name)+')">Save</button>'+
-            '<button type="button" class="album-btn" id="send-btn-'+img.id+'" onclick="sendImageToFrame(event,\''+img.id+'\')">Send</button>'+
-            '<button type="button" class="album-btn album-btn-delete" onclick="event.stopPropagation();deleteImg(\''+img.id+'\')">&times;</button>'+
-          '</div>'+
+        '</div>'+
+        '<div class="album-menu">'+
+          excludeBtn+
+          '<button type="button" class="album-btn" onclick="event.stopPropagation();editAlbumTags(\''+img.id+'\')">Tags</button>'+
+          '<button type="button" class="album-btn" onclick="event.stopPropagation();openCrop(\''+img.id+'\')">Frame</button>'+
+          '<button type="button" class="album-btn" onclick="event.stopPropagation();downloadAlbumImage(\''+img.id+'\','+JSON.stringify(img.name)+')">Save</button>'+
+          '<button type="button" class="album-btn" id="send-btn-'+img.id+'" onclick="sendImageToFrame(event,\''+img.id+'\')">Send</button>'+
+          '<button type="button" class="album-btn album-btn-delete" onclick="event.stopPropagation();deleteImg(\''+img.id+'\')">Delete</button>'+
         '</div>'+
         '<div class="album-caption-wrap">'+
           '<div class="album-caption" title="'+name+'">'+name+'</div>'+
-        '</div>'+
+        '</div>'+tags+
       '</div></div>';
   }).join('');
   initAlbumGridTap();
+  images.forEach(img=>{
+    const card=document.getElementById('card-'+img.id);
+    if(card) setupAlbumDrag(card, img.id);
+  });
   if(albumSelectedId){
     if(images.some(img=>img.id===albumSelectedId)){
-      const el=document.getElementById('card-'+albumSelectedId);
-      if(el) el.classList.add('album-outer-selected');
+      const sel=document.getElementById('card-'+albumSelectedId);
+      if(sel) sel.classList.add('album-outer-selected');
     }else{
       albumSelectedId=null;
     }
   }
   if(albumZoomId&&!images.some(img=>img.id===albumZoomId)) closeAlbumZoom();
+  updateAlbumReorderHint();
+}
+
+async function loadImages(){
+  const r=await fetch(buildImagesURL());
+  images=await r.json();
+  images.forEach(img=>{ imageCropsCache[img.id]=img.crops||{}; });
+  renderAlbumGrid();
+  renderAlbumToolbar();
   await syncAlbumRevision();
 }
 
@@ -2188,6 +2781,8 @@ async function loadDevicesInner(){
 }
 
 showTab('album', document.querySelector('nav button.active'));
+loadAlbums();
+loadAllTags();
 
 // ── Overlays tab ────────────────────────────────────────────────────────────
 let overlayConfig=null;

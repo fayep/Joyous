@@ -7,7 +7,7 @@ Local-first control for e-ink photo frames on your LAN. **Joyous Hub** (`joyous-
 | **InkJoy** | MQTT + HTTP `.bin` download | Local MQTT broker, optional cloud bridge, image encode & push |
 | **Samsung EM32DX** | MDC (TLS `:1515`) + HTTP pull | Wake/sleep, MDC content push, battery logging |
 
-See [CHANGELOG.md](CHANGELOG.md) for recent hub changes. Album brainstorm: [docs/future-ideas.md](docs/future-ideas.md).
+See [CHANGELOG.md](CHANGELOG.md) for recent hub changes. Album brainstorm: [docs/future-ideas.md](docs/future-ideas.md). Image catalog & smart albums: [ADR 0001](docs/adr/0001-sqlite-catalog-smart-albums.md), [implementation plan](docs/plans/sqlite-catalog-implementation.md), [upgrade guide](docs/migrations/sqlite-catalog-upgrade.md).
 
 ## Joyous Hub at a glance
 

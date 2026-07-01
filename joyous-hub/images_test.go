@@ -719,7 +719,7 @@ func TestPatchMetaChromaEvictsCache(t *testing.T) {
 	if err := os.WriteFile(cacheFile, []byte("cached"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PatchMeta(id, nil, "on"); err != nil {
+	if _, err := store.PatchMeta(id, nil, "on", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
