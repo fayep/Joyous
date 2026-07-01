@@ -170,10 +170,10 @@ Null/absent fields = no constraint.
 
 ### Phase 2 — Tags + query API
 
-- [ ] `PATCH /api/images/{id}` accepts `tags: string[]`.
-- [ ] `GET /api/images?tag=foo&tag=bar&orientation=portrait&format=16:9&album_id=all`.
-- [ ] `GET /api/tags` — autocomplete list.
-- [ ] Update `AlbumRevision` / catalog revision hash when tags or filters change.
+- [x] `PATCH /api/images/{id}` accepts `tags: string[]`.
+- [x] `GET /api/images?tag=foo&tag=bar&orientation=portrait&format=16:9&album_id=all`.
+- [x] `GET /api/tags` — autocomplete list.
+- [x] Update `AlbumRevision` / catalog revision hash when tags or filters change.
 
 **Tests:** filter combinations; tag index used (explain query in test optional).
 
@@ -183,11 +183,10 @@ Null/absent fields = no constraint.
 
 ### Phase 3 — Smart albums + per-album order
 
-- [ ] `GET/POST/PATCH/DELETE /api/albums`.
-- [ ] `GET /api/albums/{id}/images`, `GET /api/albums/{id}/count`.
-- [ ] `PATCH /api/albums/{id}/order` — body `{ "move": { "id", "target" } }` (same UX as today).
-- [ ] `order.go`: fractional `sort_key` between neighbors; rebalance helper if gap &lt; 1e-9.
-- [ ] Listing algorithm:
+- [x] `GET/POST/PATCH/DELETE /api/albums`.
+- [x] `GET /api/albums/{id}/images`, `GET /api/albums/{id}/count`.
+- [x] `PATCH /api/albums/{id}/order` — body `{ "move": { "id", "target" } }` (same UX as today).
+- [x] Listing algorithm:
   1. Resolve member IDs (all images | filter query | manual members).
   2. LEFT JOIN `album_order` ON `(album_id, image_id)`.
   3. ORDER BY `sort_key IS NULL`, `sort_key`, tiebreaker per `default_sort`.

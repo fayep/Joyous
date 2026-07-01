@@ -223,7 +223,12 @@ func (h *Hub) handleDeviceDelete(w http.ResponseWriter, r *http.Request, id stri
 
 // handleImages serves GET /api/images.
 func (h *Hub) handleImages(w http.ResponseWriter, r *http.Request) {
-	imgs, _ := h.images.ListImages()
+	albumID, f := parseImageListFilter(r)
+	imgs, err := h.images.ListImagesQuery(albumID, f)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if imgs == nil {
 		imgs = []ImageMeta{}
 	}
@@ -286,15 +291,16 @@ func (h *Hub) handleImageGet(w http.ResponseWriter, r *http.Request, id string) 
 // handleImagePatch serves PATCH /api/images/{id} — updates display name and/or chroma override.
 func (h *Hub) handleImagePatch(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
-		Name            *string `json:"name"`
-		ChromaBoostMode *string `json:"chroma_boost_mode"`
+		Name            *string   `json:"name"`
+		ChromaBoostMode *string   `json:"chroma_boost_mode"`
+		Tags            *[]string `json:"tags"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if body.Name == nil && body.ChromaBoostMode == nil {
-		http.Error(w, "name or chroma_boost_mode required", http.StatusBadRequest)
+	if body.Name == nil && body.ChromaBoostMode == nil && body.Tags == nil {
+		http.Error(w, "name, chroma_boost_mode, or tags required", http.StatusBadRequest)
 		return
 	}
 	chromaMode := ""
@@ -307,7 +313,7 @@ func (h *Hub) handleImagePatch(w http.ResponseWriter, r *http.Request, id string
 			return
 		}
 	}
-	meta, err := h.images.PatchMeta(id, body.Name, chromaMode)
+	meta, err := h.images.PatchMeta(id, body.Name, chromaMode, body.Tags)
 	if err != nil {
 		code := http.StatusBadRequest
 		if strings.Contains(err.Error(), "not found") {

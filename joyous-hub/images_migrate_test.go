@@ -62,7 +62,7 @@ func TestMoveAlbumImageCatalog(t *testing.T) {
 	_, _ = store.Store(bytes.NewReader([]byte{2}), "b.jpg")
 	id3, _ := store.Store(bytes.NewReader([]byte{3}), "c.jpg")
 
-	if err := store.MoveAlbumImage(id3, id1); err != nil {
+	if err := store.MoveAlbumImage(catalog.AlbumAll, id3, id1); err != nil {
 		t.Fatal(err)
 	}
 	imgs, _ := store.ListImages()

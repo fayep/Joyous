@@ -64,6 +64,9 @@ func (s *ImageStore) migrateCatalogFromJSON() error {
 		if err := s.cat.UpsertImage(img, cropsToCatalog(meta.Crops)); err != nil {
 			return err
 		}
+		if len(meta.Tags) > 0 {
+			_ = s.cat.SetImageTags(meta.ID, meta.Tags)
+		}
 		imported = append(imported, meta.ID)
 	}
 	if len(imported) == 0 {
@@ -157,6 +160,9 @@ func (s *ImageStore) persistMeta(meta ImageMeta) error {
 		}
 		img.UpdatedAt = now
 		if err := s.cat.UpsertImage(img, cropsToCatalog(meta.Crops)); err != nil {
+			return err
+		}
+		if err := s.cat.SetImageTags(meta.ID, meta.Tags); err != nil {
 			return err
 		}
 	}

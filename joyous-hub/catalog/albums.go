@@ -26,31 +26,52 @@ func (db *DB) ListAlbumImageIDs(albumID string) ([]string, error) {
 	if albumID == "" {
 		albumID = AlbumAll
 	}
-	rows, err := db.sql.Query(`
-		SELECT i.id
-		FROM images i
-		LEFT JOIN album_order o ON o.album_id = ? AND o.image_id = i.id
-		ORDER BY (o.sort_key IS NULL), o.sort_key, i.added_at, i.id`, albumID)
+	album, err := db.GetAlbum(albumID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return db.listAlbumMemberIDsOrdered(album)
 }
 
 // ListAlbumImages returns full image rows for an album in display order.
 func (db *DB) ListAlbumImages(albumID string) ([]Image, error) {
-	ids, err := db.ListAlbumImageIDs(albumID)
+	return db.ListFilteredImages(albumID, Filter{})
+}
+
+// ListFilteredImages lists images in an album with an optional extra filter (query API).
+func (db *DB) ListFilteredImages(albumID string, extra Filter) ([]Image, error) {
+	if albumID == "" {
+		albumID = AlbumAll
+	}
+	album, err := db.GetAlbum(albumID)
 	if err != nil {
 		return nil, err
+	}
+	ids, err := db.listAlbumMemberIDsOrdered(album)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	// Apply extra inline filter by intersecting with matching ids.
+	extra = extra.normalized()
+	if !extra.isEmpty() {
+		matched, err := db.imageIDsMatchingFilter(extra)
+		if err != nil {
+			return nil, err
+		}
+		have := make(map[string]bool, len(matched))
+		for _, id := range matched {
+			have[id] = true
+		}
+		filtered := ids[:0]
+		for _, id := range ids {
+			if have[id] {
+				filtered = append(filtered, id)
+			}
+		}
+		ids = filtered
 	}
 	out := make([]Image, 0, len(ids))
 	for _, id := range ids {
@@ -61,6 +82,12 @@ func (db *DB) ListAlbumImages(albumID string) ([]Image, error) {
 		out = append(out, img)
 	}
 	return out, nil
+}
+
+func (f Filter) isEmpty() bool {
+	f = f.normalized()
+	return len(f.TagsAll) == 0 && len(f.TagsAny) == 0 && len(f.TagsNone) == 0 &&
+		f.Orientation == "" && len(f.FormatsAny) == 0 && f.PeopleLikely == nil
 }
 
 // SetAlbumOrder rebuilds explicit sort keys for albumID from a full ID list (tests / migration).

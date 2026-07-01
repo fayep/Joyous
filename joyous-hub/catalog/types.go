@@ -42,6 +42,7 @@ type Image struct {
 	AddedAt         time.Time
 	UpdatedAt       time.Time
 	Crops           map[string]Crop
+	Tags            []string
 }
 
 // Album is a saved collection (all photos, smart, or manual).

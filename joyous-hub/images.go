@@ -50,6 +50,7 @@ type ImageMeta struct {
 	PeopleLikely     bool `json:"people_likely,omitempty"`
 	PeopleAnalyzed   bool `json:"people_analyzed,omitempty"`
 	PeopleDetectVer  int  `json:"people_detect_ver,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
 }
 
 // ImageStore manages raw image storage and a bounded converted-bin cache.
@@ -258,8 +259,13 @@ func (s *ImageStore) ServeBinOrientationHTTP(w http.ResponseWriter, r *http.Requ
 
 // ListImages returns metadata for all stored images in album display order.
 func (s *ImageStore) ListImages() ([]ImageMeta, error) {
+	return s.ListImagesQuery(catalog.AlbumAll, catalog.Filter{})
+}
+
+// ListImagesQuery returns images for an album with an optional filter.
+func (s *ImageStore) ListImagesQuery(albumID string, f catalog.Filter) ([]ImageMeta, error) {
 	if s.cat != nil {
-		imgs, err := s.cat.ListAlbumImages(catalog.AlbumAll)
+		imgs, err := s.cat.ListFilteredImages(albumID, f)
 		if err != nil {
 			return nil, err
 		}
@@ -269,6 +275,10 @@ func (s *ImageStore) ListImages() ([]ImageMeta, error) {
 		}
 		return out, nil
 	}
+	return s.listImagesLegacy()
+}
+
+func (s *ImageStore) listImagesLegacy() ([]ImageMeta, error) {
 	entries, err := os.ReadDir(s.rawDir())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -330,6 +340,12 @@ func (s *ImageStore) AlbumRevision() string {
 	if s.cat != nil {
 		if orderRev, err := s.cat.AlbumOrderRevision(catalog.AlbumAll); err == nil && orderRev != "" {
 			h.Write([]byte(orderRev))
+		}
+		if tagRev, err := s.cat.TagsRevision(); err == nil && tagRev != "" {
+			h.Write([]byte(tagRev))
+		}
+		if albRev, err := s.cat.AlbumsRevision(); err == nil && albRev != "" {
+			h.Write([]byte(albRev))
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
@@ -399,12 +415,13 @@ func (s *ImageStore) Rename(id, name string) (ImageMeta, error) {
 	if name == "" {
 		return ImageMeta{}, fmt.Errorf("name required")
 	}
-	return s.PatchMeta(id, &name, "")
+	return s.PatchMeta(id, &name, "", nil)
 }
 
-// PatchMeta updates display name and/or per-image chroma boost override.
+// PatchMeta updates display name, chroma override, and/or tags.
 // chromaMode is "", "global", "on", or "off"; empty string leaves chroma unchanged.
-func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string) (ImageMeta, error) {
+// tags non-nil replaces the image tag set.
+func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string, tags *[]string) (ImageMeta, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return ImageMeta{}, err
@@ -441,6 +458,10 @@ func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string) (Imag
 			meta.ChromaBoost = &v
 			changed = true
 		}
+	}
+	if tags != nil {
+		meta.Tags = *tags
+		changed = true
 	}
 	if !changed {
 		return meta, nil
@@ -526,12 +547,15 @@ func (s *ImageStore) DeleteImage(id string) error {
 	return nil
 }
 
-// MoveAlbumImage inserts id immediately before targetID in the All photos album.
-func (s *ImageStore) MoveAlbumImage(id, targetID string) error {
+// MoveAlbumImage inserts id immediately before targetID in an album.
+func (s *ImageStore) MoveAlbumImage(albumID, id, targetID string) error {
 	if s.cat == nil {
 		return fmt.Errorf("catalog not available")
 	}
-	return s.cat.MoveInAlbum(catalog.AlbumAll, id, targetID)
+	if albumID == "" {
+		albumID = catalog.AlbumAll
+	}
+	return s.cat.MoveInAlbum(albumID, id, targetID)
 }
 
 const thumbW, thumbH = 320, 240

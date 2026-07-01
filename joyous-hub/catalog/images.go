@@ -105,6 +105,7 @@ func (db *DB) GetImage(id string) (Image, error) {
 		return Image{}, err
 	}
 	img.Crops = crops
+	_ = db.attachTags(&img)
 	return img, nil
 }
 

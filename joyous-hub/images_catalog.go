@@ -18,6 +18,7 @@ func metaToCatalog(m ImageMeta) catalog.Image {
 		PeopleDetectVer: m.PeopleDetectVer,
 		RelPath:         catalog.DefaultRelPath(m.ID),
 		StorageKind:     catalog.StorageHub,
+		Tags:            m.Tags,
 	}
 	img.Orientation = catalog.OrientationFromDimensions(m.Width, m.Height)
 	return img
@@ -46,6 +47,7 @@ func catalogToMeta(img catalog.Image) ImageMeta {
 		PeopleLikely:    img.PeopleLikely,
 		PeopleAnalyzed:  img.PeopleAnalyzed,
 		PeopleDetectVer: img.PeopleDetectVer,
+		Tags:            img.Tags,
 	}
 	if len(img.Crops) > 0 {
 		m.Crops = make(map[string]CropRect, len(img.Crops))
