@@ -15,6 +15,7 @@ type Filter struct {
 	FormatsAny   []string `json:"formats_any,omitempty"`
 	PeopleLikely *bool    `json:"people_likely,omitempty"`
 	NoSavedCrops *bool    `json:"no_saved_crops,omitempty"` // true: no rows in image_crops; false: has crops
+	Untagged     *bool    `json:"untagged,omitempty"`       // true: no rows in image_tags; false: has tags
 	ExcludeIDs   []string `json:"exclude_ids,omitempty"`    // omit these image ids from results
 }
 
@@ -138,6 +139,13 @@ func (db *DB) imageIDsMatchingFilter(f Filter) ([]string, error) {
 			where = append(where, `NOT EXISTS (SELECT 1 FROM image_crops c WHERE c.image_id = i.id)`)
 		} else {
 			where = append(where, `EXISTS (SELECT 1 FROM image_crops c WHERE c.image_id = i.id)`)
+		}
+	}
+	if f.Untagged != nil {
+		if *f.Untagged {
+			where = append(where, `NOT EXISTS (SELECT 1 FROM image_tags t WHERE t.image_id = i.id)`)
+		} else {
+			where = append(where, `EXISTS (SELECT 1 FROM image_tags t WHERE t.image_id = i.id)`)
 		}
 	}
 	if len(f.ExcludeIDs) > 0 {
@@ -282,7 +290,7 @@ func (db *DB) listAlbumMemberIDsOrdered(album Album) ([]string, error) {
 
 // QueryFilterFromParams builds a filter from HTTP query parameters.
 // Repeated tag= means tags_all; tag_any= for any; tag_none= for exclusion; exclude= omits image ids.
-func QueryFilterFromParams(tagsAll, tagsAny, tagsNone, formats, exclude []string, orientation string, peopleLikely, noSavedCrops *bool) Filter {
+func QueryFilterFromParams(tagsAll, tagsAny, tagsNone, formats, exclude []string, orientation string, peopleLikely, noSavedCrops, untagged *bool) Filter {
 	return Filter{
 		TagsAll:      tagsAll,
 		TagsAny:      tagsAny,
@@ -291,6 +299,7 @@ func QueryFilterFromParams(tagsAll, tagsAny, tagsNone, formats, exclude []string
 		FormatsAny:   formats,
 		PeopleLikely: peopleLikely,
 		NoSavedCrops: noSavedCrops,
+		Untagged:     untagged,
 		ExcludeIDs:   exclude,
 	}.normalized()
 }

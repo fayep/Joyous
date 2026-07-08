@@ -1626,7 +1626,7 @@ let albumTagAddMode='all';
 const albumFormatOptions=['4:3','3:4','16:9','9:16'];
 
 function emptyAlbumFilter(){
-  return {tags_all:[],tags_any:[],tags_none:[],orientation:'',formats_any:[],no_saved_crops:null,exclude_ids:[]};
+  return {tags_all:[],tags_any:[],tags_none:[],orientation:'',formats_any:[],no_saved_crops:null,untagged:null,exclude_ids:[]};
 }
 
 function cloneAlbumFilter(f){
@@ -1644,6 +1644,7 @@ function parseAlbumFilterJSON(raw){
       orientation:f.orientation||'',
       formats_any:f.formats_any||[],
       no_saved_crops:f.no_saved_crops===true?true:null,
+      untagged:f.untagged===true?true:null,
       exclude_ids:f.exclude_ids||[]
     };
   }catch(e){
@@ -1654,7 +1655,7 @@ function parseAlbumFilterJSON(raw){
 function albumFilterActive(f){
   f=f||draftFilter;
   return !!(f.tags_all&&f.tags_all.length)||!!(f.tags_any&&f.tags_any.length)||!!(f.tags_none&&f.tags_none.length)||
-    !!f.orientation||!!(f.formats_any&&f.formats_any.length)||f.no_saved_crops===true||
+    !!f.orientation||!!(f.formats_any&&f.formats_any.length)||f.no_saved_crops===true||f.untagged===true||
     !!(f.exclude_ids&&f.exclude_ids.length);
 }
 
@@ -1683,6 +1684,7 @@ function buildImagesURL(){
   if(f.orientation) p.set('orientation',f.orientation);
   (f.formats_any||[]).forEach(fmt=>p.append('format',fmt));
   if(f.no_saved_crops===true) p.set('no_saved_crops','1');
+  if(f.untagged===true) p.set('untagged','1');
   (f.exclude_ids||[]).forEach(id=>p.append('exclude',id));
   const q=p.toString();
   return '/api/images'+(q?'?'+q:'');
@@ -1874,6 +1876,9 @@ function renderAlbumToolbar(){
   const noCropsChip=f.no_saved_crops?'<span class="album-chip">No saved crops</span>':'';
   const noCropsEdit=editable?('<label><input type="checkbox"'+(f.no_saved_crops?' checked':'')+
     ' onchange="draftFilter.no_saved_crops=this.checked?true:null"> No saved crops</label>'):'';
+  const untaggedChip=f.untagged?'<span class="album-chip">Untagged</span>':'';
+  const untaggedEdit=editable?('<label><input type="checkbox"'+(f.untagged?' checked':'')+
+    ' onchange="draftFilter.untagged=this.checked?true:null"> Untagged</label>'):'';
   const excludeChips=(f.exclude_ids||[]).map(id=>{
     const label=escHtml(excludeChipLabel(id));
     const title=' title="Except '+escHtml(id)+'"';
@@ -1895,12 +1900,13 @@ function renderAlbumToolbar(){
     '<button type="button" class="album-tb-btn secondary" onclick="addDraftTag()">Add</button>'+
     '<label>Orientation <select id="album-orient" onchange="draftFilter.orientation=this.value">'+orientOpts+'</select></label>'+
     noCropsEdit+
+    untaggedEdit+
   '<div class="album-chip-row">'+fmtRow+'</div>'
   ):'';
   const title=smart&&!editable?('<strong style="margin-right:8px">'+escHtml(currentAlbumMeta().name||'')+'</strong>'):'';
   el.innerHTML='<div class="album-toolbar-inner">'+
     title+
-    (chips||excludeChips||noCropsChip?'<div class="album-chip-row">'+chips+excludeChips+noCropsChip+'</div>':'')+
+    (chips||excludeChips||noCropsChip||untaggedChip?'<div class="album-chip-row">'+chips+excludeChips+noCropsChip+untaggedChip+'</div>':'')+
     filterRow+
     (actions?'<div class="album-toolbar-actions">'+actions+'</div>':'')+
     '</div>';
@@ -2273,6 +2279,15 @@ async function waitSendDelivered(sendId,onTick){
   return false;
 }
 
+function applySendDeliveryTick(el,j){
+  if(!el||!j) return;
+  if(j.retry_attempts>0){
+    el.textContent='Retrying ('+j.retry_attempts+')…';
+    return;
+  }
+  if(j.status==='downloading') el.textContent='Downloading…';
+}
+
 async function doSend(imageId, deviceId, feedbackBtn){
   closePickers();
   const orig=feedbackBtn?feedbackBtn.textContent:'';
@@ -2290,11 +2305,9 @@ async function doSend(imageId, deviceId, feedbackBtn){
         feedbackBtn.textContent=SAMSUNG_MANUAL_WAKE_MSG;
       }
     });
-    if(sendId&&feedbackBtn) feedbackBtn.textContent='Downloading…';
+    if(sendId&&feedbackBtn&&dev?.type!=='samsung') feedbackBtn.textContent='Downloading…';
     const delivered=sendId?await waitSendDelivered(sendId,j=>{
-      if(feedbackBtn&&j.retry_attempts>0){
-        feedbackBtn.textContent='Retrying ('+j.retry_attempts+')…';
-      }
+      if(feedbackBtn) applySendDeliveryTick(feedbackBtn,j);
     }):false;
     if(feedbackBtn){
       feedbackBtn.textContent=delivered?'✓ Sent':(sendId?'Sent (unconfirmed)':'✓ Sent');
@@ -2467,8 +2480,9 @@ async function sendCalibrationChart(){
     const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/calibration',{method:'POST'});
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
-    if(st) st.textContent='Downloading…';
-    const delivered=j.send_id?await waitSendDelivered(j.send_id):false;
+    const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
+      if(st) applySendDeliveryTick(st,j);
+    }):false;
     if(st) st.textContent=delivered?'✓ Sent to display':'Sent (unconfirmed)';
     await loadDevicesInner();
     loadSamsungFrames();
@@ -2980,8 +2994,10 @@ async function overlaySend(deviceId){
     });
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
-    if(btn) btn.textContent='Downloading…';
-    const delivered=j.send_id?await waitSendDelivered(j.send_id):false;
+    if(btn&&d?.type!=='samsung') btn.textContent='Downloading…';
+    const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
+      if(btn) applySendDeliveryTick(btn,j);
+    }):false;
     if(btn){
       btn.textContent=delivered?'✓ Sent':'Sent (unconfirmed)';
       setTimeout(()=>{btn.textContent=orig;btn.disabled=false;},2000);
@@ -3687,8 +3703,9 @@ async function samsungPushCurrent(){
     const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/push',{method:'POST'});
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
-    if(st) st.textContent='Downloading…';
-    const delivered=j.send_id?await waitSendDelivered(j.send_id):false;
+    const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
+      if(st) applySendDeliveryTick(st,j);
+    }):false;
     if(document.getElementById('samsung-auto-sleep').checked){
       const delay=parseInt(document.getElementById('samsung-sleep-delay').value,10)||15;
       if(st) st.textContent=delivered?('✓ Pushed — frame will sleep in ~'+delay+'s…'):'Pushed (unconfirmed)';

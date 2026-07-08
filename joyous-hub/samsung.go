@@ -541,7 +541,11 @@ func (h *Hub) handleSamsungContentJSON(w http.ResponseWriter, r *http.Request, f
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	etag, _, _ := h.samsung.PNGInfo(frameID)
 	h.noteSamsungFrameSeen(r, frameID, "content.json")
+	if h.sendDelivery != nil {
+		h.sendDelivery.MarkSamsungDownloading(frameID, etag)
+	}
 	addr := h.serverAddr
 	if addr == "" {
 		addr = r.Host

@@ -33,6 +33,24 @@ func TestSendDeliveryInkJoyComplete(t *testing.T) {
 	}
 }
 
+func TestSendDeliverySamsungDownloading(t *testing.T) {
+	tr := NewSendDeliveryTracker()
+	send := tr.Register("samsung:mac", "img1")
+	tr.BindSamsung(send.ID, "B0F2F657D5CD", "etag-abc")
+
+	tr.MarkSamsungDownloading("B0F2F657D5CD", "etag-abc")
+	d := tr.Get(send.ID)
+	if d == nil || d.Status != sendStatusDownloading {
+		t.Fatalf("downloading: %+v", d)
+	}
+
+	tr.CompleteSamsung("B0F2F657D5CD", "etag-abc")
+	d = tr.Get(send.ID)
+	if d == nil || d.Status != sendStatusDelivered {
+		t.Fatalf("delivered: %+v", d)
+	}
+}
+
 func TestSendDeliverySamsungComplete(t *testing.T) {
 	tr := NewSendDeliveryTracker()
 	send := tr.Register("samsung:mac", "img1")
