@@ -172,6 +172,48 @@ func TestExcludeIDsFilter(t *testing.T) {
 	}
 }
 
+func TestUntaggedFilter(t *testing.T) {
+	dir := t.TempDir()
+	db, err := catalog.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	for _, spec := range []struct {
+		id   string
+		tags []string
+	}{
+		{"tagged", []string{"bedroom"}},
+		{"empty", nil},
+	} {
+		if err := db.UpsertImage(catalog.Image{
+			ID: spec.id, Name: spec.id + ".jpg", RelPath: catalog.DefaultRelPath(spec.id),
+			AddedAt: now, UpdatedAt: now,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(spec.tags) > 0 {
+			if err := db.SetImageTags(spec.id, spec.tags); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	untagged := true
+	ids, err := db.ListFilteredImages(catalog.AlbumAll, catalog.Filter{Untagged: &untagged})
+	if err != nil || len(ids) != 1 || ids[0].ID != "empty" {
+		t.Fatalf("untagged=true: %+v err=%v", ids, err)
+	}
+
+	hasTags := false
+	ids2, err := db.ListFilteredImages(catalog.AlbumAll, catalog.Filter{Untagged: &hasTags})
+	if err != nil || len(ids2) != 1 || ids2[0].ID != "tagged" {
+		t.Fatalf("untagged=false: %+v err=%v", ids2, err)
+	}
+}
+
 func TestNoSavedCropsFilter(t *testing.T) {
 	dir := t.TempDir()
 	db, err := catalog.Open(dir)

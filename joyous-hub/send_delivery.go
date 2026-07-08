@@ -15,9 +15,10 @@ const sendDeliveryTTL = 10 * time.Minute
 type sendStatus string
 
 const (
-	sendStatusPending   sendStatus = "pending"
-	sendStatusDelivered sendStatus = "delivered"
-	sendStatusFailed    sendStatus = "failed"
+	sendStatusPending     sendStatus = "pending"
+	sendStatusDownloading sendStatus = "downloading"
+	sendStatusDelivered   sendStatus = "delivered"
+	sendStatusFailed      sendStatus = "failed"
 )
 
 type sendDelivery struct {
@@ -134,8 +135,18 @@ func (t *SendDeliveryTracker) Get(sendID string) *sendDelivery {
 }
 
 func (t *SendDeliveryTracker) finish(d *sendDelivery, status sendStatus) bool {
-	if d == nil || d.Status != sendStatusPending {
+	if d == nil {
 		return false
+	}
+	switch status {
+	case sendStatusDelivered, sendStatusFailed:
+		if d.Status != sendStatusPending && d.Status != sendStatusDownloading {
+			return false
+		}
+	default:
+		if d.Status != sendStatusPending {
+			return false
+		}
 	}
 	d.Status = status
 	if status == sendStatusDelivered {
@@ -180,6 +191,23 @@ func (t *SendDeliveryTracker) CompleteInkJoy(msgid string, ok bool) {
 	t.mu.Unlock()
 }
 
+func (t *SendDeliveryTracker) MarkSamsungDownloading(frameID, etag string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	sendID, found := t.samsungByFrame[frameID]
+	if !found {
+		return
+	}
+	d, ok := t.byID[sendID]
+	if !ok || d.Status != sendStatusPending {
+		return
+	}
+	if d.samsungETag != "" && etag != "" && d.samsungETag != etag {
+		return
+	}
+	d.Status = sendStatusDownloading
+}
+
 func (t *SendDeliveryTracker) CompleteSamsung(frameID, etag string) {
 	t.mu.Lock()
 	sendID, found := t.samsungByFrame[frameID]
@@ -189,6 +217,10 @@ func (t *SendDeliveryTracker) CompleteSamsung(frameID, etag string) {
 	}
 	d, ok := t.byID[sendID]
 	if !ok || d.samsungETag != etag {
+		t.mu.Unlock()
+		return
+	}
+	if d.Status != sendStatusPending && d.Status != sendStatusDownloading {
 		t.mu.Unlock()
 		return
 	}
