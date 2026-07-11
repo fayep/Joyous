@@ -107,6 +107,29 @@ func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 	}, nil
 }
 
+// SleepInfo holds data extracted from a frame's sleep (power-off) message.
+// Reason's enum values aren't confirmed yet — observed so far: 2 (seen at
+// 47% battery, so likely the scheduled wifi_sleep window rather than a
+// low-battery trigger, but not verified against other reason values).
+type SleepInfo struct {
+	Battery int
+	Reason  int
+}
+
+// ParseSleepPayload extracts telemetry from a frame's sleep MQTT payload.
+func ParseSleepPayload(payload []byte) (SleepInfo, error) {
+	var msg struct {
+		Data struct {
+			Battery int `json:"battery"`
+			Reason  int `json:"reason"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return SleepInfo{}, err
+	}
+	return SleepInfo{Battery: msg.Data.Battery, Reason: msg.Data.Reason}, nil
+}
+
 // ShouldIntercept reports whether cloud→frame action is handled locally by the hub.
 func ShouldIntercept(action string, intercept AllowList) bool {
 	return intercept.Allows(action)

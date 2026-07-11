@@ -521,6 +521,17 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 			}
 		}
 		h.devices.MarkConnected(mac)
+	case "sleep", "shutdown":
+		// Frame is telling us it's about to power off (nightly wifi_sleep
+		// window, low battery, power key) — mark it asleep rather than
+		// falling into the default "any publish = still alive" bucket,
+		// which would mark it connected right as it goes dark. Real frames
+		// send "sleep" (with battery/reason fields); our own Seeed clone
+		// firmware currently sends the older assumed name "shutdown" — both
+		// map to the same handling until the clone firmware is updated to
+		// match (see include/inkjoy_protocol.h).
+		info, _ := ParseSleepPayload(payload)
+		h.devices.MarkShutdown(mac, info)
 	default:
 		h.devices.MarkConnected(mac) // any publish = still alive
 	}

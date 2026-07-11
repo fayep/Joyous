@@ -56,7 +56,7 @@ func TestParseMQTTConfigMissingFields(t *testing.T) {
 func TestUpstreamAllowDefault(t *testing.T) {
 	allow := DefaultUpstreamAllow()
 
-	mustPass := []string{"login", "heart", "play_ack", "fpga_ota_ack", "shutdown", "image_refresh_ack", "ota_ack", "wifi_sleep_ack", "mqtt_config_ack"}
+	mustPass := []string{"login", "heart", "play_ack", "fpga_ota_ack", "sleep", "image_refresh_ack", "ota_ack", "wifi_sleep_ack", "mqtt_config_ack"}
 	mustBlock := []string{"image_refresh", "play", "ota", "mqtt_config", "shutdown_ack", "fpga"}
 
 	for _, action := range mustPass {

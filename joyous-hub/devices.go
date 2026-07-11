@@ -192,6 +192,25 @@ func (r *DeviceRegistry) MarkDisconnected(id string) {
 	}
 }
 
+// MarkShutdown records that an InkJoy frame explicitly reported going to
+// sleep (nightly wifi_sleep window, low battery, power key, etc.) before
+// going dark — distinct from just timing out, so status views can show
+// "asleep" rather than "unreachable". LastAction is normalized to
+// "shutdown" internally regardless of which wire action name (real frames
+// send "sleep"; see broker.go SleepInfo) triggered it, so hub-internal
+// state and UI checks don't have to track the wire vocabulary.
+func (r *DeviceRegistry) MarkShutdown(mac string, info SleepInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d := r.getOrCreateInkJoy(mac)
+	d.Connected = false
+	d.LastSeen = time.Now()
+	d.LastAction = "shutdown"
+	if info.Battery > 0 {
+		d.Battery = info.Battery
+	}
+}
+
 // UpdateHeart applies telemetry from a heart message.
 func (r *DeviceRegistry) UpdateHeart(mac string, info HeartInfo) {
 	r.mu.Lock()

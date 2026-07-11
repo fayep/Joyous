@@ -65,8 +65,11 @@ func (a AllowList) Allows(action string) bool {
 }
 
 // DefaultUpstreamAllowCSV is the default frame→broker (upstream) allow list.
+// "sleep" (not "shutdown" — an earlier guess that a 2026-07 capture proved
+// wrong; see research/firmware-notes.md) is the real frame→broker power-off
+// action name.
 func DefaultUpstreamAllowCSV() string {
-	return "login,heart,play_ack,fpga_ota_ack,shutdown,image_refresh_ack,ota_ack,wifi_sleep_ack,mqtt_config_ack"
+	return "login,heart,play_ack,fpga_ota_ack,sleep,image_refresh_ack,ota_ack,wifi_sleep_ack,mqtt_config_ack"
 }
 
 // DefaultDownstreamAllowCSV is the default broker→frame passthrough list.

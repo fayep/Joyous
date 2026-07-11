@@ -57,6 +57,25 @@ func TestMarkDisconnected(t *testing.T) {
 	}
 }
 
+// TestMarkShutdown: an explicit shutdown clears Connected, records the
+// reason, and picks up the reported battery level — distinguishing it from
+// a device that just stopped responding.
+func TestMarkShutdown(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.MarkConnected("AABBCCDDEEFF")
+	reg.MarkShutdown("AABBCCDDEEFF", SleepInfo{Battery: 47, Reason: 2})
+	devs := reg.List()
+	if devs[0].Connected {
+		t.Error("device should be disconnected after shutdown")
+	}
+	if devs[0].LastAction != "shutdown" {
+		t.Errorf("LastAction: got %q want %q", devs[0].LastAction, "shutdown")
+	}
+	if devs[0].Battery != 47 {
+		t.Errorf("Battery: got %d want 47", devs[0].Battery)
+	}
+}
+
 // TestLastSeenUpdated: MarkConnected and UpdateHeart update LastSeen.
 func TestLastSeenUpdated(t *testing.T) {
 	reg := NewDeviceRegistry(t.TempDir())

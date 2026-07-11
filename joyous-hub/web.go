@@ -2676,7 +2676,7 @@ function updateIJEditorStatus(d){
   dot.className='dot '+(d.connected?'online':'offline');
   const badge=document.getElementById('ij-status-badge');
   badge.className='badge '+(d.connected?'online':'offline');
-  badge.textContent=d.connected?'online':'offline';
+  badge.textContent=d.connected?'online':inkjoyOfflineLabel(d);
   const ago=d.last_seen?timeAgo(d.last_seen):'never';
   document.getElementById('ij-info').innerHTML=
     '<span class="label">MAC</span><span style="font-family:monospace">'+d.mac+'</span>'+
@@ -2779,7 +2779,7 @@ async function loadDevicesInner(){
     const type=d.type||'inkjoy';
     const status=type==='samsung'
       ? (d.connected?'<span class="badge online">active</span>':'<span class="badge offline">'+samsungOfflineLabel(d)+'</span>')
-      : (d.connected?'<span class="badge online">online</span>':'<span class="badge offline">offline</span>');
+      : (d.connected?'<span class="badge online">online</span>':'<span class="badge offline">'+inkjoyOfflineLabel(d)+'</span>');
     const meta=type==='inkjoy'
       ? ((d.firmware?'fw '+d.firmware+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.rssi?'📶'+d.rssi+'dBm ':''))
       : (d.ip?d.ip+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.power_source?('<span style="color:#666">'+d.power_source+' </span>'):'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
@@ -3289,6 +3289,16 @@ let samsungFrames=[], samsungCurrentId=null, samsungStatusCache=null, samsungPre
 
 function samsungOfflineLabel(d,rec,s){
   return samsungDeepSleep(d,rec,s)?'deep sleep':'asleep';
+}
+
+// InkJoy/Seeed shutdown fully ignores the network (radio off, RTC-timer
+// wake) — the same "deep sleep" meaning used on the Samsung side (as
+// opposed to "asleep" there, which means reachable network standby). It
+// self-wakes on its own schedule with no remote/button nudge needed, so
+// this is a label only — no restore push like Samsung's morning routine.
+function inkjoyOfflineLabel(d){
+  if(d.last_action==='shutdown' && d.sleep_end_time) return 'deep sleep · back '+d.sleep_end_time;
+  return 'offline';
 }
 
 function samsungFrameRecord(frameId){
