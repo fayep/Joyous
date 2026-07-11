@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	"joyous-hub/inkjoybridge"
 )
 
 const mqttLogBodyMax = 4096
@@ -67,7 +69,7 @@ func (b *MQTTLogBuffer) entry(dir, topic string, payload []byte, note string) MQ
 		Time:   time.Now().Format("15:04:05.000"),
 		Dir:    dir,
 		Topic:  topic,
-		Action: mqttAction(payload),
+		Action: inkjoybridge.MQTTAction(payload),
 		Note:   note,
 		Body:   formatMQTTLogBody(payload),
 	}

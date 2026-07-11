@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"joyous-hub/inkjoybridge"
 )
 
 // buildTestHub creates a Hub wired to a temp dir, with a no-op publisher.
@@ -67,7 +69,7 @@ func TestGetDevicesEmpty(t *testing.T) {
 func TestGetDevicesWithData(t *testing.T) {
 	h := buildTestHub(t)
 	h.devices.MarkConnected("AABBCCDDEEFF")
-	h.devices.UpdateHeart("AABBCCDDEEFF", HeartInfo{Battery: 77, Firmware: "0.5.6"})
+	h.devices.UpdateHeart("AABBCCDDEEFF", inkjoybridge.HeartInfo{Battery: 77, Firmware: "0.5.6"})
 
 	rec := httptest.NewRecorder()
 	h.handleDevices(rec, httptest.NewRequest("GET", "/api/devices", nil))

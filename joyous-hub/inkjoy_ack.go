@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+
+	"joyous-hub/inkjoybridge"
+)
 
 // InkJoy MQTT ack result encoding (frame → broker, data.result).
 //
@@ -112,11 +116,7 @@ func inkjoyOTAAckAction(interceptedAction string) string {
 // without forwarding to the frame: 106 (accepted) then 104 (interrupted), matching
 // the play-abort pattern seen before disconnect.
 func buildBlockedOTAAcks(mac, interceptedAction, ackMsgid string) [][]byte {
-	ackAction := inkjoyOTAAckAction(interceptedAction)
-	return [][]byte{
-		buildAckPayloadFor(mac, ackAction, ackMsgid, map[string]any{"result": inkjoyAckAccepted}),
-		buildAckPayloadFor(mac, ackAction, ackMsgid, map[string]any{"result": inkjoyAckInterrupted}),
-	}
+	return inkjoybridge.BuildBlockedOTAAcks(mac, interceptedAction, ackMsgid)
 }
 
 // inkjoyAckResultLabel returns a short label for logging/UI (best-effort).

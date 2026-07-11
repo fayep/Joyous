@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"joyous-hub/inkjoybridge"
 )
 
 // TestRegisterDevice: new device appears in list after registration.
@@ -31,7 +33,7 @@ func TestRegisterDevice(t *testing.T) {
 func TestUpdateDeviceHeart(t *testing.T) {
 	reg := NewDeviceRegistry(t.TempDir())
 	reg.MarkConnected("AABBCCDDEEFF")
-	reg.UpdateHeart("AABBCCDDEEFF", HeartInfo{Battery: 72, RSSI: -55, Firmware: "0.5.6"})
+	reg.UpdateHeart("AABBCCDDEEFF", inkjoybridge.HeartInfo{Battery: 72, RSSI: -55, Firmware: "0.5.6"})
 
 	devs := reg.List()
 	d := devs[0]
@@ -63,7 +65,7 @@ func TestMarkDisconnected(t *testing.T) {
 func TestMarkShutdown(t *testing.T) {
 	reg := NewDeviceRegistry(t.TempDir())
 	reg.MarkConnected("AABBCCDDEEFF")
-	reg.MarkShutdown("AABBCCDDEEFF", SleepInfo{Battery: 47, Reason: 2})
+	reg.MarkShutdown("AABBCCDDEEFF", inkjoybridge.SleepInfo{Battery: 47, Reason: 2})
 	devs := reg.List()
 	if devs[0].Connected {
 		t.Error("device should be disconnected after shutdown")
@@ -92,7 +94,7 @@ func TestPersistAndReload(t *testing.T) {
 	dir := t.TempDir()
 	reg := NewDeviceRegistry(dir)
 	reg.MarkConnected("AABBCCDDEEFF")
-	reg.UpdateHeart("AABBCCDDEEFF", HeartInfo{Battery: 88, Firmware: "0.5.6"})
+	reg.UpdateHeart("AABBCCDDEEFF", inkjoybridge.HeartInfo{Battery: 88, Firmware: "0.5.6"})
 	if err := reg.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -119,8 +121,8 @@ func TestMultipleDevices(t *testing.T) {
 	reg := NewDeviceRegistry(t.TempDir())
 	reg.MarkConnected("AABBCCDDEEFF")
 	reg.MarkConnected("30EDA0E3FBE8")
-	reg.UpdateHeart("AABBCCDDEEFF", HeartInfo{Battery: 50})
-	reg.UpdateHeart("30EDA0E3FBE8", HeartInfo{Battery: 90})
+	reg.UpdateHeart("AABBCCDDEEFF", inkjoybridge.HeartInfo{Battery: 50})
+	reg.UpdateHeart("30EDA0E3FBE8", inkjoybridge.HeartInfo{Battery: 90})
 
 	devs := reg.List()
 	if len(devs) != 2 {

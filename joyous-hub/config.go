@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"joyous-hub/inkjoybridge"
 )
 
 // HubConfig holds hub settings loaded from config.yaml.
@@ -30,12 +32,11 @@ type HubConfig struct {
 
 func defaultHubConfig() HubConfig {
 	return HubConfig{
-		ListenMQTT:      ":1883",
+		ListenMQTT:      ":11883",
 		ListenHTTP:      ":8080",
-		Upstream:        "13.39.148.101:1883",
-		UpstreamAllow:   DefaultUpstreamAllowCSV(),
-		DownstreamAllow: DefaultDownstreamAllowCSV(),
-		Intercept:       DefaultInterceptCSV(),
+		UpstreamAllow:   inkjoybridge.DefaultUpstreamAllowCSV(),
+		DownstreamAllow: inkjoybridge.DefaultDownstreamAllowCSV(),
+		Intercept:       inkjoybridge.DefaultInterceptCSV(),
 		DataDir:         "./data",
 		DiscoverSubnets: "",
 	}

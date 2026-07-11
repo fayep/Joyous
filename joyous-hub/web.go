@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"joyous-hub/bridgehub"
+	"joyous-hub/inkjoybridge"
 )
 
 // MQTTPublisher is satisfied by the real broker and by test doubles.
@@ -28,11 +31,12 @@ type Hub struct {
 	overlay        *OverlayStore
 	color          *ColorStore
 	weather        weatherClient
-	hubIP      string // resolved non-loopback LAN IP, used for play URLs and BLE adoption
-	publisher  MQTTPublisher
-	serverAddr string // e.g. "192.168.1.5:8080" — used in play URLs
-	mqttPort   int    // MQTT broker port the frame should connect to (e.g. 11883)
-	mqttLog    *MQTTLogBuffer
+	bridgeCoord    *bridgehub.Coordinator
+	hubIP          string
+	publisher      MQTTPublisher
+	serverAddr     string
+	mqttPort       int
+	mqttLog        *MQTTLogBuffer
 }
 
 // handleMQTTLogs serves GET /api/mqtt/logs — last N messages per side for the web UI.
@@ -417,40 +421,9 @@ func (h *Hub) handleStatic(w http.ResponseWriter, r *http.Request) {
 // ── MQTT payload helpers ─────────────────────────────────────────────────────
 // Ack result bitfield: see inkjoy_ack.go
 
-func buildActionPayloadFor(mac, action string, data map[string]any) []byte {
-	msg := map[string]any{
-		"action": action,
-		"msgid":  fmt.Sprintf("%d", time.Now().UnixMilli()),
-		"stamac": mac,
-	}
-	if data != nil {
-		msg["data"] = data
-	}
-	b, _ := json.Marshal(msg)
-	return b
-}
-
-// buildAckPayloadFor builds a frame→cloud ack matching real frame shape:
-// clientid, stamac, data.ack_msgid, and result (default inkjoyAckAccepted).
+// buildAckPayloadFor builds a frame→cloud ack matching real frame shape.
 func buildAckPayloadFor(mac, ackAction, ackMsgid string, data map[string]any) []byte {
-	if data == nil {
-		data = map[string]any{}
-	}
-	if ackMsgid != "" {
-		data["ack_msgid"] = ackMsgid
-	}
-	if _, ok := data["result"]; !ok {
-		data["result"] = inkjoyAckAccepted
-	}
-	msg := map[string]any{
-		"action":   ackAction,
-		"clientid": mac,
-		"msgid":    fmt.Sprintf("%d", time.Now().UnixMilli()),
-		"stamac":   mac,
-		"data":     data,
-	}
-	b, _ := json.Marshal(msg)
-	return b
+	return inkjoybridge.BuildAckPayload(mac, ackAction, ackMsgid, data)
 }
 
 // buildPlayPayload returns the MQTT payload and the msgid it embedded.

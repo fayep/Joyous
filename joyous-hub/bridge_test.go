@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"testing"
+
+	"joyous-hub/inkjoybridge"
 )
 
 // TestParseMQTTConfig: parse a real mqtt_config payload into UpstreamConfig.
@@ -19,7 +21,7 @@ func TestParseMQTTConfig(t *testing.T) {
 		}
 	}`)
 
-	cfg, err := ParseMQTTConfig(payload)
+	cfg, err := inkjoybridge.ParseMQTTConfig(payload)
 	if err != nil {
 		t.Fatalf("ParseMQTTConfig: %v", err)
 	}
@@ -45,7 +47,7 @@ func TestParseMQTTConfigMissingFields(t *testing.T) {
 		`{"action":"mqtt_config"}`,
 	}
 	for _, c := range cases {
-		_, err := ParseMQTTConfig([]byte(c))
+		_, err := inkjoybridge.ParseMQTTConfig([]byte(c))
 		if err == nil {
 			t.Errorf("expected error for payload %s", c)
 		}
@@ -54,7 +56,7 @@ func TestParseMQTTConfigMissingFields(t *testing.T) {
 
 // TestUpstreamAllowDefault: default frame→broker list.
 func TestUpstreamAllowDefault(t *testing.T) {
-	allow := DefaultUpstreamAllow()
+	allow := inkjoybridge.DefaultUpstreamAllow()
 
 	mustPass := []string{"login", "heart", "play_ack", "fpga_ota_ack", "sleep", "image_refresh_ack", "ota_ack", "wifi_sleep_ack", "mqtt_config_ack"}
 	mustBlock := []string{"image_refresh", "play", "ota", "mqtt_config", "shutdown_ack", "fpga"}
@@ -73,7 +75,7 @@ func TestUpstreamAllowDefault(t *testing.T) {
 
 // TestUpstreamAllowCustom: custom list from comma-separated string.
 func TestUpstreamAllowCustom(t *testing.T) {
-	allow := ParseUpstreamAllow("play,ota,heart")
+	allow := inkjoybridge.ParseUpstreamAllow("play,ota,heart")
 
 	if !allow.Allows("play") || !allow.Allows("ota") || !allow.Allows("heart") {
 		t.Error("custom allow list should pass configured actions")
@@ -86,8 +88,8 @@ func TestUpstreamAllowCustom(t *testing.T) {
 // TestBuildMQTTConfigPayload: payload built for sending mqtt_config to a frame.
 func TestBuildMQTTConfigPayload(t *testing.T) {
 	mac := "AABBCCDDEEFF"
-	cfg := UpstreamConfig{Host: "10.0.0.1", Port: 1883, Username: "u", Password: "p"}
-	payload := BuildMQTTConfigPayload(mac, cfg)
+	cfg := inkjoybridge.UpstreamConfig{Host: "10.0.0.1", Port: 1883, Username: "u", Password: "p"}
+	payload := inkjoybridge.BuildMQTTConfigPayload(mac, cfg)
 
 	var msg map[string]any
 	if err := json.Unmarshal(payload, &msg); err != nil {
@@ -109,7 +111,7 @@ func TestBuildMQTTConfigPayload(t *testing.T) {
 }
 
 func TestBuildAckPayloadFor(t *testing.T) {
-	payload := buildAckPayloadFor("AABBCCDDEEFF", "wifi_sleep_ack", "1781902333622", nil)
+	payload := inkjoybridge.BuildAckPayload("AABBCCDDEEFF", "wifi_sleep_ack", "1781902333622", nil)
 	var msg struct {
 		Action   string `json:"action"`
 		Clientid string `json:"clientid"`
@@ -137,10 +139,10 @@ func TestBuildAckPayloadFor(t *testing.T) {
 }
 
 func TestMQTTMsgid(t *testing.T) {
-	if got := mqttMsgid([]byte(`{"action":"wifi_sleep","msgid":"1781902333622"}`)); got != "1781902333622" {
+	if got := inkjoybridge.MQTTMsgid([]byte(`{"action":"wifi_sleep","msgid":"1781902333622"}`)); got != "1781902333622" {
 		t.Errorf("string msgid: got %q", got)
 	}
-	if got := mqttMsgid([]byte(`{"action":"wifi_sleep","msgid":1781902333622}`)); got != "1781902333622" {
+	if got := inkjoybridge.MQTTMsgid([]byte(`{"action":"wifi_sleep","msgid":1781902333622}`)); got != "1781902333622" {
 		t.Errorf("numeric msgid: got %q", got)
 	}
 }

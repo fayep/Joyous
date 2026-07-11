@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"joyous-hub/inkjoybridge"
 )
 
 // DeviceType identifies how to reach a photo frame.
@@ -58,6 +60,7 @@ type Device struct {
 	Portrait       bool   `json:"portrait,omitempty"` // user-set: frame is in portrait orientation
 	Orientation    int    `json:"orientation"`        // raw accelerometer value from heart (unreliable)
 	DeepSleepActive bool  `json:"deep_sleep_active,omitempty"` // samsung: overnight deep sleep (button wake)
+	bridgeID        string `json:"-"` // owning bridge when synced via joyous protocol
 }
 
 // DeviceRegistry tracks known frames in memory and persists them to disk.
@@ -199,7 +202,7 @@ func (r *DeviceRegistry) MarkDisconnected(id string) {
 // "shutdown" internally regardless of which wire action name (real frames
 // send "sleep"; see broker.go SleepInfo) triggered it, so hub-internal
 // state and UI checks don't have to track the wire vocabulary.
-func (r *DeviceRegistry) MarkShutdown(mac string, info SleepInfo) {
+func (r *DeviceRegistry) MarkShutdown(mac string, info inkjoybridge.SleepInfo) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := r.getOrCreateInkJoy(mac)
@@ -212,7 +215,7 @@ func (r *DeviceRegistry) MarkShutdown(mac string, info SleepInfo) {
 }
 
 // UpdateHeart applies telemetry from a heart message.
-func (r *DeviceRegistry) UpdateHeart(mac string, info HeartInfo) {
+func (r *DeviceRegistry) UpdateHeart(mac string, info inkjoybridge.HeartInfo) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := r.getOrCreateInkJoy(mac)
@@ -227,7 +230,7 @@ func (r *DeviceRegistry) UpdateHeart(mac string, info HeartInfo) {
 }
 
 // UpdateLogin applies login info.
-func (r *DeviceRegistry) UpdateLogin(mac string, info LoginInfo) {
+func (r *DeviceRegistry) UpdateLogin(mac string, info inkjoybridge.LoginInfo) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := r.getOrCreateInkJoy(mac)

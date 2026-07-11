@@ -148,6 +148,9 @@ func (h *Hub) SendImageToDeviceWithOverlay(deviceID, imageID string) (string, er
 	}
 	token := cfg.sendToken(weather, dev.Portrait)
 	if dev.Type == DeviceTypeInkJoy {
+		if h.bridgeCoord != nil && h.bridgeCoord.BridgeOnline(string(DeviceTypeInkJoy)) {
+			return h.SendImageToDevice(deviceID, imageID, token)
+		}
 		if _, err := h.ensureOverlayBin(imageID, dev.Portrait, cfg, weather); err != nil {
 			return "", err
 		}

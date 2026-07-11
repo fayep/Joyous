@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"joyous-hub/protocol"
 )
 
 // injectedPlays tracks msgIDs of play messages we sent so we can suppress
@@ -28,6 +30,28 @@ func isInjectedPlay(ackMsgid string) bool {
 }
 
 func (h *Hub) sendInkJoyImage(dev *Device, imageID, overlayToken, sendID string) error {
+	if h.bridgeCoord != nil && h.bridgeCoord.BridgeOnline(string(DeviceTypeInkJoy)) {
+		body, err := buildSendImageBody(h, imageID, overlayToken, sendID)
+		if err != nil {
+			return err
+		}
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		logOutbound("bridge cmd send.image device=%s image=%s crops=%d", dev.ID, imageID, len(body.Crops))
+		err = h.bridgeCoord.PublishCommand(string(DeviceTypeInkJoy), protocol.CmdPayload{
+			Cmd:      protocol.CmdSendImage,
+			DeviceID: dev.ID,
+			Body:     payload,
+		})
+		logFrameSend(dev.ID, imageID, "inkjoy", err)
+		if err == nil {
+			h.displayPreview.Clear(dev.MAC)
+			h.devices.SetLastImage(dev.ID, imageID, overlayToken)
+		}
+		return err
+	}
 	addr := h.serverAddr
 	if addr == "" {
 		addr = "localhost:8080"
@@ -129,6 +153,17 @@ func resolvedLANIP(addr string) string {
 
 // handleDiscover runs SSDP discovery and merges results into the device registry.
 func (h *Hub) handleDiscover(w http.ResponseWriter, r *http.Request) {
+	if h.bridgeCoord != nil && h.bridgeCoord.BridgeOnline(string(DeviceTypeSamsung)) {
+		if err := h.bridgeCoord.PublishCommand(string(DeviceTypeSamsung), protocol.CmdPayload{
+			Cmd: protocol.CmdDiscover,
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "delegated": "samsung-bridge"})
+		return
+	}
 	logOutbound("discover start subnets=%v", discoverSubnets)
 	frames, ssdpSeen, err := DiscoverPhotoFrames(0)
 	if err != nil {
