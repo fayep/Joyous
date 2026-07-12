@@ -62,3 +62,46 @@ func TestPresenceHeartbeatDoesNotReLogOnline(t *testing.T) {
 		t.Fatalf("got %d \"online\" log lines after re-connect past TTL, want 2:\n%s", onlineCount, buf.String())
 	}
 }
+
+// TestBridgeForPath covers the hub's catch-all HTTP route (see Hub.handleStatic in web.go)
+// resolving which bridge owns an extra vendor-protocol path it declared via
+// HelloPayload.HTTPPaths, instead of falling through to serving the SPA.
+func TestBridgeForPath(t *testing.T) {
+	c := NewCoordinator(nil, nil)
+
+	if _, ok := c.BridgeForPath("/content-transfer-progress"); ok {
+		t.Fatal("no bridge connected yet: expected no match")
+	}
+
+	sendHello := func(bridgeID string, paths []string) {
+		payload, err := protocol.NewEnvelope(protocol.TypeHello, bridgeID, protocol.HelloPayload{Kind: "samsung", HTTPPaths: paths})
+		if err != nil {
+			t.Fatalf("NewEnvelope: %v", err)
+		}
+		c.HandleMessage(protocol.BridgeTopic(bridgeID, "presence"), payload)
+	}
+	sendHello("samsung", []string{"/content-transfer-progress", "/device-thumbnail"})
+
+	id, ok := c.BridgeForPath("/content-transfer-progress")
+	if !ok || id != "samsung" {
+		t.Fatalf("got (%q, %v), want (\"samsung\", true)", id, ok)
+	}
+	if _, ok := c.BridgeForPath("/device-thumbnail"); !ok {
+		t.Fatal("expected /device-thumbnail to match too")
+	}
+	if _, ok := c.BridgeForPath("/not-registered"); ok {
+		t.Fatal("expected no match for an unregistered path")
+	}
+
+	// Once the bridge's presence goes stale past the TTL, its paths must stop matching —
+	// mirrors BridgeOnline's TTL semantics so an offline bridge doesn't keep claiming a path
+	// forever.
+	c.mu.Lock()
+	rec := c.bridges["samsung"]
+	rec.lastSeen = time.Now().Add(-bridgePresenceTTL - time.Second)
+	c.bridges["samsung"] = rec
+	c.mu.Unlock()
+	if _, ok := c.BridgeForPath("/content-transfer-progress"); ok {
+		t.Fatal("expected no match once the owning bridge is stale/offline")
+	}
+}

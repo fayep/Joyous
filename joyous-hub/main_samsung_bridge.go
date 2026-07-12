@@ -117,6 +117,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	uiHandler := &samsungBridgeHTTPHandler{hub: hub}
+
 	var hubClient *bridgehub.Client
 	hubClient, err = bridgehub.Connect(bridgehub.ClientConfig{
 		HubMQTT:  *hubMQTT,
@@ -125,14 +127,19 @@ func main() {
 		Hello: protocol.HelloPayload{
 			Kind:       protocol.KindSamsung,
 			ListenHTTP: *listenHTTP,
+			// The physical frame calls this back believing it's the paired phone app's own
+			// embedded server root — see samsung_content_transfer.go.
+			HTTPPaths: []string{"/content-transfer-progress"},
 		},
 		OnCommand: func(cmd protocol.CmdPayload) {
 			handleSamsungBridgeCommand(ctx, hub, hubClient, cmd)
 		},
+		UIHTTP: uiHandler,
 	})
 	if err != nil {
 		log.Fatalf("hub connect: %v", err)
 	}
+	uiHandler.client = hubClient
 	defer hubClient.Disconnect()
 
 	mux := http.NewServeMux()

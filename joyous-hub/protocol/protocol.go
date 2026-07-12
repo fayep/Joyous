@@ -88,6 +88,13 @@ type HelloPayload struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 	ListenHTTP   string   `json:"listen_http,omitempty"`
 	ListenMQTT   string   `json:"listen_mqtt,omitempty"`
+	// HTTPPaths lists exact root-level HTTP paths (e.g. "/content-transfer-progress") this
+	// bridge wants the hub to forward to it over the ui HTTP tunnel. For vendor protocol
+	// quirks where a physical device calls back to what it believes is a server root —
+	// not namespaced under the bridge's own /{kind}/ proxy prefix — rather than hardcoding
+	// each one into the hub, the bridge declares the paths it owns and the hub's catch-all
+	// route forwards matching requests to it.
+	HTTPPaths []string `json:"http_paths,omitempty"`
 }
 
 // BridgeDevice is the vendor-neutral device view bridges publish to the hub.

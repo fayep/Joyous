@@ -280,6 +280,24 @@ func (c *Coordinator) HasCapability(bridgeID, cap string) bool {
 	return slices.Contains(rec.hello.Capabilities, cap)
 }
 
+// BridgeForPath returns the ID of the online bridge that has registered path as an extra
+// HTTP path via HelloPayload.HTTPPaths, if any. Used by the hub's catch-all HTTP route to
+// forward vendor protocol callbacks (paths not namespaced under a bridge's own /{kind}/
+// proxy prefix) to the bridge that owns them, instead of serving the SPA.
+func (c *Coordinator) BridgeForPath(path string) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for id, rec := range c.bridges {
+		if !bridgeOnlineLocked(rec) {
+			continue
+		}
+		if slices.Contains(rec.hello.HTTPPaths, path) {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // UIState returns cached bridge tab state.
 func (c *Coordinator) UIState(bridgeID string) (protocol.UIStatePayload, bool) {
 	c.mu.RLock()

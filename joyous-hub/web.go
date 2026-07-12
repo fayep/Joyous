@@ -381,8 +381,19 @@ func (h *Hub) handleDeleteCrop(w http.ResponseWriter, r *http.Request, id string
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
-// handleStatic serves the embedded SPA for any non-API route.
+// handleStatic serves the embedded SPA for any non-API route, except for paths a connected
+// bridge has registered as its own via HelloPayload.HTTPPaths (see BridgeForPath) — those are
+// forwarded to the bridge instead. This covers vendor protocol callbacks that hit what a
+// physical device believes is a server root (e.g. Samsung frames POSTing
+// /content-transfer-progress, not namespaced under /samsung/…) rather than requiring the hub
+// to hardcode every such quirk itself.
 func (h *Hub) handleStatic(w http.ResponseWriter, r *http.Request) {
+	if h.bridgeCoord != nil {
+		if bridgeID, ok := h.bridgeCoord.BridgeForPath(r.URL.Path); ok {
+			h.proxyBridgeHTTP(w, r, bridgeID, r.URL.Path)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write([]byte(uiRevisionHTML()))
