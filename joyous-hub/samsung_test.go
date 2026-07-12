@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -212,6 +213,117 @@ func TestSamsungUploadAPI(t *testing.T) {
 	}
 	if _, err := os.Stat(s.pngPath("kitchen")); err != nil {
 		t.Fatal("png not written")
+	}
+}
+
+// TestSamsungContentFileIDIsDeterministicAndContentAddressed covers the fix for a bug where a
+// frame's physical protocol treats an unchanged content.json file_id/FileName as "already
+// downloaded, nothing to do." The previous approach (an in-memory map bumped at push time) broke
+// in the real deployment because the process that triggers a push (samsung-bridge) and the
+// process that serves content.json for that push (the hub, at hub.serverAddr) are separate OS
+// processes with no shared memory — so content.json always fell back to the frame's own static
+// id, and the frame reported that same static value back regardless of which photo was actually
+// sent. samsungContentFileID must be a pure function of (frameID, pngData): same inputs always
+// produce the same id (so re-serving unchanged content doesn't force a spurious redownload), but
+// different content must produce a different id, and different frames with byte-identical
+// content must not collide (reportProgress disambiguates callbacks between frames by this id
+// alone — see samsung_content_transfer.go).
+func TestSamsungContentFileIDIsDeterministicAndContentAddressed(t *testing.T) {
+	a := samsungContentFileID("kitchen", []byte("photo-a"))
+	aAgain := samsungContentFileID("kitchen", []byte("photo-a"))
+	if a != aAgain {
+		t.Fatalf("not deterministic: %q vs %q", a, aAgain)
+	}
+	b := samsungContentFileID("kitchen", []byte("photo-b"))
+	if a == b {
+		t.Fatalf("different content produced the same id: %q", a)
+	}
+	otherFrame := samsungContentFileID("living-room", []byte("photo-a"))
+	if a == otherFrame {
+		t.Fatalf("different frames with identical content collided: %q", a)
+	}
+}
+
+// TestSamsungImageUploadBumpsContentJSONFileID is the end-to-end version of
+// TestSamsungContentFileIDIsDeterministicAndContentAddressed through the actual manual-upload
+// HTTP handler: two uploads of different content must produce two different content.json
+// file_ids, or a real frame would skip re-downloading the second image.
+func TestSamsungImageUploadBumpsContentJSONFileID(t *testing.T) {
+	h := buildTestHub(t)
+	frameID := "samsung-image-upload-bumps-fileid-test"
+
+	uploadOnce := func(pixel uint8) {
+		img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+		for y := 0; y < 4; y++ {
+			for x := 0; x < 4; x++ {
+				img.Set(x, y, color.RGBA{pixel, pixel, pixel, 255})
+			}
+		}
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatal(err)
+		}
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		fw, err := mw.CreateFormFile("file", "manual.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write(buf.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		mw.Close()
+		req := httptest.NewRequest("POST", "/api/samsung/"+frameID+"/image", &body)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		rec := httptest.NewRecorder()
+		h.handleSamsungImageUpload(rec, req, frameID)
+		if rec.Code != 200 {
+			t.Fatalf("upload status %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	contentJSONManifest := func() (id, fileName string) {
+		rec := httptest.NewRecorder()
+		h.handleSamsungContentJSON(rec, samsungFrameHTTPRequest("GET", "/samsung/"+frameID+"/content.json", "192.168.1.108"), frameID)
+		if rec.Code != 200 {
+			t.Fatalf("content.json status %d: %s", rec.Code, rec.Body.String())
+		}
+		var manifest struct {
+			ID       string `json:"id"`
+			Schedule []struct {
+				Contents []struct {
+					FileName string `json:"file_name"`
+				} `json:"contents"`
+			} `json:"schedule"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &manifest); err != nil {
+			t.Fatal(err)
+		}
+		if len(manifest.Schedule) == 0 || len(manifest.Schedule[0].Contents) == 0 {
+			t.Fatal("manifest missing schedule/contents")
+		}
+		return manifest.ID, manifest.Schedule[0].Contents[0].FileName
+	}
+
+	uploadOnce(10)
+	firstID, firstFileName := contentJSONManifest()
+	if firstID == "" {
+		t.Fatal("expected a non-empty file_id after first upload")
+	}
+
+	uploadOnce(200)
+	secondID, secondFileName := contentJSONManifest()
+	if secondID == firstID {
+		t.Fatalf("content.json file_id unchanged after a second, different upload: %q", secondID)
+	}
+	// file_name (and file_path, built from it) is where the frame stores the download on its
+	// own storage. A stable, frameID-based file_name was tried first, on the theory that the
+	// frame should just overwrite one "currently showing" file in place — but that turned out to
+	// be wrong: confirmed against a real frame that reusing the same file_name across two
+	// different pushes gets ignored. So file_name must vary right along with the change-detection
+	// id, same as it does here (see buildContentJSON's doc comment).
+	if firstFileName == secondFileName {
+		t.Fatalf("file_name unchanged after a second, different upload: %q", secondFileName)
 	}
 }
 

@@ -233,7 +233,9 @@ func (s *SamsungStore) ListFrames() ([]string, error) {
 	return out, nil
 }
 
-// writePNGLocked replaces the frame PNG using lockfile protocol.
+// writePNGLocked replaces the frame PNG using lockfile protocol. content.json's manifest id
+// (see samsungContentFileID) is derived from these bytes each time it's served, not remembered
+// from whenever they were written, so there's nothing to update here when they change.
 func (s *SamsungStore) writePNGLocked(frameID string, pngData []byte) error {
 	if !validFrameID(frameID) {
 		return fmt.Errorf("invalid frame id")
@@ -643,16 +645,18 @@ func (h *Hub) handleSamsungContentJSON(w http.ResponseWriter, r *http.Request, f
 	if addr == "" {
 		addr = r.Host
 	}
-	fileID := getSamsungPushFileID(frameID)
-	if fileID == "" {
-		fileID = frameID
-	}
+	contentID := samsungContentFileID(frameID, data)
 	frameIP := frameIDToIP(frameID)
 	if dev := h.samsungDeviceByFrameID(frameID); dev != nil && dev.IP != "" {
 		frameIP = dev.IP
 	}
 	imageURL := samsungImageURL(addr, frameIP, frameID)
-	manifest := buildContentJSON(imageURL, fileID, len(data))
+	// file_name/file_path (where the frame saves the download locally) also needs to vary per
+	// push, same as contentID — confirmed against a real frame that a stable file_name across
+	// two different pushes gets ignored. image_url (what the frame downloads FROM, above) stays
+	// static for now: that's untested territory, not confirmed necessary or unnecessary, so
+	// change it separately if this alone turns out not to be enough.
+	manifest := buildContentJSON(imageURL, contentID, contentID, len(data))
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write(manifest)
@@ -891,6 +895,15 @@ func (h *Hub) handleSamsungSleep(w http.ResponseWriter, r *http.Request, frameID
 
 // pushSamsungFrame MDC-pushes the frame's current PNG (wake → content.json → optional sleep).
 func (h *Hub) pushSamsungFrame(frameID string, dev *Device) error {
+	return h.pushSamsungFrameWithProgress(frameID, dev, nil)
+}
+
+// pushSamsungFrameWithProgress is pushSamsungFrame plus an optional callback invoked on every
+// wake poll, both during the automatic remote-wake attempt (WakeSamsungDisplayWithProgress) and
+// the manual power-button-wait fallback (waitForMDCAwakeManual, which can legitimately take
+// minutes) — the only way a caller (the samsung-bridge, to relay "retrying" status to the hub)
+// finds out a wake is in progress rather than stuck, from the very first attempt.
+func (h *Hub) pushSamsungFrameWithProgress(frameID string, dev *Device, onWakeAttempt func(phase string, attempt int)) error {
 	h.ensureSamsungMAC(dev.IP, dev.MDCPin)
 	frameID = h.resolveSamsungFrameID(frameID)
 	if dev2 := h.samsungDeviceByFrameID(frameID); dev2 != nil {
@@ -903,10 +916,8 @@ func (h *Hub) pushSamsungFrame(frameID string, dev *Device) error {
 	if addr == "" {
 		addr = "localhost:8080"
 	}
-	fileID := newSamsungPushFileID()
-	setSamsungPushFileID(frameID, fileID)
 	contentURL := samsungMDCContentURL(addr, dev.IP, frameID)
-	logOutbound("samsung push frame=%s ip=%s file_id=%s content=%s", frameID, dev.IP, fileID, contentURL)
+	logOutbound("samsung push frame=%s ip=%s content=%s", frameID, dev.IP, contentURL)
 	cfg, _ := h.samsung.LoadConfig(frameID)
 	wifiMAC := h.samsungWakeMAC(frameID, dev)
 	autoSleep := samsungAutoSleepAfterPush(cfg)
@@ -921,7 +932,7 @@ func (h *Hub) pushSamsungFrame(frameID string, dev *Device) error {
 	err := PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, sleepFn, SamsungPushOptions{
 		DeepSleepActive: cfg.DeepSleepActive,
 		RestoreStandby:  restoreStandby,
-	})
+	}, onWakeAttempt)
 	if err == nil {
 		h.devices.TouchSamsung(dev.IP, "mdc_push")
 		if restoreStandby {
@@ -945,14 +956,16 @@ func (h *Hub) handleSamsungPush(w http.ResponseWriter, r *http.Request, frameID 
 	var sendID string
 	if h.sendDelivery != nil {
 		if etag, _, ok := h.samsung.PNGInfo(frameID); ok {
-			send := h.sendDelivery.Register(dev.ID, "")
+			send := h.sendDelivery.RegisterWithSession(dev.ID, "", requestSessionID(r))
 			h.sendDelivery.BindSamsung(send.ID, frameID, etag)
 			sendID = send.ID
+			h.publishSendEvent(sendID)
 		}
 	}
 	if err := h.pushSamsungFrame(frameID, dev); err != nil {
 		if sendID != "" {
 			h.sendDelivery.Fail(sendID)
+			h.publishSendEvent(sendID)
 		}
 		code := http.StatusBadGateway
 		if strings.Contains(err.Error(), "no image for frame") {

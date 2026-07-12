@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -30,6 +31,8 @@ type Hub struct {
 	inkjoyRetry    *InkJoySendRetry
 	overlay        *OverlayStore
 	color          *ColorStore
+	scheduledSends *ScheduledSendStore
+	events         *EventBus
 	weather        weatherClient
 	bridgeCoord    *bridgehub.Coordinator
 	hubIP          string
@@ -184,6 +187,11 @@ func (h *Hub) handleDeviceDelete(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	h.devices.Save()
+	if h.scheduledSends != nil {
+		if err := h.scheduledSends.Delete(id); err != nil {
+			log.Printf("device delete %s: remove scheduled send config: %v", id, err)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -201,13 +209,6 @@ func (h *Hub) handleImages(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(imgs)
-}
-
-// handleImagesRevision serves GET /api/images/revision — cheap poll for album changes.
-func (h *Hub) handleImagesRevision(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-cache")
-	json.NewEncoder(w).Encode(map[string]string{"revision": h.images.AlbumRevision()})
 }
 
 // handleImageUpload serves POST /api/images.
@@ -229,6 +230,9 @@ func (h *Hub) handleImageUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if meta, err := h.images.GetMeta(id); err == nil {
+		h.publishImagesUpdated(meta)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"id": id, "name": name})
 }
@@ -236,6 +240,7 @@ func (h *Hub) handleImageUpload(w http.ResponseWriter, r *http.Request) {
 // handleImageDelete serves DELETE /api/images/{id}.
 func (h *Hub) handleImageDelete(w http.ResponseWriter, r *http.Request, id string) {
 	h.images.DeleteImage(id)
+	h.publishImagesRemoved(id)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -255,19 +260,21 @@ func (h *Hub) handleImageGet(w http.ResponseWriter, r *http.Request, id string) 
 	json.NewEncoder(w).Encode(meta)
 }
 
-// handleImagePatch serves PATCH /api/images/{id} — updates display name and/or chroma override.
+// handleImagePatch serves PATCH /api/images/{id} — updates display name, chroma override,
+// tags, and/or rotation override.
 func (h *Hub) handleImagePatch(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
 		Name            *string   `json:"name"`
 		ChromaBoostMode *string   `json:"chroma_boost_mode"`
 		Tags            *[]string `json:"tags"`
+		RotateOverride  *int      `json:"rotate_override"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if body.Name == nil && body.ChromaBoostMode == nil && body.Tags == nil {
-		http.Error(w, "name, chroma_boost_mode, or tags required", http.StatusBadRequest)
+	if body.Name == nil && body.ChromaBoostMode == nil && body.Tags == nil && body.RotateOverride == nil {
+		http.Error(w, "name, chroma_boost_mode, tags, or rotate_override required", http.StatusBadRequest)
 		return
 	}
 	chromaMode := ""
@@ -280,7 +287,7 @@ func (h *Hub) handleImagePatch(w http.ResponseWriter, r *http.Request, id string
 			return
 		}
 	}
-	meta, err := h.images.PatchMeta(id, body.Name, chromaMode, body.Tags)
+	meta, err := h.images.PatchMeta(id, body.Name, chromaMode, body.Tags, body.RotateOverride)
 	if err != nil {
 		code := http.StatusBadRequest
 		if strings.Contains(err.Error(), "not found") {
@@ -289,6 +296,7 @@ func (h *Hub) handleImagePatch(w http.ResponseWriter, r *http.Request, id string
 		http.Error(w, err.Error(), code)
 		return
 	}
+	h.publishImagesUpdated(meta)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(meta)
 }
@@ -302,7 +310,7 @@ func (h *Hub) handleDisplay(w http.ResponseWriter, r *http.Request, deviceID str
 		http.Error(w, "image_id required", http.StatusBadRequest)
 		return
 	}
-	sendID, err := h.sendImageToDeviceAuto(deviceID, body.ImageID)
+	sendID, err := h.sendImageToDeviceAutoSession(deviceID, body.ImageID, requestSessionID(r))
 	if err != nil {
 		code := http.StatusBadRequest
 		if strings.Contains(err.Error(), "frame did not wake") {
@@ -355,6 +363,9 @@ func (h *Hub) handleSaveCrop(w http.ResponseWriter, r *http.Request, id string) 
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	if meta, err := h.images.GetMeta(id); err == nil {
+		h.publishImagesUpdated(meta)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -370,12 +381,26 @@ func (h *Hub) handleDeleteCrop(w http.ResponseWriter, r *http.Request, id string
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	if meta, err := h.images.GetMeta(id); err == nil {
+		h.publishImagesUpdated(meta)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
-// handleStatic serves the embedded SPA for any non-API route.
+// handleStatic serves the embedded SPA for any non-API route, except for paths a connected
+// bridge has registered as its own via HelloPayload.HTTPPaths (see BridgeForPath) — those are
+// forwarded to the bridge instead. This covers vendor protocol callbacks that hit what a
+// physical device believes is a server root (e.g. Samsung frames POSTing
+// /content-transfer-progress, not namespaced under /samsung/…) rather than requiring the hub
+// to hardcode every such quirk itself.
 func (h *Hub) handleStatic(w http.ResponseWriter, r *http.Request) {
+	if h.bridgeCoord != nil {
+		if bridgeID, ok := h.bridgeCoord.BridgeForPath(r.URL.Path); ok {
+			h.proxyBridgeHTTP(w, r, bridgeID, r.URL.Path)
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write([]byte(uiRevisionHTML()))
@@ -639,6 +664,16 @@ const indexHTML = `<!DOCTYPE html>
     border:0;background:rgba(255,255,255,.12);color:#fff;font-size:28px;line-height:1;
     width:44px;height:44px;border-radius:999px;cursor:pointer;
   }
+  .album-zoom-rotate{
+    position:absolute;top:max(10px,env(safe-area-inset-top));left:max(10px,env(safe-area-inset-left));
+    display:flex;gap:8px;
+  }
+  .album-zoom-rotate button{
+    border:0;background:rgba(255,255,255,.12);color:#fff;font-size:20px;line-height:1;
+    width:44px;height:44px;border-radius:999px;cursor:pointer;
+  }
+  .album-zoom-rotate button:hover{background:rgba(255,255,255,.22)}
+  .album-zoom-rotate button:disabled{opacity:.4;cursor:default}
   /* crop modal */
   #crop-modal{display:none;position:fixed;inset:0;background:#000c;z-index:1000;align-items:center;justify-content:center;touch-action:none;overscroll-behavior:none}
   #crop-modal.open{display:flex;overflow:hidden}
@@ -688,9 +723,17 @@ const indexHTML = `<!DOCTYPE html>
   .mqtt-copy{margin-left:auto;font-size:.68rem;padding:2px 8px;border:1px solid #ccc;border-radius:4px;background:#fff;cursor:pointer;color:#333}
   .mqtt-copy:hover{background:#f0f0f0}
   .mqtt-empty{color:#888;font-size:.9rem;margin:0}
+  #toast-stack{position:fixed;top:1rem;right:1rem;z-index:9999;display:flex;flex-direction:column;gap:.5rem;max-width:320px}
+  .toast{background:#1a1a2e;color:#fff;padding:.7rem 1rem;border-radius:6px;box-shadow:0 2px 8px #0004;font-size:.85rem;line-height:1.4;opacity:0;transform:translateX(8px);transition:opacity .15s,transform .15s;pointer-events:auto;position:relative}
+  .toast.show{opacity:1;transform:translateX(0)}
+  .toast.toast-success{background:#1e6b3a}
+  .toast.toast-error{background:#8a2332}
+  .toast-close{position:absolute;top:.3rem;right:.4rem;background:none;border:none;color:#fff;opacity:.6;cursor:pointer;font-size:.9rem;line-height:1;padding:.2rem}
+  .toast-close:hover{opacity:1}
 </style>
 </head>
 <body>
+<div id="toast-stack"></div>
 <header>
   <h1>Joyous</h1>
   <nav>
@@ -724,16 +767,20 @@ const indexHTML = `<!DOCTYPE html>
         <div class="album-toolbar" id="album-toolbar"></div>
         <div class="album-upload-wrap">
           <div id="upload-zone" class="album-upload" onclick="document.getElementById('file-input').click()">
-            Drop images here or click to upload <span class="album-upload-mono">(.bin, .png, .jpg)</span>
+            Drop images here or click to upload <span class="album-upload-mono">(.bin, .png, .jpg, .avif)</span>
           </div>
         </div>
         <p class="album-reorder-hint" id="album-reorder-hint" hidden>Drag a photo onto the left edge of another to reorder</p>
         <div id="image-grid" class="album-grid"></div>
-        <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg" multiple>
+        <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg,.avif" multiple>
       </div>
     </div>
   </div>
   <div id="album-zoom" aria-hidden="true">
+    <div class="album-zoom-rotate">
+      <button type="button" id="album-zoom-rotate-ccw" aria-label="Rotate left" onclick="rotateAlbumZoomImage(-90)">&#8634;</button>
+      <button type="button" id="album-zoom-rotate-cw" aria-label="Rotate right" onclick="rotateAlbumZoomImage(90)">&#8635;</button>
+    </div>
     <button type="button" class="album-zoom-close" aria-label="Close" onclick="closeAlbumZoom()">&times;</button>
     <div id="album-zoom-stage" onclick="if(event.target===this) closeAlbumZoom()">
       <img id="album-zoom-img" alt="">
@@ -1027,65 +1074,121 @@ function joyousUIBusy(){
   return !!(m&&m.classList.contains('open'));
 }
 
-async function checkJoyousUIRevision(){
-  if(joyousUIBusy()) return;
-  try{
-    const r=await fetch('/api/ui/revision',{cache:'no-store'});
-    if(!r.ok) return;
-    const j=await r.json();
-    if(j.revision&&joyousUIRevision&&j.revision!==joyousUIRevision){
-      location.reload();
-      return;
-    }
-    if(j.revision) joyousUIRevision=j.revision;
-  }catch(e){}
+// joyousAlbumGridBusy is joyousUIBusy() minus the zoom-open check — used only by
+// applyImagesEvent. Unlike a full-page reload (which would yank the zoom modal out from under
+// someone), rebuilding the grid behind an open zoom is harmless: the modal holds no reference to
+// grid DOM nodes, and the rotate buttons already patch the zoomed image directly from their own
+// PATCH response. Gating this the same as joyousUIBusy() meant the grid silently missed every
+// "images" update while zoomed — e.g. right after using the rotate buttons — until the next hard
+// reload happened to rebuild it from scratch.
+function joyousAlbumGridBusy(){
+  if(albumCaptionEditingId) return true;
+  if(albumReorderBusy) return true;
+  if(albumFilterEditing) return true;
+  const m=document.getElementById('crop-modal');
+  return !!(m&&m.classList.contains('open'));
 }
 
-setInterval(checkJoyousUIRevision,60000);
-document.addEventListener('visibilitychange',()=>{
-  if(document.visibilityState==='visible') checkJoyousUIRevision();
-});
+// applyRevisionEvent handles the "revision" event the hub sends as part of every event-stream
+// handshake (see event_bus.go's handleEvents) — on first connect AND on every automatic
+// EventSource reconnect. A hub restart (new build deployed) drops the connection, so the very
+// reconnect that follows carries the new revision — no separate polling interval needed to
+// catch it, unlike the old 60s /api/ui/revision poll this replaces.
+function applyRevisionEvent(data){
+  if(joyousUIBusy()) return;
+  if(data&&data.revision&&joyousUIRevision&&data.revision!==joyousUIRevision){
+    location.reload();
+    return;
+  }
+  if(data&&data.revision) joyousUIRevision=data.revision;
+}
 
 let devices=[], images=[], activeTab='album', inkjoyBridgeOnline=false, nixplayBridgeOnline=false;
+let schedState={}; // deviceId -> {albumId, times:[...], enabled} — in-progress schedule editor state
 
-async function refreshBridgeNav(){
-  try{
-    const r=await fetch('/api/bridges',{cache:'no-store'});
-    if(!r.ok) return;
-    const data=await r.json();
-    const bridges=data.bridges||[];
-    const inkjoy=bridges.find(b=>b.id==='inkjoy'&&b.online&&b.has_config_ui);
-    const wasOnline=inkjoyBridgeOnline;
-    inkjoyBridgeOnline=!!inkjoy;
-    const navIJ=document.getElementById('nav-inkjoy');
-    const navMQ=document.getElementById('nav-mqtt');
-    if(navIJ) navIJ.style.display=inkjoyBridgeOnline?'':'none';
-    if(navMQ) navMQ.style.display='';
-    if(!inkjoyBridgeOnline){
-      const frame=document.getElementById('inkjoy-bridge-frame');
-      if(frame){ frame.dataset.loaded=''; frame.removeAttribute('src'); }
-    }
-    if(!inkjoyBridgeOnline&&activeTab==='inkjoy'){
-      showTab('devices',document.querySelector('nav button'));
-    }
-    if(inkjoyBridgeOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
-    if(inkjoyBridgeOnline&&!wasOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
+// joyousSessionId identifies this tab to the hub's event stream (see event_bus.go) — a send
+// this tab triggers is unicast back to just this id; one triggered elsewhere (e.g. a scheduled
+// send) is broadcast to every session instead. New id per page load; nothing is persisted.
+const joyousSessionId=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():('sess-'+Date.now()+'-'+Math.random().toString(36).slice(2));
 
-    const nixplay=bridges.find(b=>b.id==='nixplay'&&b.online&&b.has_config_ui);
-    const nixplayWasOnline=nixplayBridgeOnline;
-    nixplayBridgeOnline=!!nixplay;
-    const navNX=document.getElementById('nav-nixplay');
-    if(navNX) navNX.style.display=nixplayBridgeOnline?'':'none';
-    if(!nixplayBridgeOnline){
-      const frame=document.getElementById('nixplay-bridge-frame');
-      if(frame){ frame.dataset.loaded=''; frame.removeAttribute('src'); }
-    }
-    if(!nixplayBridgeOnline&&activeTab==='nixplay'){
-      showTab('devices',document.querySelector('nav button'));
-    }
-    if(nixplayBridgeOnline&&activeTab==='nixplay') loadNixplayBridgeFrame();
-    if(nixplayBridgeOnline&&!nixplayWasOnline&&activeTab==='nixplay') loadNixplayBridgeFrame();
-  }catch(_){}
+// sessionHeaders merges the X-Session-Id header (see requestSessionID in event_bus.go) into a
+// fetch() headers object, for the send-triggering requests whose progress this tab wants
+// unicast back to itself rather than broadcast to every open tab.
+function sessionHeaders(extra){
+  return Object.assign({'X-Session-Id':joyousSessionId}, extra||{});
+}
+
+// ── Toasts (top-right) ───────────────────────────────────────────────────────
+const toastStack=document.getElementById('toast-stack');
+const toastEls={}; // id -> element, so repeated updates (e.g. retry ticks) replace in place
+
+function showToast(id,message,opts){
+  opts=opts||{};
+  let el=toastEls[id];
+  if(!el){
+    el=document.createElement('div');
+    toastStack.appendChild(el);
+    toastEls[id]=el;
+  }
+  clearTimeout(el._hideTimer);
+  el.className='toast'+(opts.type?' toast-'+opts.type:'');
+  el.textContent=message;
+  if(opts.closable){
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='toast-close';
+    btn.textContent='×';
+    btn.onclick=()=>dismissToast(id);
+    el.appendChild(btn);
+  }
+  requestAnimationFrame(()=>el.classList.add('show'));
+  if(opts.autoHideMs) el._hideTimer=setTimeout(()=>dismissToast(id),opts.autoHideMs);
+}
+
+function dismissToast(id){
+  const el=toastEls[id];
+  if(!el) return;
+  clearTimeout(el._hideTimer);
+  el.classList.remove('show');
+  setTimeout(()=>{el.remove();delete toastEls[id];},200);
+}
+
+// applyBridgeStatus renders bridge nav badges from a "bridges" event pushed over the event
+// stream (see connectJoyousEvents below) — the handshake snapshot on connect covers the
+// initial paint, so there's no separate REST fetch for this anymore.
+function applyBridgeStatus(bridges){
+  bridges=bridges||[];
+  const inkjoy=bridges.find(b=>b.id==='inkjoy'&&b.online&&b.has_config_ui);
+  const wasOnline=inkjoyBridgeOnline;
+  inkjoyBridgeOnline=!!inkjoy;
+  const navIJ=document.getElementById('nav-inkjoy');
+  const navMQ=document.getElementById('nav-mqtt');
+  if(navIJ) navIJ.style.display=inkjoyBridgeOnline?'':'none';
+  if(navMQ) navMQ.style.display='';
+  if(!inkjoyBridgeOnline){
+    const frame=document.getElementById('inkjoy-bridge-frame');
+    if(frame){ frame.dataset.loaded=''; frame.removeAttribute('src'); }
+  }
+  if(!inkjoyBridgeOnline&&activeTab==='inkjoy'){
+    showTab('devices',document.querySelector('nav button'));
+  }
+  if(inkjoyBridgeOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
+  if(inkjoyBridgeOnline&&!wasOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
+
+  const nixplay=bridges.find(b=>b.id==='nixplay'&&b.online&&b.has_config_ui);
+  const nixplayWasOnline=nixplayBridgeOnline;
+  nixplayBridgeOnline=!!nixplay;
+  const navNX=document.getElementById('nav-nixplay');
+  if(navNX) navNX.style.display=nixplayBridgeOnline?'':'none';
+  if(!nixplayBridgeOnline){
+    const frame=document.getElementById('nixplay-bridge-frame');
+    if(frame){ frame.dataset.loaded=''; frame.removeAttribute('src'); }
+  }
+  if(!nixplayBridgeOnline&&activeTab==='nixplay'){
+    showTab('devices',document.querySelector('nav button'));
+  }
+  if(nixplayBridgeOnline&&activeTab==='nixplay') loadNixplayBridgeFrame();
+  if(nixplayBridgeOnline&&!nixplayWasOnline&&activeTab==='nixplay') loadNixplayBridgeFrame();
 }
 
 function loadInkjoyBridgeFrame(){
@@ -1102,9 +1205,6 @@ function loadNixplayBridgeFrame(){
   frame.dataset.loaded='1';
 }
 
-refreshBridgeNav();
-setInterval(refreshBridgeNav,5000);
-
 function showTab(name,btn){
   activeTab=name;
   document.querySelectorAll('[id^=tab-]').forEach(e=>e.style.display='none');
@@ -1112,11 +1212,10 @@ function showTab(name,btn){
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   if(btn) btn.classList.add('active');
   stopTabRefresh();
-  if(name==='devices') startTabRefresh(5000, refreshDevicesTab);
-  else if(name==='inkjoy'){ loadInkjoyBridgeFrame(); }
+  if(name==='inkjoy'){ loadInkjoyBridgeFrame(); }
   else if(name==='nixplay'){ loadNixplayBridgeFrame(); }
   else if(name==='samsung') startTabRefresh(60000, refreshSamsungTab);
-  else if(name==='album') startTabRefresh(5000, refreshAlbumTab);
+  else if(name==='album') loadImages();
   else if(name==='overlays') loadOverlaysTab();
   else if(name==='color') loadColorTab();
   if(name==='mqtt') startMQTTLogPoll();
@@ -1339,41 +1438,10 @@ document.addEventListener('visibilitychange',()=>{
   }
 });
 
-async function refreshDevicesTab(){
-  await loadDevicesInner();
-}
-
 async function refreshSamsungTab(){
   await loadSamsungFrames();
 }
 
-let albumRevision=null;
-async function refreshAlbumTab(){
-  if(albumCaptionEditingId) return;
-  if(albumZoomId) return;
-  if(albumReorderBusy) return;
-  const m=document.getElementById('crop-modal');
-  if(m&&m.classList.contains('open')) return;
-  try{
-    const r=await fetch('/api/images/revision',{cache:'no-store'});
-    if(!r.ok) return;
-    const j=await r.json();
-    if(!j.revision) return;
-    if(!albumRevision||j.revision!==albumRevision){
-      albumRevision=j.revision;
-      await loadImages();
-    }
-  }catch(e){}
-}
-
-async function syncAlbumRevision(){
-  try{
-    const r=await fetch('/api/images/revision',{cache:'no-store'});
-    if(!r.ok) return;
-    const j=await r.json();
-    if(j.revision) albumRevision=j.revision;
-  }catch(e){}
-}
 
 async function ensureDevicesForSend(){
   await loadDevicesInner();
@@ -1504,6 +1572,40 @@ function openAlbumZoom(id){
   albumZoomScrollY=window.scrollY;
   document.documentElement.style.overflow='hidden';
   document.body.style.overflow='hidden';
+}
+
+// rotateAlbumZoomImage sends an additional 90deg correction (see ImageMeta.RotateOverride in
+// images.go) — for sources like legacy Nixplay imports whose rotation lived only in the
+// exporting app's own database, never in EXIF, so decodeAnyImage's automatic correction alone
+// can't fix them. Applies everywhere the image is rendered (thumbnail, preview, and every
+// device's send path), not just this zoom view.
+async function rotateAlbumZoomImage(delta){
+  const id=albumZoomId;
+  if(!id) return;
+  const meta=images.find(i=>i.id===id);
+  if(!meta) return;
+  const buttons=[document.getElementById('album-zoom-rotate-ccw'),document.getElementById('album-zoom-rotate-cw')];
+  buttons.forEach(b=>{ if(b) b.disabled=true; });
+  try{
+    const current=meta.rotate_override||0;
+    const next=((current+delta)%360+360)%360;
+    const r=await fetch('/api/images/'+encodeURIComponent(id),{
+      method:'PATCH',headers:sessionHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({rotate_override:next})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    const updated=await r.json();
+    Object.assign(meta,updated);
+    const img=document.getElementById('album-zoom-img');
+    if(img&&albumZoomId===id){
+      img.onload=()=>layoutAlbumZoom();
+      img.src='/images/'+encodeURIComponent(id)+'/preview?v='+next+'-'+Date.now();
+    }
+  }catch(e){
+    showToast('rotate-'+id,'Rotate failed: '+e.message,{type:'error'});
+  }finally{
+    buttons.forEach(b=>{ if(b) b.disabled=false; });
+  }
 }
 
 function closeAlbumZoom(){
@@ -2124,7 +2226,6 @@ async function saveAlbumMove(draggedId, targetId){
       body:JSON.stringify({move:{id:draggedId,target:targetId}})
     });
     if(!r.ok) throw new Error(await r.text());
-    await syncAlbumRevision();
   }catch(e){
     images=prev;
     renderAlbumGrid();
@@ -2214,7 +2315,6 @@ async function loadImages(){
   images.forEach(img=>{ imageCropsCache[img.id]=img.crops||{}; });
   renderAlbumGrid();
   renderAlbumToolbar();
-  await syncAlbumRevision();
 }
 
 const sendPicker=document.getElementById('send-picker');
@@ -2267,27 +2367,20 @@ function samsungDeepSleep(d,rec,s){
     (d&&d.last_action==='mdc_deep_sleep')||(rec&&rec.last_action==='mdc_deep_sleep'));
 }
 
-const SAMSUNG_MANUAL_WAKE_HINT_MS=20000;
-const SAMSUNG_MANUAL_WAKE_MSG='Press power button on frame…';
 const SAMSUNG_DEEP_SLEEP_WAKE_MSG='Press power button on frame for 3s to wake frame';
 
 function samsungDeepSleepWakeHint(d,rec,s){
   return samsungDeepSleep(d,rec,s)?SAMSUNG_DEEP_SLEEP_WAKE_MSG:null;
 }
 
-async function postDisplay(deviceId,imageId,onLongWait){
-  const hintTimer=setTimeout(()=>{if(onLongWait) onLongWait();},SAMSUNG_MANUAL_WAKE_HINT_MS);
-  try{
-    const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/display',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({image_id:imageId})
-    });
-    if(!r.ok) throw new Error(await r.text());
-    const j=await r.json();
-    return j.send_id||'';
-  }finally{
-    clearTimeout(hintTimer);
-  }
+async function postDisplay(deviceId,imageId){
+  const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/display',{
+    method:'POST',headers:sessionHeaders({'Content-Type':'application/json'}),
+    body:JSON.stringify({image_id:imageId})
+  });
+  if(!r.ok) throw new Error(await r.text());
+  const j=await r.json();
+  return j.send_id||'';
 }
 
 const SEND_DELIVERY_TIMEOUT_MS=180000;
@@ -2312,49 +2405,148 @@ async function waitSendDelivered(sendId,onTick){
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
     if(j.status==='delivered') return true;
-    if(j.status==='failed') throw new Error('Frame did not finish downloading');
+    if(j.status==='failed') throw new Error(j.error||'Frame did not finish downloading');
     if(onTick) onTick(j);
   }
   return false;
 }
 
-function applySendDeliveryTick(el,j){
-  if(!el||!j) return;
-  if(j.retry_attempts>0){
-    el.textContent='Retrying ('+j.retry_attempts+')…';
+// showSendProgressToast renders live /api/send/{sendId} status as a top-right toast (not
+// button/status-line text — a "Retrying (N)…" message crammed into a small button was hard to
+// read and fighting for space with the button's own label). The "retrying" status and its detail
+// come straight from the server — see send_delivery.go's IncrementRetry and samsung_mdc.go's
+// waitMDCAwake/waitForMDCAwakeManual — rather than the client guessing from a fixed timer how
+// long a send "should" take. The power-button hint only shows once detail says the automatic
+// remote wake gave up (phase=manual server-side) — showing it during the automatic attempt would
+// tell the user to do something the frame itself is still trying to do on its own.
+function showSendProgressToast(toastId,j,dev){
+  if(!toastId||!j) return;
+  if(j.status==='retrying'){
+    const hint=(dev&&dev.type==='samsung'&&j.detail==='waiting for frame to wake')?SAMSUNG_DEEP_SLEEP_WAKE_MSG+' — ':'';
+    showToast(toastId,hint+'Retrying ('+j.retry_attempts+')…');
     return;
   }
-  if(j.status==='downloading') el.textContent='Downloading…';
+  if(j.status==='downloading') showToast(toastId,'Downloading…');
 }
+
+// sendWatches dedupes concurrent watchers of the same sendId — e.g. the code that triggered a
+// send and the automatic-send poller (see pollActiveSends) both discovering it within moments
+// of each other. Later callers just await the same in-flight watch instead of polling
+// /api/send/{sendId} twice for the same send.
+const sendWatches={};
+
+// watchSendProgress polls a send to completion, showing/updating a single toast the whole way
+// (retrying/downloading -> final result) — the one place this happens, used by every send
+// path (manual sends below, and pollActiveSends for sends nobody in this tab initiated).
+function watchSendProgress(sendId,dev){
+  if(!sendId) return Promise.resolve(false);
+  if(sendWatches[sendId]) return sendWatches[sendId];
+  const toastId='send-'+sendId;
+  const p=(async()=>{
+    try{
+      const delivered=await waitSendDelivered(sendId,j=>{
+        showSendProgressToast(toastId,j,dev);
+      });
+      showToast(toastId,delivered?'✓ Sent':'Sent (unconfirmed)',{type:'success',autoHideMs:2500});
+      return delivered;
+    }catch(e){
+      showToast(toastId,'Send failed: '+e.message,{type:'error',closable:true,autoHideMs:8000});
+      throw e;
+    }finally{
+      delete sendWatches[sendId];
+    }
+  })();
+  sendWatches[sendId]=p;
+  return p;
+}
+
+// onSendDiscoveryEvent handles a "send" event from the event stream for a sendId this tab
+// isn't already watching — a scheduled send firing in the background is the main case. Starts
+// watching it the same way as a manual send (progress toast, retrying/press-power-button hint
+// included). A terminal event (delivered/failed) for a send we never saw the start of is
+// skipped rather than popping a toast for something already finished — consistent with the
+// event bus's "if you weren't listening you don't care" design (see event_bus.go).
+function onSendDiscoveryEvent(data){
+  if(!data||!data.send_id||sendWatches[data.send_id]) return;
+  if(data.status==='delivered'||data.status==='failed') return;
+  watchSendProgress(data.send_id,{type:data.device_type});
+}
+
+function applyErrorEvent(data){
+  if(!data) return;
+  showToast('error-'+Date.now()+'-'+Math.random().toString(36).slice(2), data.message||'Something went wrong', {type:'error',closable:true,autoHideMs:10000});
+}
+
+// applyImagesEvent reacts to a created/edited/deleted image or a reordered album (see
+// imagesEventPayload in event_bus.go) by re-fetching the currently-viewed album — replacing
+// the old fixed-interval Album tab poll and its /api/images/revision hash-compare entirely.
+// A live re-fetch (via the same buildImagesURL()/loadImages() the tab already uses) is simpler
+// and provably correct compared to re-implementing the server's tag/format/orientation smart-
+// album filter matching in JS just to patch the DOM surgically, and on this app's LAN-local
+// single-hub setup the extra round trip is cheap. Only fires while the Album tab is the one
+// actually visible, and never while joyousAlbumGridBusy() (mid-edit — see its own doc comment;
+// deliberately not joyousUIBusy(), which also counts the zoom modal as busy — see
+// joyousAlbumGridBusy's doc comment for why that's wrong here).
+function applyImagesEvent(data){
+  if(!data||activeTab!=='album'||joyousAlbumGridBusy()) return;
+  const removedVisible=data.removed&&data.removed.some(id=>images.some(img=>img.id===id));
+  const updatedAny=data.updated&&data.updated.length>0;
+  const reorderedCurrent=data.reordered_albums&&data.reordered_albums.includes(currentAlbumId);
+  if(updatedAny||removedVisible||reorderedCurrent) loadImages();
+}
+
+// connectJoyousEvents opens the single event stream (see event_bus.go) that replaces what used
+// to be five independently-polled endpoints: devices, bridge nav status, active sends, UI
+// revision, and the Album tab's image-catalog poll. EventSource reconnects automatically on
+// any drop — each (re)connection gets a fresh handshake snapshot of everything (see
+// handleEvents), so a missed event during a brief disconnect is corrected by the next snapshot
+// rather than needing replay.
+function connectJoyousEvents(){
+  const es=new EventSource('/api/events?session='+encodeURIComponent(joyousSessionId));
+  es.onmessage=(evt)=>{
+    let msg;
+    try{ msg=JSON.parse(evt.data); }catch(e){ return; }
+    switch(msg.type){
+      case 'devices': applyDevicesSnapshot(msg.data); break;
+      case 'bridges': applyBridgeStatus(msg.data); break;
+      case 'send': onSendDiscoveryEvent(msg.data); break;
+      case 'error': applyErrorEvent(msg.data); break;
+      case 'revision': applyRevisionEvent(msg.data); break;
+      case 'images': applyImagesEvent(msg.data); break;
+    }
+  };
+}
+connectJoyousEvents();
 
 async function doSend(imageId, deviceId, feedbackBtn){
   closePickers();
   const orig=feedbackBtn?feedbackBtn.textContent:'';
   const dev=devices.find(d=>d.id===deviceId);
   const deepHint=samsungDeepSleepWakeHint(dev);
+  if(feedbackBtn){
+    feedbackBtn.disabled=true;
+    feedbackBtn.textContent=deepHint||'Sending…';
+  }else if(deepHint){
+    alert(deepHint);
+  }
+  let sendId;
   try{
-    if(feedbackBtn){
-      feedbackBtn.disabled=true;
-      feedbackBtn.textContent=deepHint||'Sending…';
-    }else if(deepHint){
-      alert(deepHint);
-    }
-    const sendId=await postDisplay(deviceId,imageId,()=>{
-      if(dev&&dev.type==='samsung'&&feedbackBtn&&!deepHint){
-        feedbackBtn.textContent=SAMSUNG_MANUAL_WAKE_MSG;
-      }
-    });
-    if(sendId&&feedbackBtn&&dev?.type!=='samsung') feedbackBtn.textContent='Downloading…';
-    const delivered=sendId?await waitSendDelivered(sendId,j=>{
-      if(feedbackBtn) applySendDeliveryTick(feedbackBtn,j);
-    }):false;
-    if(feedbackBtn){
-      feedbackBtn.textContent=delivered?'✓ Sent':(sendId?'Sent (unconfirmed)':'✓ Sent');
-      setTimeout(()=>{feedbackBtn.textContent=orig;feedbackBtn.disabled=false;},2000);
-    }
+    sendId=await postDisplay(deviceId,imageId);
   }catch(e){
     alert('Send failed: '+e.message);
     if(feedbackBtn){feedbackBtn.textContent=orig;feedbackBtn.disabled=false;}
+    return;
+  }
+  if(sendId&&feedbackBtn&&dev?.type!=='samsung') feedbackBtn.textContent='Downloading…';
+  let delivered=false;
+  try{
+    delivered=sendId?await watchSendProgress(sendId,dev):false;
+  }catch(e){
+    // watchSendProgress already surfaced this via toast.
+  }
+  if(feedbackBtn){
+    feedbackBtn.textContent=delivered?'✓ Sent':(sendId?'Sent (unconfirmed)':'✓ Sent');
+    setTimeout(()=>{feedbackBtn.textContent=orig;feedbackBtn.disabled=false;},2000);
   }
 }
 
@@ -2464,7 +2656,7 @@ async function sendCalibrationChart(){
     try{
       const j=await readJSONResponse(await fetch('/api/calibration/inkjoy/send',{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:sessionHeaders({'Content-Type':'application/json'}),
         body:JSON.stringify({device_id:ijCurrentId})
       }));
       const delivered=j.send_id?await waitSendDelivered(j.send_id):false;
@@ -2486,7 +2678,7 @@ async function sendCalibrationChart(){
       if(st) st.textContent='Push 1/2: black prime…';
       const j1=await readJSONResponse(await fetch('/api/calibration/inkjoy-black-248/send',{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:sessionHeaders({'Content-Type':'application/json'}),
         body:JSON.stringify({device_id:ijCurrentId})
       }));
       if(st) st.textContent='Push 1/2: waiting for download…';
@@ -2496,7 +2688,7 @@ async function sendCalibrationChart(){
       if(st) st.textContent='Push 2/2: lo ladder…';
       const j2=await readJSONResponse(await fetch('/api/calibration/inkjoy-lo-ladder/send',{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:sessionHeaders({'Content-Type':'application/json'}),
         body:JSON.stringify({device_id:ijCurrentId})
       }));
       if(st) st.textContent='Push 2/2: waiting for download…';
@@ -2516,12 +2708,11 @@ async function sendCalibrationChart(){
   if(st) st.textContent='Pushing…';
   if(btn) btn.disabled=true;
   try{
-    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/calibration',{method:'POST'});
+    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/calibration',{method:'POST',headers:sessionHeaders()});
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
-    const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      if(st) applySendDeliveryTick(st,j);
-    }):false;
+    let delivered=false;
+    try{ delivered=j.send_id?await watchSendProgress(j.send_id,{type:'samsung'}):false; }catch(_){}
     if(st) st.textContent=delivered?'✓ Sent to display':'Sent (unconfirmed)';
     await loadDevicesInner();
     loadSamsungFrames();
@@ -2809,28 +3000,151 @@ async function ijDeleteDevice(){
   loadIJFrames();
 }
 
-async function loadDevicesInner(){
-  const r=await fetch('/api/devices'); devices=await r.json();
+function deviceStatusHTML(d){
+  const type=d.type||'inkjoy';
+  return type==='samsung'
+    ? (d.connected?'<span class="badge online">active</span>':'<span class="badge offline">'+samsungOfflineLabel(d)+'</span>')
+    : (d.connected?'<span class="badge online">online</span>':'<span class="badge offline">'+inkjoyOfflineLabel(d)+'</span>');
+}
+
+function deviceMetaHTML(d){
+  const type=d.type||'inkjoy';
+  return type==='inkjoy'
+    ? ((d.firmware?'fw '+d.firmware+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.rssi?'📶'+d.rssi+'dBm ':''))
+    : (d.ip?d.ip+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.power_source?('<span style="color:#666">'+d.power_source+' </span>'):'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
+}
+
+// deviceLabel is the display-name fallback chain shared by initial card render and
+// the poll-driven patch below, so both paths can never drift out of sync.
+function deviceLabel(d){
+  return d.name||d.mac||d.ip||d.id;
+}
+
+function deviceCardHTML(d){
+  const label=escHtml(deviceLabel(d));
+  const type=d.type||'inkjoy';
+  const refreshBtn=type==='inkjoy'?'<button class="btn btn-sm btn-primary" onclick="refreshDevice(\''+d.id+'\')">Refresh display</button> ':'';
+  return '<div class="card" id="card-'+d.id+'" data-device-id="'+d.id+'">'+
+    '<span class="badge" style="background:#eee;color:#333;margin-right:.5rem">'+type+'</span>'+
+    '<strong id="label-'+d.id+'">'+label+'</strong> '+
+    '<span id="status-'+d.id+'">'+deviceStatusHTML(d)+'</span> '+
+    '<span id="meta-'+d.id+'" style="margin-left:.5rem;color:#666;font-size:.9rem">'+deviceMetaHTML(d)+'</span>'+
+    '<div style="margin-top:.5rem">'+refreshBtn+
+    '<button class="btn btn-sm btn-primary" onclick="sendToFrame(\''+d.id+'\')">Send image</button> '+
+    '<button class="btn btn-sm" onclick="toggleSchedule(\''+d.id+'\')">Scheduled sends</button>'+
+    '</div>'+
+    '<div id="sched-'+d.id+'" style="display:none;margin-top:.6rem;padding-top:.6rem;border-top:1px solid #eee"></div>'+
+    '</div>';
+}
+
+// loadDevicesInner patches the existing card for each still-present device in place
+// (label/status/meta only) rather than replacing the whole #device-list innerHTML, so an
+// open "Scheduled sends" editor — or any other in-progress interaction inside a card — isn't
+// destroyed by the 5s poll. Cards are only fully added/removed when a device appears/disappears;
+// devices is already server-sorted, so re-appending each card in that order (appendChild moves
+// an existing node rather than recreating it) keeps on-screen order in sync as devices are
+// added/renamed, without disturbing any card's contents or open editor.
+// applyDevicesSnapshot renders a full device list, from either a direct fetch
+// (loadDevicesInner) or a live "devices" event pushed over the event stream (see
+// joyousEvents below) — same incremental-patch logic either way.
+function applyDevicesSnapshot(newDevices){
+  devices=newDevices||[];
   const el=document.getElementById('device-list');
-  if(!devices||!devices.length){el.innerHTML='<p>No frames yet. Connect an InkJoy frame via MQTT, or click Discover for Samsung displays.</p>';return;}
-  el.innerHTML=devices.map(d=>{
-    const label=d.name||d.mac||d.ip||d.id;
-    const type=d.type||'inkjoy';
-    const status=type==='samsung'
-      ? (d.connected?'<span class="badge online">active</span>':'<span class="badge offline">'+samsungOfflineLabel(d)+'</span>')
-      : (d.connected?'<span class="badge online">online</span>':'<span class="badge offline">'+inkjoyOfflineLabel(d)+'</span>');
-    const meta=type==='inkjoy'
-      ? ((d.firmware?'fw '+d.firmware+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.rssi?'📶'+d.rssi+'dBm ':''))
-      : (d.ip?d.ip+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.power_source?('<span style="color:#666">'+d.power_source+' </span>'):'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
-    const refreshBtn=type==='inkjoy'?'<button class="btn btn-sm btn-primary" onclick="refreshDevice(\''+d.id+'\')">Refresh display</button> ':'';
-    return '<div class="card">'+
-      '<span class="badge" style="background:#eee;color:#333;margin-right:.5rem">'+type+'</span>'+
-      '<strong>'+label+'</strong> '+status+' '+
-      '<span style="margin-left:.5rem;color:#666;font-size:.9rem">'+meta+'</span>'+
-      '<div style="margin-top:.5rem">'+refreshBtn+
-      '<button class="btn btn-sm btn-primary" onclick="sendToFrame(\''+d.id+'\')">Send image</button>'+
-      '</div></div>';
-  }).join('');
+  if(!devices.length){el.innerHTML='<p>No frames yet. Connect an InkJoy frame via MQTT, or click Discover for Samsung displays.</p>';return;}
+  if(!el.querySelector('.card')) el.innerHTML=''; // coming from the empty-state message or first load
+  const seen=new Set();
+  devices.forEach(d=>{
+    seen.add(d.id);
+    let card=document.getElementById('card-'+d.id);
+    if(!card){
+      el.insertAdjacentHTML('beforeend', deviceCardHTML(d));
+      card=document.getElementById('card-'+d.id);
+    }else{
+      const labelEl=document.getElementById('label-'+d.id);
+      if(labelEl) labelEl.textContent=deviceLabel(d);
+      const statusEl=document.getElementById('status-'+d.id);
+      if(statusEl) statusEl.innerHTML=deviceStatusHTML(d);
+      const metaEl=document.getElementById('meta-'+d.id);
+      if(metaEl) metaEl.innerHTML=deviceMetaHTML(d);
+    }
+    if(card) el.appendChild(card);
+  });
+  el.querySelectorAll('.card[data-device-id]').forEach(card=>{
+    if(!seen.has(card.dataset.deviceId)) card.remove();
+  });
+}
+
+async function loadDevicesInner(){
+  const r=await fetch('/api/devices');
+  applyDevicesSnapshot(await r.json());
+}
+
+// ── Scheduled sends (Devices tab) ────────────────────────────────────────────
+
+async function toggleSchedule(deviceId){
+  const el=document.getElementById('sched-'+deviceId);
+  if(!el)return;
+  if(el.style.display==='none'){
+    el.style.display='block';
+    await loadSchedule(deviceId);
+  }else{
+    el.style.display='none';
+  }
+}
+
+async function loadSchedule(deviceId){
+  const el=document.getElementById('sched-'+deviceId);
+  if(!el)return;
+  el.innerHTML='Loading…';
+  if(!albums||!albums.length) await loadAlbums();
+  try{
+    const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/schedule');
+    const cfg=r.ok?await r.json():{};
+    schedState[deviceId]={albumId:cfg.album_id||'',times:(cfg.times||[]).slice(),enabled:!!cfg.enabled};
+  }catch(e){
+    schedState[deviceId]={albumId:'',times:[],enabled:false};
+  }
+  renderSchedule(deviceId);
+}
+
+function renderSchedule(deviceId){
+  const el=document.getElementById('sched-'+deviceId);
+  if(!el)return;
+  const st=schedState[deviceId]||{albumId:'',times:[],enabled:false};
+  const albumOpts='<option value="">— choose album —</option>'+
+    albums.map(a=>'<option value="'+a.id+'"'+(a.id===st.albumId?' selected':'')+'>'+escHtml(a.name||a.id)+'</option>').join('');
+  const timeRows=st.times.map((t,i)=>
+    '<div style="margin:.25rem 0"><input type="time" value="'+t+'" onchange="updateSchedTime(\''+deviceId+'\','+i+',this.value)"> '+
+    '<button type="button" class="btn btn-sm" onclick="removeSchedTime(\''+deviceId+'\','+i+')">✕</button></div>'
+  ).join('');
+  el.innerHTML=
+    '<div style="color:#666;font-size:.85rem;margin-bottom:.4rem">Send a random photo from an album at each time below.</div>'+
+    '<label style="display:block;margin-bottom:.4rem"><input type="checkbox" '+(st.enabled?'checked':'')+' onchange="setSchedEnabled(\''+deviceId+'\',this.checked)"> Enabled</label>'+
+    '<select onchange="setSchedAlbum(\''+deviceId+'\',this.value)">'+albumOpts+'</select>'+
+    '<div style="margin-top:.5rem">'+(timeRows||'<span style="color:#888;font-size:.85rem">No times set.</span>')+'</div>'+
+    '<button type="button" class="btn btn-sm" onclick="addSchedTime(\''+deviceId+'\')">+ Add time</button> '+
+    '<button type="button" class="btn btn-sm btn-primary" onclick="saveSchedule(\''+deviceId+'\')">Save</button>'+
+    '<span id="sched-status-'+deviceId+'" style="margin-left:.5rem;color:#666;font-size:.85rem"></span>';
+}
+
+function setSchedAlbum(deviceId,albumId){schedState[deviceId].albumId=albumId;}
+function setSchedEnabled(deviceId,enabled){schedState[deviceId].enabled=enabled;}
+function addSchedTime(deviceId){schedState[deviceId].times.push('09:00');renderSchedule(deviceId);}
+function removeSchedTime(deviceId,i){schedState[deviceId].times.splice(i,1);renderSchedule(deviceId);}
+function updateSchedTime(deviceId,i,v){schedState[deviceId].times[i]=v;}
+
+async function saveSchedule(deviceId){
+  const st=schedState[deviceId];
+  if(!st)return;
+  if(st.enabled&&!st.albumId){alert('Choose an album first.');return;}
+  if(st.enabled&&!st.times.length){alert('Add at least one time first.');return;}
+  const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/schedule',{
+    method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({album_id:st.albumId,times:st.times,enabled:st.enabled})
+  });
+  if(!r.ok){alert('Error: '+(await r.text()));return;}
+  const status=document.getElementById('sched-status-'+deviceId);
+  if(status){status.textContent='Saved';setTimeout(()=>{if(status)status.textContent='';},1500);}
 }
 
 showTab('album', document.querySelector('nav button.active'));
@@ -3028,15 +3342,14 @@ async function overlaySend(deviceId){
   try{
     const r=await fetch('/api/overlay/send',{
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers:sessionHeaders({'Content-Type':'application/json'}),
       body:JSON.stringify({device_id:deviceId,use_current:true})
     });
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
     if(btn&&d?.type!=='samsung') btn.textContent='Downloading…';
-    const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      if(btn) applySendDeliveryTick(btn,j);
-    }):false;
+    let delivered=false;
+    try{ delivered=j.send_id?await watchSendProgress(j.send_id,d):false; }catch(_){}
     if(btn){
       btn.textContent=delivered?'✓ Sent':'Sent (unconfirmed)';
       setTimeout(()=>{btn.textContent=orig;btn.disabled=false;},2000);
@@ -3749,12 +4062,11 @@ async function samsungPushCurrent(){
   const deepHint=samsungDeepSleepWakeHint(dev,rec,samsungStatusCache);
   if(st) st.textContent=deepHint||'Pushing…';
   try{
-    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/push',{method:'POST'});
+    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/push',{method:'POST',headers:sessionHeaders()});
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
-    const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      if(st) applySendDeliveryTick(st,j);
-    }):false;
+    let delivered=false;
+    try{ delivered=j.send_id?await watchSendProgress(j.send_id,dev):false; }catch(_){}
     if(document.getElementById('samsung-auto-sleep').checked){
       const delay=parseInt(document.getElementById('samsung-sleep-delay').value,10)||15;
       if(st) st.textContent=delivered?('✓ Pushed — frame will sleep in ~'+delay+'s…'):'Pushed (unconfirmed)';

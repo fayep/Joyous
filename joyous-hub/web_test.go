@@ -33,6 +33,8 @@ func buildTestHub(t *testing.T) *Hub {
 		sendDelivery:   NewSendDeliveryTracker(),
 		overlay:        NewOverlayStore(dir),
 		color:          colorStore,
+		scheduledSends: NewScheduledSendStore(dir),
+		events:         NewEventBus(),
 		publisher:      &noopPublisher{},
 		mqttLog:        NewMQTTLogBuffer(20),
 	}
@@ -189,22 +191,6 @@ func TestGetImagesEmpty(t *testing.T) {
 	json.NewDecoder(rec.Body).Decode(&out)
 	if out == nil {
 		t.Error("expected empty array, got null")
-	}
-}
-
-func TestImagesRevisionAPI(t *testing.T) {
-	h := buildTestHub(t)
-	rec := httptest.NewRecorder()
-	h.handleImagesRevision(rec, httptest.NewRequest("GET", "/api/images/revision", nil))
-	if rec.Code != 200 {
-		t.Fatalf("status %d", rec.Code)
-	}
-	var out map[string]string
-	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
-		t.Fatal(err)
-	}
-	if out["revision"] != "empty" {
-		t.Fatalf("got revision %q", out["revision"])
 	}
 }
 

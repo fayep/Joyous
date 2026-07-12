@@ -25,6 +25,31 @@ func TestAccessLogMiddleware(t *testing.T) {
 	}
 }
 
+// TestAccessLogMiddlewarePreservesFlusher covers a bug where accessLogMiddleware's
+// statusResponseWriter wrapper hid the underlying ResponseWriter's Flusher from a type
+// assertion, breaking SSE streaming (handleEvents in event_bus.go) with a 500 the moment any
+// request went through this middleware — i.e. always, in production.
+func TestAccessLogMiddlewarePreservesFlusher(t *testing.T) {
+	var sawFlusher bool
+	var flushCalled bool
+	handler := accessLogMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, ok := w.(http.Flusher)
+		sawFlusher = ok
+		if ok {
+			f.Flush()
+			flushCalled = true
+		}
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/events", nil))
+	if !sawFlusher {
+		t.Fatal("http.Flusher type assertion failed through accessLogMiddleware's wrapper")
+	}
+	if !flushCalled || !rec.Flushed {
+		t.Fatal("Flush() did not reach the underlying ResponseWriter")
+	}
+}
+
 func TestQuietAccessLogger(t *testing.T) {
 	q := newQuietAccessLogger(30 * time.Millisecond)
 
@@ -50,17 +75,14 @@ func TestQuietAccessLogger(t *testing.T) {
 
 func TestDevicesListPollAccessLogSuppressed(t *testing.T) {
 	orig := devicesListAccessLog
-	origImages := imagesRevisionAccessLog
 	origMQTT := mqttLogsAccessLog
 	origSamsung := samsungListAccessLog
 	t.Cleanup(func() {
 		devicesListAccessLog = orig
-		imagesRevisionAccessLog = origImages
 		mqttLogsAccessLog = origMQTT
 		samsungListAccessLog = origSamsung
 	})
 	devicesListAccessLog = newQuietAccessLogger(30 * time.Second)
-	imagesRevisionAccessLog = newQuietAccessLogger(30 * time.Second)
 	mqttLogsAccessLog = newQuietAccessLogger(30 * time.Second)
 	samsungListAccessLog = newQuietAccessLogger(30 * time.Second)
 
@@ -83,19 +105,6 @@ func TestDevicesListPollAccessLogSuppressed(t *testing.T) {
 		t.Fatalf("expected 1 access log line, got %d:\n%s", len(lines), buf.String())
 	}
 	if !strings.Contains(lines[0], "GET /api/devices") {
-		t.Fatalf("unexpected log line: %q", lines[0])
-	}
-
-	buf.Reset()
-	for i := 0; i < 5; i++ {
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/images/revision", nil))
-	}
-	lines = strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("expected 1 images revision access log line, got %d:\n%s", len(lines), buf.String())
-	}
-	if !strings.Contains(lines[0], "GET /api/images/revision") {
 		t.Fatalf("unexpected log line: %q", lines[0])
 	}
 

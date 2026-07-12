@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gen2brain/avif"
+
 	"joyous-hub/catalog"
 )
 
@@ -51,6 +53,11 @@ type ImageMeta struct {
 	PeopleAnalyzed   bool `json:"people_analyzed,omitempty"`
 	PeopleDetectVer  int  `json:"people_detect_ver,omitempty"`
 	Tags             []string `json:"tags,omitempty"`
+	// RotateOverride is an additional 0/90/180/270° clockwise correction applied after EXIF
+	// orientation, for sources (e.g. Nixplay-imported photos, whose rotation lived only in the
+	// exporting app's own database, never in EXIF) where EXIF alone doesn't produce the correct
+	// orientation. See applyRotateOverride and (*ImageStore).PatchMeta.
+	RotateOverride int `json:"rotate_override,omitempty"`
 }
 
 // ImageStore manages raw image storage and a bounded converted-bin cache.
@@ -304,53 +311,6 @@ func (s *ImageStore) listImagesLegacy() ([]ImageMeta, error) {
 	return out, nil
 }
 
-// AlbumRevision returns a short hash that changes when images are added, removed, or renamed.
-func (s *ImageStore) AlbumRevision() string {
-	imgs, err := s.ListImages()
-	if err != nil {
-		return ""
-	}
-	if len(imgs) == 0 {
-		return "empty"
-	}
-	h := sha256.New()
-	for _, m := range imgs {
-		chroma := "g"
-		if m.ChromaBoost != nil {
-			if *m.ChromaBoost {
-				chroma = "1"
-			} else {
-				chroma = "0"
-			}
-		}
-		fmt.Fprintf(h, "%s|%s|%d|%s|%t|", m.ID, m.Name, m.Size, chroma, m.PeopleLikely)
-		if len(m.Crops) > 0 {
-			keys := make([]string, 0, len(m.Crops))
-			for k := range m.Crops {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				c := m.Crops[k]
-				fmt.Fprintf(h, "%s:%g,%g,%g,%g;", k, c.X, c.Y, c.W, c.H)
-			}
-		}
-		h.Write([]byte{'\n'})
-	}
-	if s.cat != nil {
-		if orderRev, err := s.cat.AlbumOrderRevision(catalog.AlbumAll); err == nil && orderRev != "" {
-			h.Write([]byte(orderRev))
-		}
-		if tagRev, err := s.cat.TagsRevision(); err == nil && tagRev != "" {
-			h.Write([]byte(tagRev))
-		}
-		if albRev, err := s.cat.AlbumsRevision(); err == nil && albRev != "" {
-			h.Write([]byte(albRev))
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil))[:12]
-}
-
 // SetCrop stores a crop rect for the given aspect ratio key (e.g. "4:3") and
 // invalidates the thumbnail so it regenerates with the new crop applied.
 func (s *ImageStore) SetCrop(id, format string, rect CropRect) error {
@@ -415,13 +375,13 @@ func (s *ImageStore) Rename(id, name string) (ImageMeta, error) {
 	if name == "" {
 		return ImageMeta{}, fmt.Errorf("name required")
 	}
-	return s.PatchMeta(id, &name, "", nil)
+	return s.PatchMeta(id, &name, "", nil, nil)
 }
 
-// PatchMeta updates display name, chroma override, and/or tags.
+// PatchMeta updates display name, chroma override, tags, and/or rotation override.
 // chromaMode is "", "global", "on", or "off"; empty string leaves chroma unchanged.
-// tags non-nil replaces the image tag set.
-func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string, tags *[]string) (ImageMeta, error) {
+// tags non-nil replaces the image tag set. rotateOverride, if non-nil, must be a multiple of 90.
+func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string, tags *[]string, rotateOverride *int) (ImageMeta, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return ImageMeta{}, err
@@ -463,6 +423,23 @@ func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string, tags 
 		meta.Tags = *tags
 		changed = true
 	}
+	rotateChanged := false
+	if rotateOverride != nil {
+		norm, err := normalizeRotateDegrees(*rotateOverride)
+		if err != nil {
+			return ImageMeta{}, err
+		}
+		if norm != meta.RotateOverride {
+			// A net quarter-turn (90 or 270) swaps which dimension is "width" — keep the
+			// stored size in sync so crop UIs and album-grid aspect ratios stay correct.
+			if (norm%180 != 0) != (meta.RotateOverride%180 != 0) {
+				meta.Width, meta.Height = meta.Height, meta.Width
+			}
+			meta.RotateOverride = norm
+			changed = true
+			rotateChanged = true
+		}
+	}
 	if !changed {
 		return meta, nil
 	}
@@ -470,6 +447,10 @@ func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string, tags 
 		return ImageMeta{}, err
 	}
 	s.evictBinCacheForImage(id)
+	if rotateChanged {
+		os.Remove(s.thumbPath(id))
+		os.Remove(s.previewPath(id))
+	}
 	return meta, nil
 }
 
@@ -732,6 +713,7 @@ func (s *ImageStore) generatePreview(id, cachePath string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		img = applyRotateOverride(img, meta.RotateOverride)
 	}
 
 	// Scale to fit within previewMaxW × previewMaxH, preserving aspect ratio.
@@ -784,6 +766,7 @@ func (s *ImageStore) generateThumb(id string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		img = applyRotateOverride(img, meta.RotateOverride)
 	}
 
 	// Apply the largest-area stored crop to the thumbnail.
@@ -1123,15 +1106,16 @@ func (s *ImageStore) prepareInkJoyFrameRGBA(id string, portrait bool) (image.Ima
 	if portrait {
 		cropKey = "3:4"
 	}
-	img, _, err := prepareInkJoyFrameFromRaw(raw, meta.Crops[cropKey], portrait)
+	img, _, err := prepareInkJoyFrameFromRaw(raw, meta.Crops[cropKey], portrait, meta.RotateOverride)
 	return img, meta.FlatRGB, err
 }
 
-func prepareInkJoyFrameFromRaw(raw []byte, crop CropRect, portrait bool) (image.Image, bool, error) {
+func prepareInkJoyFrameFromRaw(raw []byte, crop CropRect, portrait bool, rotateOverride int) (image.Image, bool, error) {
 	img, err := decodeAnyImage(raw)
 	if err != nil {
 		return nil, false, err
 	}
+	img = applyRotateOverride(img, rotateOverride)
 	if crop.W > 0 && crop.H > 0 {
 		img = applyCrop(img, crop)
 	}
@@ -1198,7 +1182,7 @@ func convertBin(raw []byte) ([]byte, error) {
 }
 
 func convertImageWithCrop(raw []byte, crop CropRect, portrait bool, flatRGB bool) ([]byte, error) {
-	img, _, err := prepareInkJoyFrameFromRaw(raw, crop, portrait)
+	img, _, err := prepareInkJoyFrameFromRaw(raw, crop, portrait, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1285,11 +1269,33 @@ func (s *ImageStore) evictCache() {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func decodeAnyImage(data []byte) (image.Image, error) {
+	// AVIF and HEIC are both ISOBMFF/"ftyp"-boxed containers, and goheif (see heic_cgo.go)
+	// registers itself with image.Decode using a blanket "????ftyp" magic that matches any of
+	// them — it has no way to tell an AVIF (AV1) file from an HEIC (HEVC) one by magic bytes
+	// alone, so it wins the match and fails to decode. Dispatch AVIF explicitly by major brand
+	// before falling through to the stdlib registry.
+	if isAVIF(data) {
+		img, err := avif.Decode(bytesReader(data))
+		if err != nil {
+			return nil, errors.New("unsupported image format (accept .bin, PNG, JPEG, HEIC, or AVIF)")
+		}
+		return applyExifOrientation(img, readExifOrientation(data)), nil
+	}
 	img, _, err := image.Decode(bytesReader(data))
 	if err != nil {
-		return nil, errors.New("unsupported image format (accept .bin, PNG, JPEG, or HEIC)")
+		return nil, errors.New("unsupported image format (accept .bin, PNG, JPEG, HEIC, or AVIF)")
 	}
 	return applyExifOrientation(img, readExifOrientation(data)), nil
+}
+
+// isAVIF reports whether data starts with an ISOBMFF "ftyp" box whose major brand is avif/avis
+// (a still image or an avif sequence) — see decodeAnyImage.
+func isAVIF(data []byte) bool {
+	if len(data) < 12 || string(data[4:8]) != "ftyp" {
+		return false
+	}
+	brand := string(data[8:12])
+	return brand == "avif" || brand == "avis"
 }
 
 func imageDisplaySize(raw []byte, name string) (int, int, error) {

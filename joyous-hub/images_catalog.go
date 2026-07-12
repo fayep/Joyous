@@ -16,6 +16,7 @@ func metaToCatalog(m ImageMeta) catalog.Image {
 		PeopleLikely:    m.PeopleLikely,
 		PeopleAnalyzed:  m.PeopleAnalyzed,
 		PeopleDetectVer: m.PeopleDetectVer,
+		RotateOverride:  m.RotateOverride,
 		RelPath:         catalog.DefaultRelPath(m.ID),
 		StorageKind:     catalog.StorageHub,
 		Tags:            m.Tags,
@@ -47,6 +48,7 @@ func catalogToMeta(img catalog.Image) ImageMeta {
 		PeopleLikely:    img.PeopleLikely,
 		PeopleAnalyzed:  img.PeopleAnalyzed,
 		PeopleDetectVer: img.PeopleDetectVer,
+		RotateOverride:  img.RotateOverride,
 		Tags:            img.Tags,
 	}
 	if len(img.Crops) > 0 {

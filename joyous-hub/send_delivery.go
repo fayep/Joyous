@@ -19,6 +19,11 @@ const (
 	sendStatusDownloading sendStatus = "downloading"
 	sendStatusDelivered   sendStatus = "delivered"
 	sendStatusFailed      sendStatus = "failed"
+	// sendStatusRetrying is a display-only overlay (see handleSendStatus), not a state
+	// sendDelivery.Status itself ever transitions to — it's derived from
+	// pending/downloading + RetryAttempts>0 so Wait()/finish()'s pending/downloading
+	// checks don't need to special-case it.
+	sendStatusRetrying sendStatus = "retrying"
 )
 
 type sendDelivery struct {
@@ -28,6 +33,9 @@ type sendDelivery struct {
 	Status         sendStatus
 	Created        time.Time
 	DeliveredAt    time.Time
+	RetryAttempts  int    // bumped by IncrementRetry; any bridge can report progress this way
+	LastError      string // most recent retry/failure detail (SendCompletePayload.Detail)
+	SessionID      string // owning browser session (event_bus.go); BroadcastSessionID if none
 	done           chan struct{}
 	inkjoyMsgID    string
 	samsungFrameID string
@@ -64,14 +72,25 @@ func (t *SendDeliveryTracker) register(d *sendDelivery) *sendDelivery {
 	return d
 }
 
+// Register starts tracking a send with no owning session (BroadcastSessionID) — used by
+// system-triggered sends (scheduled sends) and anywhere a caller doesn't have a browser session
+// to attribute the send to. Its "send" events go to every connected session rather than just
+// one, which is exactly the behavior wanted for a send nobody in particular asked for.
 func (t *SendDeliveryTracker) Register(deviceID, imageID string) *sendDelivery {
+	return t.RegisterWithSession(deviceID, imageID, BroadcastSessionID)
+}
+
+// RegisterWithSession is Register, attributing the send to sessionID so its "send" events are
+// unicast to just that browser session instead of broadcast to everyone.
+func (t *SendDeliveryTracker) RegisterWithSession(deviceID, imageID, sessionID string) *sendDelivery {
 	d := &sendDelivery{
-		ID:       newSendID(),
-		DeviceID: deviceID,
-		ImageID:  imageID,
-		Status:   sendStatusPending,
-		Created:  time.Now(),
-		done:     make(chan struct{}),
+		ID:        newSendID(),
+		DeviceID:  deviceID,
+		ImageID:   imageID,
+		Status:    sendStatusPending,
+		Created:   time.Now(),
+		SessionID: sessionID,
+		done:      make(chan struct{}),
 	}
 	return t.register(d)
 }
@@ -167,6 +186,12 @@ func (t *SendDeliveryTracker) Fail(sendID string) {
 
 // CompleteSend marks a hub send as delivered or failed by send id.
 func (t *SendDeliveryTracker) CompleteSend(sendID string, ok bool) {
+	t.CompleteSendDetailed(sendID, ok, "")
+}
+
+// CompleteSendDetailed is CompleteSend plus a failure reason (SendCompletePayload.Detail),
+// recorded so GET /api/send/{sendId} can report why a send failed instead of just that it did.
+func (t *SendDeliveryTracker) CompleteSendDetailed(sendID string, ok bool, detail string) {
 	t.mu.Lock()
 	d, found := t.byID[sendID]
 	if !found {
@@ -176,6 +201,8 @@ func (t *SendDeliveryTracker) CompleteSend(sendID string, ok bool) {
 	status := sendStatusFailed
 	if ok {
 		status = sendStatusDelivered
+	} else if detail != "" {
+		d.LastError = detail
 	}
 	if d.inkjoyMsgID != "" {
 		delete(t.inkjoyByMsgID, d.inkjoyMsgID)
@@ -185,6 +212,23 @@ func (t *SendDeliveryTracker) CompleteSend(sendID string, ok bool) {
 	}
 	t.finish(d, status)
 	t.mu.Unlock()
+}
+
+// IncrementRetry records another delivery attempt for a still-in-flight send (e.g. a Samsung
+// frame that's asleep and needs a physical wake, or an InkJoy play republish after a missed
+// ack). GET /api/send/{sendId} reports status "retrying" once this is above zero, instead of
+// each caller inventing its own client-side guess for how long to wait before hinting at that.
+func (t *SendDeliveryTracker) IncrementRetry(sendID, detail string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	d, ok := t.byID[sendID]
+	if !ok || (d.Status != sendStatusPending && d.Status != sendStatusDownloading) {
+		return
+	}
+	d.RetryAttempts++
+	if detail != "" {
+		d.LastError = detail
+	}
 }
 
 func (t *SendDeliveryTracker) CompleteInkJoy(msgid string, ok bool) {
@@ -304,6 +348,71 @@ func (t *SendDeliveryTracker) remove(sendID string) {
 	delete(t.byID, sendID)
 }
 
+// ActiveSendsFor returns full status payloads (see sendStatusPayload) for every in-flight send
+// visible to sessionID — its own unicast sends plus any broadcast-owned (system-triggered, e.g.
+// scheduled send) ones — so a browser tab that just (re)connected to the event stream is caught
+// up on anything already in progress, not just events that happen to fire after it subscribes.
+func (t *SendDeliveryTracker) ActiveSendsFor(sessionID string) []map[string]any {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []map[string]any
+	for _, d := range t.byID {
+		if d.Status != sendStatusPending && d.Status != sendStatusDownloading {
+			continue
+		}
+		if d.SessionID != sessionID && d.SessionID != BroadcastSessionID {
+			continue
+		}
+		out = append(out, sendStatusPayload(d))
+	}
+	return out
+}
+
+// ActiveSendInfo is a minimal, JSON-safe view of an in-flight send.
+type ActiveSendInfo struct {
+	SendID   string `json:"send_id"`
+	DeviceID string `json:"device_id"`
+	ImageID  string `json:"image_id,omitempty"`
+}
+
+// ActiveSends returns every send that hasn't reached a terminal state yet (pending or
+// downloading — "retrying" is a display-only overlay on these, see handleSendStatus). This is
+// how a browser tab that didn't itself trigger a send — e.g. a scheduled send firing in the
+// background — discovers there's something to watch and show progress for.
+func (t *SendDeliveryTracker) ActiveSends() []ActiveSendInfo {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]ActiveSendInfo, 0, len(t.byID))
+	for _, d := range t.byID {
+		if d.Status == sendStatusPending || d.Status == sendStatusDownloading {
+			out = append(out, ActiveSendInfo{SendID: d.ID, DeviceID: d.DeviceID, ImageID: d.ImageID})
+		}
+	}
+	return out
+}
+
+// handleActiveSends serves GET /api/sends/active.
+func (h *Hub) handleActiveSends(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.sendDelivery == nil {
+		json.NewEncoder(w).Encode([]map[string]any{})
+		return
+	}
+	active := h.sendDelivery.ActiveSends()
+	out := make([]map[string]any, 0, len(active))
+	for _, a := range active {
+		entry := map[string]any{"send_id": a.SendID, "device_id": a.DeviceID}
+		if a.ImageID != "" {
+			entry["image_id"] = a.ImageID
+		}
+		if dev, ok := h.devices.Get(a.DeviceID); ok {
+			entry["device_type"] = string(dev.Type)
+		}
+		out = append(out, entry)
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
 func (h *Hub) handleSendStatus(w http.ResponseWriter, r *http.Request, sendID string) {
 	if sendID == "" {
 		http.Error(w, "send id required", http.StatusBadRequest)
@@ -342,9 +451,21 @@ func (h *Hub) handleSendStatus(w http.ResponseWriter, r *http.Request, sendID st
 			return
 		}
 	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(sendStatusPayload(d))
+}
+
+// sendStatusPayload builds the JSON-safe status snapshot for a send — shared by
+// handleSendStatus (GET /api/send/{sendId}) and the event bus, so a live "send" SSE event has
+// exactly the same shape a client would get from polling.
+func sendStatusPayload(d *sendDelivery) map[string]any {
+	status := d.Status
+	if d.RetryAttempts > 0 && (status == sendStatusPending || status == sendStatusDownloading) {
+		status = sendStatusRetrying
+	}
 	out := map[string]any{
 		"send_id":   d.ID,
-		"status":    string(d.Status),
+		"status":    string(status),
 		"device_id": d.DeviceID,
 	}
 	if d.ImageID != "" {
@@ -353,11 +474,14 @@ func (h *Hub) handleSendStatus(w http.ResponseWriter, r *http.Request, sendID st
 	if !d.DeliveredAt.IsZero() {
 		out["delivered_at"] = d.DeliveredAt
 	}
-	if h.inkjoyRetry != nil {
-		if n := h.inkjoyRetry.Attempts(sendID); n > 1 {
-			out["retry_attempts"] = n - 1
-		}
+	if d.RetryAttempts > 0 {
+		out["retry_attempts"] = d.RetryAttempts
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(out)
+	if status == sendStatusRetrying && d.LastError != "" {
+		out["detail"] = d.LastError
+	}
+	if d.Status == sendStatusFailed && d.LastError != "" {
+		out["error"] = d.LastError
+	}
+	return out
 }

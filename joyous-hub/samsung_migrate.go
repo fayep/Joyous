@@ -161,9 +161,6 @@ func (h *Hub) migrateSamsungFrameStore(oldFrameID, macFrameID, mac string) error
 		h.samsungAliases.add(oldFrameID, macFrameID)
 		_ = h.samsungAliases.save()
 	}
-	if oldPush := getSamsungPushFileID(oldFrameID); oldPush != "" && getSamsungPushFileID(macFrameID) == "" {
-		setSamsungPushFileID(macFrameID, oldPush)
-	}
 	return nil
 }
 

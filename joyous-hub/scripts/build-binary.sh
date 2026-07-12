@@ -7,7 +7,9 @@ set -euo pipefail
 OUT="${1:?output path required}"
 BUILD_TAGS="${2:-}"
 SRC_DIR="${SRC_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
-JOYOUS_VERSION="${JOYOUS_VERSION:-dev}"
+# Timestamp suffix so a direct invocation without JOYOUS_VERSION set still gets a distinct
+# version per build — see install.sh's JOYOUS_VERSION default and ui_revision.go's uiRevision.
+JOYOUS_VERSION="${JOYOUS_VERSION:-dev-$(date -u +%Y%m%d%H%M%S)}"
 
 export CGO_ENABLED=1
 if prefix="$(brew --prefix libheif 2>/dev/null)"; then

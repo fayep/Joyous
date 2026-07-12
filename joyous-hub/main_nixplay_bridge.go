@@ -94,14 +94,16 @@ func main() {
 		OnCommand: func(cmd protocol.CmdPayload) {
 			handleNixplayBridgeCommand(ctx, state, hubClient, cmd)
 		},
-		UIHTTP: bridgeUI,
+		// Gratuitously republish devices on every (re)connect — including the first — so a hub
+		// restart (which drops the in-process broker's retained device state) doesn't leave the
+		// Devices tab empty until the next 5-minute playlistRefreshInterval tick.
+		OnReconnect: func(c *bridgehub.Client) { refreshNixplayPlaylists(ctx, state, c) },
+		UIHTTP:      bridgeUI,
 	})
 	if err != nil {
 		log.Fatalf("hub connect: %v", err)
 	}
 	defer hubClient.Disconnect()
-
-	refreshNixplayPlaylists(ctx, state, hubClient)
 
 	go func() {
 		tick := time.NewTicker(playlistRefreshInterval)
@@ -203,25 +205,31 @@ func deliverNixplayImage(ctx context.Context, state *nixplayBridgeState, body pr
 	if fileName == "" {
 		fileName = body.ImageID + ".jpg"
 	}
-	jpegData, jpegName, err := ensureNixplayJPEG(raw, fileName)
+	jpegData, jpegName, err := ensureNixplayJPEG(raw, fileName, meta.RotateOverride)
 	if err != nil {
 		return fmt.Errorf("prepare image: %w", err)
 	}
 	return state.nx.UploadPhoto(uploadCtx, playlistID, jpegName, jpegData)
 }
 
-// ensureNixplayJPEG returns data as JPEG bytes, converting HEIC (or anything
-// else decodeAnyImage understands) if needed. Nixplay's upload API requires
-// fileType "image/jpeg" — album originals are sometimes HEIC (iPhone photos).
-func ensureNixplayJPEG(data []byte, fileName string) ([]byte, string, error) {
-	ext := strings.ToLower(filepath.Ext(fileName))
-	if ext == ".jpg" || ext == ".jpeg" {
-		return data, fileName, nil
-	}
+// ensureNixplayJPEG returns data as JPEG bytes, converting HEIC (or anything else
+// decodeAnyImage understands) if needed. Nixplay's upload API requires fileType
+// "image/jpeg" — album originals are sometimes HEIC (iPhone photos).
+//
+// Always re-encodes through decodeAnyImage, even when the original is already a JPEG:
+// decodeAnyImage bakes EXIF orientation into the pixels (applyExifOrientation), and Nixplay's
+// frame rendering does not reliably honor an EXIF orientation tag left in the uploaded JPEG —
+// a source JPEG forwarded as-is (the previous shortcut here) could come out rotated on the
+// physical frame even though every other viewer displays it correctly. rotateOverride (see
+// ImageMeta.RotateOverride) applies any additional correction the user or the nixplay-rotation
+// batch fix has set — needed for imports whose rotation lived only in a source app's own
+// database, never in EXIF (see the rotate_override field's doc comment in images.go).
+func ensureNixplayJPEG(data []byte, fileName string, rotateOverride int) ([]byte, string, error) {
 	img, err := decodeAnyImage(data)
 	if err != nil {
 		return nil, "", fmt.Errorf("decode %s: %w", fileName, err)
 	}
+	img = applyRotateOverride(img, rotateOverride)
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
 		return nil, "", fmt.Errorf("encode jpeg: %w", err)

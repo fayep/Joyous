@@ -62,6 +62,7 @@ func (db *DB) migrate() error {
 			people_likely INTEGER NOT NULL DEFAULT 0,
 			people_analyzed INTEGER NOT NULL DEFAULT 0,
 			people_detect_ver INTEGER NOT NULL DEFAULT 0,
+			rotate_override INTEGER NOT NULL DEFAULT 0,
 			content_hash TEXT,
 			storage_kind TEXT NOT NULL DEFAULT 'hub',
 			source_provider TEXT,
@@ -118,6 +119,11 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}
+	// CREATE TABLE IF NOT EXISTS above only creates images with rotate_override on a fresh
+	// database — an existing hub.db from before this column existed needs it added explicitly.
+	if err := db.addColumnIfMissing("images", "rotate_override", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
 	ver, err := db.metaInt("schema_version")
 	if err != nil {
 		return err
@@ -130,6 +136,34 @@ func (db *DB) migrate() error {
 		return fmt.Errorf("unsupported schema version %d (want %d)", ver, SchemaVersion)
 	}
 	return db.ensureAllAlbum()
+}
+
+// addColumnIfMissing runs "ALTER TABLE ... ADD COLUMN" only if the column doesn't already
+// exist, so it's safe to call on every startup against a database from before the column
+// existed as well as one already migrated.
+func (db *DB) addColumnIfMissing(table, column, decl string) error {
+	rows, err := db.sql.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.sql.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, decl))
+	return err
 }
 
 func (db *DB) metaInt(key string) (int, error) {

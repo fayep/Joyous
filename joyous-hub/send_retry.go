@@ -243,6 +243,9 @@ func (r *InkJoySendRetry) onFailure(sendID, msgid, deviceID string) {
 	attempts := entry.attempts
 	r.mu.Unlock()
 	log.Printf("inkjoy send interrupted device=%s image=%s attempt=%d — will retry", devID, imageID, attempts)
+	r.notifySendComplete(protocol.SendCompletePayload{
+		SendID: sendID, DeviceID: devID, Success: true, Detail: "interrupted", Phase: "retrying",
+	})
 	time.AfterFunc(inkjoySendRetryDelay, func() { r.retryBySendID(sendID) })
 }
 
@@ -284,8 +287,14 @@ func (r *InkJoySendRetry) onAckTimeout(sendID string) {
 		log.Printf("inkjoy send gave up device=%s image=%s after %d attempts", entry.deviceID, entry.imageID, entry.attempts)
 		return
 	}
+	devID := entry.deviceID
+	imageID := entry.imageID
+	attempts := entry.attempts
 	r.mu.Unlock()
-	log.Printf("inkjoy send no play_ack device=%s image=%s attempt=%d — retrying", entry.deviceID, entry.imageID, entry.attempts)
+	log.Printf("inkjoy send no play_ack device=%s image=%s attempt=%d — retrying", devID, imageID, attempts)
+	r.notifySendComplete(protocol.SendCompletePayload{
+		SendID: sendID, DeviceID: devID, Success: true, Detail: "timeout", Phase: "retrying",
+	})
 	r.doRetry(entry)
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 
@@ -114,6 +115,32 @@ func rotate270(img image.Image) image.Image {
 		}
 	}
 	return dst
+}
+
+// applyRotateOverride rotates img by an additional user- or import-supplied correction
+// (ImageMeta.RotateOverride), on top of whatever EXIF orientation already applied. degrees must
+// already be normalized to one of 0/90/180/270 (see normalizeRotateDegrees).
+func applyRotateOverride(img image.Image, degrees int) image.Image {
+	switch degrees {
+	case 90:
+		return rotate90(img)
+	case 180:
+		return rotate180(img)
+	case 270:
+		return rotate270(img)
+	default:
+		return img
+	}
+}
+
+// normalizeRotateDegrees maps any integer to the nearest of 0/90/180/270 after wrapping into
+// [0, 360), rejecting values that aren't (close to) a multiple of 90.
+func normalizeRotateDegrees(d int) (int, error) {
+	d = ((d % 360) + 360) % 360
+	if d%90 != 0 {
+		return 0, fmt.Errorf("rotate_override must be a multiple of 90 degrees, got %d", d)
+	}
+	return d, nil
 }
 
 func pixelAt(img image.Image, x, y int) color.RGBA {

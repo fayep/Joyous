@@ -140,7 +140,11 @@ func TestParseMDCResponse(t *testing.T) {
 }
 
 func TestBuildContentJSON(t *testing.T) {
-	b := buildContentJSON("http://host/img.png", "A1B2C3D4-E5F6-7890-ABCD-EF1234567890", 12345)
+	// contentID and fileName are passed independently — see buildContentJSON's doc comment for
+	// why callers currently pass the same value for both (a stable, frameID-based fileName was
+	// tried first and confirmed not to work against a real frame). Using two different values
+	// here just verifies each flows into its own manifest field, not into the other's.
+	b := buildContentJSON("http://host/img.png", "kitchen-A1B2C3D4E5F67890", "some-file-name", 12345)
 	if len(b) == 0 {
 		t.Fatal("empty json")
 	}
@@ -149,5 +153,8 @@ func TestBuildContentJSON(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `http:\/\/host\/img.png`) {
 		t.Fatal("expected escaped slashes in image_url")
+	}
+	if !strings.Contains(string(b), `"file_name":"some-file-name.png"`) {
+		t.Fatal("expected the fileName param in file_name")
 	}
 }

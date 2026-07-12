@@ -328,7 +328,7 @@ func bridgeEncodeSamsung(
 	frameID := SamsungFrameID(dev)
 	profile := hub.samsungDisplayProfile(dev, frameID)
 	crop, hasCrop := cropForFormat(meta.Crops, profile.CropFormat)
-	img, err := prepareSamsungFrameRGBA(raw, profile, crop, hasCrop)
+	img, err := prepareSamsungFrameRGBA(raw, profile, crop, hasCrop, meta.RotateOverride)
 	if err != nil {
 		return nil, err
 	}

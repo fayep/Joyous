@@ -117,6 +117,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	uiHandler := &samsungBridgeHTTPHandler{hub: hub}
+
 	var hubClient *bridgehub.Client
 	hubClient, err = bridgehub.Connect(bridgehub.ClientConfig{
 		HubMQTT:  *hubMQTT,
@@ -125,14 +127,23 @@ func main() {
 		Hello: protocol.HelloPayload{
 			Kind:       protocol.KindSamsung,
 			ListenHTTP: *listenHTTP,
+			// The physical frame calls this back believing it's the paired phone app's own
+			// embedded server root — see samsung_content_transfer.go.
+			HTTPPaths: []string{"/content-transfer-progress"},
 		},
 		OnCommand: func(cmd protocol.CmdPayload) {
 			handleSamsungBridgeCommand(ctx, hub, hubClient, cmd)
 		},
+		// Gratuitously republish devices on every (re)connect — including the first — so a hub
+		// restart (which drops the in-process broker's retained device state) doesn't leave the
+		// Devices tab empty until the next samsungBridgeSyncLoop tick.
+		OnReconnect: func(c *bridgehub.Client) { samsungBridgeSyncOnce(c, devices) },
+		UIHTTP:      uiHandler,
 	})
 	if err != nil {
 		log.Fatalf("hub connect: %v", err)
 	}
+	uiHandler.client = hubClient
 	defer hubClient.Disconnect()
 
 	mux := http.NewServeMux()
@@ -193,15 +204,19 @@ func samsungBridgeSyncLoop(ctx context.Context, client *bridgehub.Client, reg *D
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			devs := bridgeDevicesFromRegistry(reg, DeviceTypeSamsung)
-			_ = client.PublishDevices(devs)
-			state, _ := json.Marshal(map[string]any{"devices": devs})
-			_ = client.PublishUIState(protocol.UIStatePayload{
-				Revision: int(time.Now().Unix()),
-				State:    state,
-			})
+			samsungBridgeSyncOnce(client, reg)
 		}
 	}
+}
+
+func samsungBridgeSyncOnce(client *bridgehub.Client, reg *DeviceRegistry) {
+	devs := bridgeDevicesFromRegistry(reg, DeviceTypeSamsung)
+	_ = client.PublishDevices(devs)
+	state, _ := json.Marshal(map[string]any{"devices": devs})
+	_ = client.PublishUIState(protocol.UIStatePayload{
+		Revision: int(time.Now().Unix()),
+		State:    state,
+	})
 }
 
 func handleSamsungBridgeCommand(ctx context.Context, hub *Hub, client *bridgehub.Client, cmd protocol.CmdPayload) {
@@ -307,11 +322,37 @@ func bridgeDeliverSamsungImage(ctx context.Context, hub *Hub, client *bridgehub.
 	}
 	log.Printf("samsung-bridge hub cache probe ok frame=%s image=%s", frameID, body.ImageID)
 
-	if err := hub.pushSamsungFrame(frameID, dev); err != nil {
+	if err := pushSamsungFrameReportingProgress(hub, client, frameID, dev, body.SendID); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 	hub.devices.SetLastImage(dev.ID, body.ImageID, body.OverlayToken)
 	return nil
+}
+
+// pushSamsungFrameReportingProgress relays hub.pushSamsungFrameWithProgress's wake-wait
+// attempts to the hub as non-terminal "retrying" SendCompletePayloads, so GET
+// /api/send/{sendId} reflects real progress (see send_delivery.go's IncrementRetry) while a
+// frame in deep sleep waits — up to mdcManualWakeTimeout (samsung_mdc.go, 5 minutes) — for
+// someone to hold its power button for ~3s.
+func pushSamsungFrameReportingProgress(hub *Hub, client *bridgehub.Client, frameID string, dev *Device, sendID string) error {
+	return hub.pushSamsungFrameWithProgress(frameID, dev, func(phase string, attempt int) {
+		if sendID == "" || client == nil {
+			return
+		}
+		detail := "waking frame remotely"
+		if phase == wakePhaseManual {
+			detail = "waiting for frame to wake"
+		}
+		if pubErr := client.PublishSendComplete(protocol.SendCompletePayload{
+			SendID:   sendID,
+			DeviceID: dev.ID,
+			Success:  true, // not terminal — see Phase
+			Phase:    "retrying",
+			Detail:   detail,
+		}); pubErr != nil {
+			log.Printf("samsung-bridge send.complete retrying: %v", pubErr)
+		}
+	})
 }
 
 type bridgeDiscoverRecorder struct {

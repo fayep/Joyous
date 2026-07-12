@@ -164,6 +164,7 @@ func (h *Hub) handleAlbumOrder(w http.ResponseWriter, r *http.Request, id string
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	h.publishAlbumReordered(id)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }

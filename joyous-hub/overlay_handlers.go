@@ -120,7 +120,7 @@ func (h *Hub) handleOverlaySend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "overlay is disabled or empty", http.StatusBadRequest)
 		return
 	}
-	sendID, err := h.SendImageToDeviceWithOverlay(body.DeviceID, imageID)
+	sendID, err := h.SendImageToDeviceWithOverlaySession(body.DeviceID, imageID, requestSessionID(r))
 	if err != nil {
 		code := http.StatusBadRequest
 		if strings.Contains(err.Error(), "frame did not wake") {
@@ -134,7 +134,13 @@ func (h *Hub) handleOverlaySend(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "send_id": sendID, "image_id": imageID})
 }
 
+// SendImageToDeviceWithOverlay attributes the send to BroadcastSessionID (no owning browser
+// session) — use SendImageToDeviceWithOverlaySession when a request has one.
 func (h *Hub) SendImageToDeviceWithOverlay(deviceID, imageID string) (string, error) {
+	return h.SendImageToDeviceWithOverlaySession(deviceID, imageID, BroadcastSessionID)
+}
+
+func (h *Hub) SendImageToDeviceWithOverlaySession(deviceID, imageID, sessionID string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cfg := h.overlay.Config()
@@ -147,10 +153,10 @@ func (h *Hub) SendImageToDeviceWithOverlay(deviceID, imageID string) (string, er
 		return "", fmt.Errorf("device %q not found", deviceID)
 	}
 	token := cfg.sendToken(weather, dev.Portrait)
-	return h.sendImageToDevice(deviceID, imageID, token, &cfg, &weather)
+	return h.sendImageToDevice(deviceID, imageID, token, &cfg, &weather, sessionID)
 }
 
-func (h *Hub) sendImageToDevice(deviceID, imageID, overlayToken string, overlayCfg *OverlayConfig, overlayWeather *WeatherSnapshot) (string, error) {
+func (h *Hub) sendImageToDevice(deviceID, imageID, overlayToken string, overlayCfg *OverlayConfig, overlayWeather *WeatherSnapshot, sessionID string) (string, error) {
 	dev, ok := h.devices.Get(deviceID)
 	if !ok {
 		return "", fmt.Errorf("device %q not found", deviceID)
@@ -158,7 +164,8 @@ func (h *Hub) sendImageToDevice(deviceID, imageID, overlayToken string, overlayC
 	if h.sendDelivery == nil {
 		h.sendDelivery = NewSendDeliveryTracker()
 	}
-	send := h.sendDelivery.Register(deviceID, imageID)
+	send := h.sendDelivery.RegisterWithSession(deviceID, imageID, sessionID)
+	h.publishSendEvent(send.ID)
 	var err error
 	switch dev.Type {
 	case DeviceTypeInkJoy:
@@ -172,6 +179,7 @@ func (h *Hub) sendImageToDevice(deviceID, imageID, overlayToken string, overlayC
 	}
 	if err != nil {
 		h.sendDelivery.Fail(send.ID)
+		h.publishSendEvent(send.ID)
 		return "", err
 	}
 	if dev.Type == DeviceTypeInkJoy && h.inkjoyRetry != nil {
@@ -180,17 +188,26 @@ func (h *Hub) sendImageToDevice(deviceID, imageID, overlayToken string, overlayC
 	return send.ID, nil
 }
 
-// SendImageToDevice pushes an album image to any registered frame type.
+// SendImageToDevice pushes an album image to any registered frame type, attributed to
+// BroadcastSessionID — use SendImageToDeviceSession when a request has an owning session.
 // overlayToken is empty for a plain send; otherwise the frame pulls a composited bin/png.
 func (h *Hub) SendImageToDevice(deviceID, imageID, overlayToken string) (string, error) {
-	return h.sendImageToDevice(deviceID, imageID, overlayToken, nil, nil)
+	return h.SendImageToDeviceSession(deviceID, imageID, overlayToken, BroadcastSessionID)
+}
+
+func (h *Hub) SendImageToDeviceSession(deviceID, imageID, overlayToken, sessionID string) (string, error) {
+	return h.sendImageToDevice(deviceID, imageID, overlayToken, nil, nil, sessionID)
 }
 
 func (h *Hub) sendImageToDeviceAuto(deviceID, imageID string) (string, error) {
+	return h.sendImageToDeviceAutoSession(deviceID, imageID, BroadcastSessionID)
+}
+
+func (h *Hub) sendImageToDeviceAutoSession(deviceID, imageID, sessionID string) (string, error) {
 	if h.overlay != nil && h.overlay.Active() {
-		return h.SendImageToDeviceWithOverlay(deviceID, imageID)
+		return h.SendImageToDeviceWithOverlaySession(deviceID, imageID, sessionID)
 	}
-	return h.SendImageToDevice(deviceID, imageID, "")
+	return h.SendImageToDeviceSession(deviceID, imageID, "", sessionID)
 }
 
 func (h *Hub) prepareSamsungPNG(imageID, overlayToken string, dev *Device) ([]byte, error) {
@@ -200,9 +217,12 @@ func (h *Hub) prepareSamsungPNG(imageID, overlayToken string, dev *Device) ([]by
 	}
 	frameID := SamsungFrameID(dev)
 	profile := h.samsungDisplayProfile(dev, frameID)
-	crops, _ := h.images.GetCrops(imageID)
-	crop, hasCrop := cropForFormat(crops, profile.CropFormat)
-	img, err := prepareSamsungFrameRGBA(raw, profile, crop, hasCrop)
+	meta, err := h.images.GetMeta(imageID)
+	if err != nil {
+		return nil, err
+	}
+	crop, hasCrop := cropForFormat(meta.Crops, profile.CropFormat)
+	img, err := prepareSamsungFrameRGBA(raw, profile, crop, hasCrop, meta.RotateOverride)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +242,7 @@ func (h *Hub) prepareSamsungPNG(imageID, overlayToken string, dev *Device) ([]by
 	return encodeSamsungPNGFromRGBA(img, pipe)
 }
 
-func prepareSamsungFrameRGBA(raw []byte, profile SamsungDisplayProfile, crop CropRect, hasCrop bool) (image.Image, error) {
+func prepareSamsungFrameRGBA(raw []byte, profile SamsungDisplayProfile, crop CropRect, hasCrop bool, rotateOverride int) (image.Image, error) {
 	tw, th := profile.Width, profile.Height
 	if tw <= 0 || th <= 0 {
 		tw, th = samsungW, samsungH
@@ -231,6 +251,7 @@ func prepareSamsungFrameRGBA(raw []byte, profile SamsungDisplayProfile, crop Cro
 	if err != nil {
 		return nil, err
 	}
+	img = applyRotateOverride(img, rotateOverride)
 	if hasCrop && crop.W > 0 && crop.H > 0 {
 		img = applyCrop(img, crop)
 	} else {

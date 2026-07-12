@@ -64,7 +64,7 @@ func (h *Hub) handleInkJoyCalibrationSend(w http.ResponseWriter, r *http.Request
 
 	log.Printf("inkjoy calibration: sending primaries chart (green swatch uses lo=248)")
 
-	sendID, err := h.SendImageToDevice(body.DeviceID, calID, "")
+	sendID, err := h.SendImageToDeviceSession(body.DeviceID, calID, "", requestSessionID(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -95,7 +95,7 @@ func (h *Hub) handleInkJoyBlack248CalibrationSend(w http.ResponseWriter, r *http
 		return
 	}
 	log.Printf("inkjoy calibration: black uniform lo=248 prime")
-	sendID, err := h.SendImageToDevice(body.DeviceID, primeID, "")
+	sendID, err := h.SendImageToDeviceSession(body.DeviceID, primeID, "", requestSessionID(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -126,7 +126,7 @@ func (h *Hub) handleInkJoyLoLadderCalibrationSend(w http.ResponseWriter, r *http
 		return
 	}
 	log.Printf("inkjoy calibration: lo-ladder primaries × lo grid (play 2/2)")
-	sendID, err := h.SendImageToDevice(body.DeviceID, calID, "")
+	sendID, err := h.SendImageToDeviceSession(body.DeviceID, calID, "", requestSessionID(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -166,14 +166,16 @@ func (h *Hub) handleSamsungCalibration(w http.ResponseWriter, r *http.Request, f
 	var sendID string
 	if h.sendDelivery != nil {
 		if etag, _, ok := h.samsung.PNGInfo(frameID); ok {
-			send := h.sendDelivery.Register(dev.ID, "")
+			send := h.sendDelivery.RegisterWithSession(dev.ID, "", requestSessionID(r))
 			h.sendDelivery.BindSamsung(send.ID, frameID, etag)
 			sendID = send.ID
+			h.publishSendEvent(sendID)
 		}
 	}
 	if err := h.pushSamsungFrame(frameID, dev); err != nil {
 		if sendID != "" {
 			h.sendDelivery.Fail(sendID)
+			h.publishSendEvent(sendID)
 		}
 		code := http.StatusBadGateway
 		if strings.Contains(err.Error(), "frame did not wake") {

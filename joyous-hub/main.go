@@ -48,6 +48,10 @@ func main() {
 	discoverSubnetsFlag := flag.String("discover-subnets", fileCfg.DiscoverSubnets, "comma-separated LAN prefixes for Samsung MDC fallback sweep")
 	probeNetworkFlag := flag.String("probe-network", "", "test TCP connectivity to IP:1515 and exit")
 	logDirFlag := flag.String("log-dir", fileCfg.LogDir, "append hub logs to stdout.log and stderr.log in this directory")
+	fixNixplayRotationFlag := flag.Bool("fix-nixplay-rotation", false, "batch-correct gallery image rotation using a recovered Nixplay export (see -nixplay-recovered-dir, -nixplay-db), then exit")
+	nixplayRecoveredDirFlag := flag.String("nixplay-recovered-dir", "", "directory of recovered Nixplay photos (photos_recovered/*.jpg), used with -fix-nixplay-rotation")
+	nixplayDBFlag := flag.String("nixplay-db", "", "path to a recovered NixDatabase.db, used with -fix-nixplay-rotation")
+	fixNixplayDryRunFlag := flag.Bool("fix-nixplay-rotation-dry-run", true, "report matches and corrections without writing changes (used with -fix-nixplay-rotation)")
 	flag.String("config", cfgPath, "config file")
 	flag.Parse()
 
@@ -83,6 +87,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("image store: %v", err)
 	}
+
+	if *fixNixplayRotationFlag {
+		if err := runFixNixplayRotation(imageStore, *nixplayRecoveredDirFlag, *nixplayDBFlag, *fixNixplayDryRunFlag); err != nil {
+			log.Fatalf("fix-nixplay-rotation: %v", err)
+		}
+		return
+	}
+
 	colorStore := NewColorStore(*dataDir)
 	imageStore.SetColorStore(colorStore)
 	displayPreview := NewDisplayPreviewStore(*dataDir)
@@ -112,28 +124,6 @@ func main() {
 	_ = broker.AddHook(&bridgeHook{coord: bridgeCoord, log: joyousMQTTLog}, nil)
 
 	sendDelivery := NewSendDeliveryTracker()
-	bridgeCoord.SetSendCompleteHandler(func(body protocol.SendCompletePayload) {
-		if sendDelivery == nil || body.SendID == "" {
-			return
-		}
-		switch body.Phase {
-		case "bound", "prepared":
-			if body.FrameID != "" {
-				sendDelivery.BindSamsung(body.SendID, body.FrameID, body.ETag)
-				log.Printf("send bound send_id=%s device=%s frame=%s", body.SendID, body.DeviceID, body.FrameID)
-			}
-		case "downloading":
-			sendDelivery.MarkInkJoyDownloading(body.SendID)
-			log.Printf("send downloading send_id=%s device=%s", body.SendID, body.DeviceID)
-		default:
-			sendDelivery.CompleteSend(body.SendID, body.Success)
-			if body.Success {
-				log.Printf("send delivered send_id=%s device=%s", body.SendID, body.DeviceID)
-			} else if body.Detail != "" {
-				log.Printf("send failed send_id=%s device=%s: %s", body.SendID, body.DeviceID, body.Detail)
-			}
-		}
-	})
 	addr := *serverAddr
 	if addr == "" {
 		addr = localAddr(*httpAddr)
@@ -150,6 +140,8 @@ func main() {
 		sendDelivery:   sendDelivery,
 		overlay:        NewOverlayStore(*dataDir),
 		color:          colorStore,
+		scheduledSends: NewScheduledSendStore(*dataDir),
+		events:         NewEventBus(),
 		publisher:      &bridgeCoordinatorPublisher{coord: bridgeCoord},
 		bridgeCoord:    bridgeCoord,
 		joyousMQTTLog:  joyousMQTTLog,
@@ -157,6 +149,42 @@ func main() {
 		hubIP:          hubIP,
 	}
 	hub.migrateSamsungFramesOnStartup()
+
+	bridgeCoord.SetSendCompleteHandler(func(body protocol.SendCompletePayload) {
+		if hub.sendDelivery == nil || body.SendID == "" {
+			return
+		}
+		switch body.Phase {
+		case "bound", "prepared":
+			if body.FrameID != "" {
+				hub.sendDelivery.BindSamsung(body.SendID, body.FrameID, body.ETag)
+				log.Printf("send bound send_id=%s device=%s frame=%s", body.SendID, body.DeviceID, body.FrameID)
+			}
+		case "downloading":
+			hub.sendDelivery.MarkInkJoyDownloading(body.SendID)
+			log.Printf("send downloading send_id=%s device=%s", body.SendID, body.DeviceID)
+		case "retrying":
+			// Not terminal — a bridge is still trying (e.g. a Samsung frame asleep and
+			// waiting on a physical wake, or an InkJoy play republish). Must not fall to
+			// default, which would treat this as a final completion.
+			hub.sendDelivery.IncrementRetry(body.SendID, body.Detail)
+			log.Printf("send retrying send_id=%s device=%s: %s", body.SendID, body.DeviceID, body.Detail)
+		default:
+			hub.sendDelivery.CompleteSendDetailed(body.SendID, body.Success, body.Detail)
+			if body.Success {
+				log.Printf("send delivered send_id=%s device=%s", body.SendID, body.DeviceID)
+			} else if body.Detail != "" {
+				log.Printf("send failed send_id=%s device=%s: %s", body.SendID, body.DeviceID, body.Detail)
+			}
+		}
+		hub.publishSendEvent(body.SendID)
+	})
+	bridgeCoord.SetBridgesChangedHandler(func() {
+		hub.events.Publish(BroadcastSessionID, "bridges", bridgeCoord.ListBridgeStatus())
+	})
+	bridgeCoord.SetDevicesChangedHandler(func() {
+		hub.events.Publish(BroadcastSessionID, "devices", hub.devices.List())
+	})
 
 	mux := http.NewServeMux()
 	registerRoutes(mux, hub)
@@ -175,6 +203,9 @@ func main() {
 		log.Fatalf("broker serve: %v", err)
 	}
 	log.Printf("Joyous MQTT broker listening on %s (bridges connect here)", *mqttAddr)
+
+	startScheduledSendScheduler(ctx, hub)
+	bridgeCoord.StartStalenessSweep(ctx)
 
 	go func() {
 		log.Printf("HTTP server listening on %s (images at http://%s)", *httpAddr, addr)
