@@ -8,9 +8,13 @@ import (
 	"testing"
 )
 
+// Real payload captured from a physical Frame TV via the raw-body log (see
+// samsungContentTransferProgress's doc comment) — snake_case, quoted "progress" numbers.
+const realContentTransferProgressBody = `{"content_id":"B0F2F657D5CD","content_name":"joyous-hub","current_image_status":{"error_message":"","image_id":"B0F2F657D5CD","image_name":"B0F2F657D5CD.png","progress":"100","status":"Successful"},"device_id":"0WPSHNPY800618B","error_message":"","progress":"100","status":"Successful"}`
+
 func TestServeContentTransferProgressEchoesValidBody(t *testing.T) {
 	h := &samsungBridgeHTTPHandler{hub: buildTestHub(t)}
-	body := []byte(`{"deviceSerialNumber":"SERIAL123","contentId":"B0F2F657D5CD","contentName":"Aviemore","status":"Successful","errorMessage":null,"currentImageStatus":{"imageId":"d9742cb0e71de3bd","imageName":"Aviemore","status":"Successful","progress":100,"errorMessage":null},"totalProgress":100}`)
+	body := []byte(realContentTransferProgressBody)
 
 	status, contentType, _, respBody := h.serveContentTransferProgress(http.MethodPost, body)
 
@@ -41,16 +45,16 @@ func TestServeContentTransferProgressRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
-// TestServeContentTransferProgressStillAcksOnMissingFields covers a real device sending a
-// shape our reverse-engineered field mapping doesn't match (contentId/deviceSerialNumber come
-// back empty after parsing): the ack must still succeed with a 200 rather than blocking the
-// frame's transfer over a mapping we might not have exactly right — only state-relay to the
-// hub is skipped in that case (see TestReportProgressIgnoresUnknownFrame for that half).
+// TestServeContentTransferProgressStillAcksOnMissingFields covers a device sending a shape our
+// field mapping doesn't match (content_id/device_id come back empty after parsing): the ack
+// must still succeed with a 200 rather than blocking the frame's transfer over a mapping we
+// might not have exactly right — only state-relay to the hub is skipped in that case (see
+// TestReportProgressIgnoresUnknownFrame for that half).
 func TestServeContentTransferProgressStillAcksOnMissingFields(t *testing.T) {
 	h := &samsungBridgeHTTPHandler{hub: buildTestHub(t)}
 	for _, body := range []string{
-		`{"deviceSerialNumber":"","contentId":"B0F2F657D5CD","status":"Successful","currentImageStatus":{"imageId":"x","imageName":"x","status":"Successful"},"totalProgress":0}`,
-		`{"deviceSerialNumber":"SERIAL123","contentId":"","status":"Successful","currentImageStatus":{"imageId":"x","imageName":"x","status":"Successful"},"totalProgress":0}`,
+		`{"device_id":"","content_id":"B0F2F657D5CD","status":"Successful","current_image_status":{"image_id":"x","image_name":"x","status":"Successful"}}`,
+		`{"device_id":"0WPSHNPY800618B","content_id":"","status":"Successful","current_image_status":{"image_id":"x","image_name":"x","status":"Successful"}}`,
 		`{"someUnexpectedShape":true}`,
 	} {
 		status, _, _, respBody := h.serveContentTransferProgress(http.MethodPost, []byte(body))
@@ -74,7 +78,7 @@ func TestReportProgressUpdatesKnownDeviceLastAction(t *testing.T) {
 
 	h := &samsungBridgeHTTPHandler{hub: hub}
 	progress := samsungContentTransferProgress{
-		DeviceSerialNumber: "SERIAL123",
+		DeviceID:           "0WPSHNPY800618B",
 		ContentID:          frameID,
 		Status:             "Successful",
 		CurrentImageStatus: samsungImageDownloadStatus{ImageID: "x", ImageName: "x", Status: "Successful"},
@@ -96,7 +100,7 @@ func TestReportProgressIgnoresUnknownFrame(t *testing.T) {
 	hub := buildTestHub(t)
 	h := &samsungBridgeHTTPHandler{hub: hub}
 	progress := samsungContentTransferProgress{
-		DeviceSerialNumber: "SERIAL123",
+		DeviceID:           "0WPSHNPY800618B",
 		ContentID:          "NOTAREALFRAME",
 		Status:             "Successful",
 		CurrentImageStatus: samsungImageDownloadStatus{ImageID: "x", ImageName: "x", Status: "Successful"},

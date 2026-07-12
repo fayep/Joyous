@@ -11,30 +11,46 @@ import (
 	"joyous-hub/bridgehub"
 )
 
-// samsungContentTransferProgress mirrors the real Samsung ePaper companion app's
-// ContentTransferProgress model, reverse-engineered from the decompiled APK
-// (Samsung/epaper-decompiled: ConfigWebServerRoutingKt$configureWebServerRouting$1$5,
-// package com.samsung.android.ePaper.data.network.embedded_server.model). A physical Frame
-// TV POSTs this to what it believes is the paired phone app's embedded server root — the real
-// server there just validates deviceSerialNumber/contentId are non-empty, records the update,
-// and echoes the same object back as its 200 response. Without a recognized response the frame
-// never completes the transfer and keeps displaying its previous content.
+// samsungContentTransferProgress is the real payload shape a physical Frame TV POSTs — this
+// diverges from the decompiled phone-companion-app's ContentTransferProgress model
+// (Samsung/epaper-decompiled: ConfigWebServerRoutingKt$configureWebServerRouting$1$5) in both
+// field names (snake_case, not camelCase) and a couple of types; the TV firmware evidently
+// implements its own client independent of the phone app's Kotlin model. Confirmed against a
+// real transfer's logged raw body:
+//
+//	{
+//	  "content_id": "B0F2F657D5CD", "content_name": "joyous-hub",
+//	  "current_image_status": {
+//	    "error_message": "", "image_id": "B0F2F657D5CD", "image_name": "B0F2F657D5CD.png",
+//	    "progress": "100", "status": "Successful"
+//	  },
+//	  "device_id": "0WPSHNPY800618B", "error_message": "", "progress": "100", "status": "Successful"
+//	}
+//
+// content_id is the same string the hub told the frame to fetch in content.json's manifest
+// "id" (see buildContentJSON in samsung_mdc.go and reportProgress below) — for the bridge-driven
+// send path (CmdSendImage / scheduled sends) that ends up being the frame's own ID. progress is
+// a quoted string on the wire, not a number. There is no top-level "total_progress" — top-level
+// and nested "progress" share the same key name.
+//
+// The TV never completes the transfer (and keeps displaying its previous content) without a
+// 200 response here, so ServeUIHTTP always acks regardless of whether this mapping matches.
 type samsungContentTransferProgress struct {
-	DeviceSerialNumber string                     `json:"deviceSerialNumber"`
-	ContentID          string                     `json:"contentId"`
-	ContentName        string                     `json:"contentName"`
-	Status             string                     `json:"status"` // Pending|Downloading|PreparingShowImage|Successful|Failed|Initializing|Unknown|Cancelled
-	ErrorMessage       *string                    `json:"errorMessage"`
-	CurrentImageStatus samsungImageDownloadStatus `json:"currentImageStatus"`
-	TotalProgress      int                        `json:"totalProgress"`
+	ContentID          string                     `json:"content_id"`
+	ContentName        string                     `json:"content_name"`
+	CurrentImageStatus samsungImageDownloadStatus `json:"current_image_status"`
+	DeviceID           string                     `json:"device_id"`
+	ErrorMessage       string                     `json:"error_message"`
+	Progress           string                     `json:"progress"` // quoted on the wire, e.g. "100"
+	Status             string                     `json:"status"`   // Downloading|Successful|Failed|… (observed values only, not exhaustively confirmed)
 }
 
 type samsungImageDownloadStatus struct {
-	ImageID      string  `json:"imageId"`
-	ImageName    string  `json:"imageName"`
-	Status       string  `json:"status"`
-	Progress     *int    `json:"progress"`
-	ErrorMessage *string `json:"errorMessage"`
+	ErrorMessage string `json:"error_message"`
+	ImageID      string `json:"image_id"`
+	ImageName    string `json:"image_name"`
+	Progress     string `json:"progress"` // quoted on the wire, e.g. "100"
+	Status       string `json:"status"`
 }
 
 // samsungBridgeHTTPHandler serves the extra root-level HTTP paths this bridge registers via
@@ -76,15 +92,15 @@ func (h *samsungBridgeHTTPHandler) serveContentTransferProgress(method string, b
 		log.Printf("samsung-bridge content-transfer-progress: invalid json: %v", err)
 		return http.StatusBadRequest, "text/plain", nil, []byte("invalid json")
 	}
-	if progress.ContentID == "" || progress.DeviceSerialNumber == "" {
+	if progress.ContentID == "" || progress.DeviceID == "" {
 		// Don't block the ack on this — if our field-name mapping doesn't match this
 		// firmware's actual shape, failing the request here would leave the frame worse off
 		// than before (still no valid transfer completion). Log for diagnosis and still echo
 		// a 200 below; only state-relay (reportProgress) is skipped.
-		log.Printf("samsung-bridge content-transfer-progress: parsed but contentId/deviceSerialNumber empty, parsed=%+v", progress)
+		log.Printf("samsung-bridge content-transfer-progress: parsed but content_id/device_id empty, parsed=%+v", progress)
 	} else {
-		log.Printf("samsung-bridge content-transfer-progress content=%s device_serial=%s status=%s total=%d%%",
-			progress.ContentID, progress.DeviceSerialNumber, progress.Status, progress.TotalProgress)
+		log.Printf("samsung-bridge content-transfer-progress content=%s device=%s status=%s progress=%s",
+			progress.ContentID, progress.DeviceID, progress.Status, progress.Progress)
 		h.reportProgress(progress)
 	}
 
