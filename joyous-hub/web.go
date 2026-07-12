@@ -701,6 +701,7 @@ const indexHTML = `<!DOCTYPE html>
     <button id="nav-inkjoy" style="display:none" onclick="showTab('inkjoy',this)">InkJoy</button>
     <button id="nav-mqtt" style="display:none" onclick="showTab('mqtt',this)">MQTT</button>
     <button onclick="showTab('samsung',this)">Samsung</button>
+    <button id="nav-nixplay" style="display:none" onclick="showTab('nixplay',this)">Nixplay</button>
   </nav>
 </header>
 <div id="send-picker"></div>
@@ -908,6 +909,9 @@ const indexHTML = `<!DOCTYPE html>
   <div id="tab-inkjoy" style="display:none">
     <iframe id="inkjoy-bridge-frame" title="InkJoy configuration" style="width:100%;border:none;min-height:calc(100vh - 5rem);background:#f8f9fa"></iframe>
   </div>
+  <div id="tab-nixplay" style="display:none">
+    <iframe id="nixplay-bridge-frame" title="Nixplay configuration" style="width:100%;border:none;min-height:calc(100vh - 5rem);background:#f8f9fa"></iframe>
+  </div>
   <div id="tab-mqtt" style="display:none">
     <p style="color:#666;font-size:.9rem;margin-top:0">Joyous hub broker (<code>:1883</code>) — last 20 messages per direction. Newest at top.</p>
     <label style="display:flex;align-items:center;gap:.5rem;margin:.25rem 0 .75rem;font-size:.9rem;color:#555">
@@ -1042,7 +1046,7 @@ document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible') checkJoyousUIRevision();
 });
 
-let devices=[], images=[], activeTab='album', inkjoyBridgeOnline=false;
+let devices=[], images=[], activeTab='album', inkjoyBridgeOnline=false, nixplayBridgeOnline=false;
 
 async function refreshBridgeNav(){
   try{
@@ -1066,6 +1070,21 @@ async function refreshBridgeNav(){
     }
     if(inkjoyBridgeOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
     if(inkjoyBridgeOnline&&!wasOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
+
+    const nixplay=bridges.find(b=>b.id==='nixplay'&&b.online&&b.has_config_ui);
+    const nixplayWasOnline=nixplayBridgeOnline;
+    nixplayBridgeOnline=!!nixplay;
+    const navNX=document.getElementById('nav-nixplay');
+    if(navNX) navNX.style.display=nixplayBridgeOnline?'':'none';
+    if(!nixplayBridgeOnline){
+      const frame=document.getElementById('nixplay-bridge-frame');
+      if(frame){ frame.dataset.loaded=''; frame.removeAttribute('src'); }
+    }
+    if(!nixplayBridgeOnline&&activeTab==='nixplay'){
+      showTab('devices',document.querySelector('nav button'));
+    }
+    if(nixplayBridgeOnline&&activeTab==='nixplay') loadNixplayBridgeFrame();
+    if(nixplayBridgeOnline&&!nixplayWasOnline&&activeTab==='nixplay') loadNixplayBridgeFrame();
   }catch(_){}
 }
 
@@ -1073,6 +1092,13 @@ function loadInkjoyBridgeFrame(){
   const frame=document.getElementById('inkjoy-bridge-frame');
   if(!frame||frame.dataset.loaded==='1') return;
   frame.src='/inkjoy/';
+  frame.dataset.loaded='1';
+}
+
+function loadNixplayBridgeFrame(){
+  const frame=document.getElementById('nixplay-bridge-frame');
+  if(!frame||frame.dataset.loaded==='1') return;
+  frame.src='/nixplay/';
   frame.dataset.loaded='1';
 }
 
@@ -1088,6 +1114,7 @@ function showTab(name,btn){
   stopTabRefresh();
   if(name==='devices') startTabRefresh(5000, refreshDevicesTab);
   else if(name==='inkjoy'){ loadInkjoyBridgeFrame(); }
+  else if(name==='nixplay'){ loadNixplayBridgeFrame(); }
   else if(name==='samsung') startTabRefresh(60000, refreshSamsungTab);
   else if(name==='album') startTabRefresh(5000, refreshAlbumTab);
   else if(name==='overlays') loadOverlaysTab();

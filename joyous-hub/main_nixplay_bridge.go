@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image/jpeg"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -66,17 +67,34 @@ func main() {
 		bridgeID = protocol.KindNixplay
 	}
 
-	state := &nixplayBridgeState{nx: nx, hubHTTP: fileCfg.HubHTTP}
+	dataDir := fileCfg.DataDir
+	if dataDir == "" {
+		dataDir = "./data-nixplay"
+	}
+	hidden := nixplaybridge.NewHiddenStore(dataDir)
+	if err := hidden.Load(); err != nil {
+		log.Printf("warn: load hidden galleries: %v", err)
+	}
+
+	state := &nixplayBridgeState{nx: nx, hubHTTP: fileCfg.HubHTTP, hidden: hidden}
 
 	var hubClient *bridgehub.Client
+	republish := func() { refreshNixplayPlaylists(ctx, state, hubClient) }
+	mux := http.NewServeMux()
+	bridgeUI := newNixplayBridgeUI(mux, state, hidden, republish)
+
 	hubClient, err = bridgehub.Connect(bridgehub.ClientConfig{
 		HubMQTT:  fileCfg.HubMQTT,
 		BridgeID: bridgeID,
 		Kind:     protocol.KindNixplay,
-		Hello:    protocol.HelloPayload{Kind: protocol.KindNixplay},
+		Hello: protocol.HelloPayload{
+			Kind:         protocol.KindNixplay,
+			Capabilities: []string{protocol.CapConfigUI},
+		},
 		OnCommand: func(cmd protocol.CmdPayload) {
 			handleNixplayBridgeCommand(ctx, state, hubClient, cmd)
 		},
+		UIHTTP: bridgeUI,
 	})
 	if err != nil {
 		log.Fatalf("hub connect: %v", err)
@@ -106,8 +124,13 @@ func main() {
 type nixplayBridgeState struct {
 	nx      *nixplaybridge.Client
 	hubHTTP string
+	hidden  *nixplaybridge.HiddenStore
 }
 
+// refreshNixplayPlaylists re-lists galleries and republishes the devices.sync
+// snapshot. Hidden galleries (see nixplay_bridge_ui.go) are simply omitted —
+// SyncBridgeDevices on the hub deletes any bridge-owned device not present in
+// a fresh snapshot, so leaving one out is enough to remove it from Devices/Send.
 func refreshNixplayPlaylists(ctx context.Context, state *nixplayBridgeState, client *bridgehub.Client) {
 	playlists, err := state.nx.ListPlaylists(ctx)
 	if err != nil {
@@ -115,7 +138,12 @@ func refreshNixplayPlaylists(ctx context.Context, state *nixplayBridgeState, cli
 		return
 	}
 	devs := make([]protocol.BridgeDevice, 0, len(playlists))
+	hiddenCount := 0
 	for _, p := range playlists {
+		if state.hidden != nil && state.hidden.IsHidden(p.ID) {
+			hiddenCount++
+			continue
+		}
 		devs = append(devs, protocol.BridgeDevice{
 			ID:        p.ID,
 			Type:      protocol.KindNixplay,
@@ -129,7 +157,7 @@ func refreshNixplayPlaylists(ctx context.Context, state *nixplayBridgeState, cli
 			log.Printf("nixplay-bridge: publish devices: %v", err)
 		}
 	}
-	log.Printf("nixplay-bridge: %d gallery(s)", len(devs))
+	log.Printf("nixplay-bridge: %d gallery(s) (%d hidden)", len(devs), hiddenCount)
 }
 
 func handleNixplayBridgeCommand(ctx context.Context, state *nixplayBridgeState, client *bridgehub.Client, cmd protocol.CmdPayload) {

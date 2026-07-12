@@ -136,13 +136,14 @@ func jwtExpiry(token string) time.Time {
 	return time.Unix(claims.Exp, 0)
 }
 
-// ListPlaylists returns the account's Nixplay galleries.
+// ListPlaylists returns the account's Nixplay galleries. Confirmed live: a
+// bare JSON array of playlist objects (see Nixplay/docs/mobile_api.md) —
+// decoded loosely here in case an account variant wraps it or uses a
+// slightly different key name.
 func (c *Client) ListPlaylists(ctx context.Context) ([]Playlist, error) {
 	if _, err := c.ensureToken(ctx); err != nil {
 		return nil, err
 	}
-	// Response shape wasn't confirmed against live traffic; decode loosely so
-	// a handful of plausible field name variants all work.
 	var raw []map[string]any
 	if err := c.doJSON(ctx, http.MethodGet, "/v6/playlists/", nil, nil, true, &raw); err != nil {
 		var wrapped struct {
@@ -156,8 +157,9 @@ func (c *Client) ListPlaylists(ctx context.Context) ([]Playlist, error) {
 	out := make([]Playlist, 0, len(raw))
 	for _, m := range raw {
 		p := Playlist{
-			ID:   firstString(m, "id", "playlistId", "playlist_id"),
-			Name: firstString(m, "name", "title"),
+			ID:           firstString(m, "id", "playlistId", "playlist_id"),
+			Name:         firstString(m, "name", "title"),
+			PictureCount: firstInt(m, "picture_count", "pictureCount"),
 		}
 		if p.ID == "" {
 			continue
@@ -181,6 +183,22 @@ func firstString(m map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstInt(m map[string]any, keys ...string) int {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			switch t := v.(type) {
+			case float64:
+				return int(t)
+			case string:
+				if n, err := strconv.Atoi(t); err == nil {
+					return n
+				}
+			}
+		}
+	}
+	return 0
 }
 
 // s3TokenResponse is the real /v1/photos/S3token shape (confirmed live against
