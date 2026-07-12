@@ -1,6 +1,11 @@
 .PHONY: build test darwin-arm64 linux-arm linux-mips clean install build-release ldflags-linkmeta build-inkjoy-bridge build-samsung-bridge build-nixplay-bridge build-all
 
-VERSION ?= dev
+# A timestamp default (rather than a static "dev") ensures every build gets a distinct
+# linkmeta.Version even when the caller doesn't pass one — see ui_revision.go's uiRevision,
+# which hashes Version + indexHTML: a rebuild that only touches backend code (not indexHTML)
+# would otherwise hash identically to the previous build, so a deployed hub never trips the
+# SPA's "reload — new version available" check on reconnect (see applyRevisionEvent in web.go).
+VERSION ?= dev-$(shell date -u +%Y%m%d%H%M%S)
 
 build:
 	CGO_ENABLED=1 go build -ldflags "-X joyous-hub/internal/linkmeta.Version=$(VERSION)" -o joyous-hub .

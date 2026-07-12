@@ -17,7 +17,10 @@ REMOTE=${REMOTE:-hubhost}
 REMOTE_DIR=${REMOTE_DIR:-~/joyous-hub}
 SERVER_ADDR=${SERVER_ADDR:-hubhost.local:18080}
 DISCOVER_SUBNETS=${DISCOVER_SUBNETS:-192.168.50}
-JOYOUS_VERSION=${JOYOUS_VERSION:-0.9.0}
+# Timestamp suffix so every deploy gets a distinct version even when unset — a rebuild that
+# doesn't touch the SPA's HTML would otherwise hash identically to the previous build's
+# uiRevision (see ui_revision.go), so the browser never sees a version change to reload on.
+JOYOUS_VERSION=${JOYOUS_VERSION:-0.9.0-$(date -u +%Y%m%d%H%M%S)}
 WITH_INKJOY=0
 WITH_SAMSUNG=0
 WITH_NIXPLAY=0
