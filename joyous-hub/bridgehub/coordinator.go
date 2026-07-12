@@ -449,6 +449,7 @@ type Client struct {
 	client        mqtt.Client
 	onCmd         func(protocol.CmdPayload)
 	onUI          func(protocol.UIActionPayload)
+	onReconnect   func(*Client)
 	uiHTTP        UIHTTPHandler
 	hello         protocol.HelloPayload
 	heartbeatOnce sync.Once
@@ -467,18 +468,28 @@ type ClientConfig struct {
 	Hello     protocol.HelloPayload
 	OnCommand func(protocol.CmdPayload)
 	OnUI      func(protocol.UIActionPayload)
-	UIHTTP    UIHTTPHandler
+	// OnReconnect, if set, is called every time the underlying MQTT connection is
+	// (re)established — including the first connect — so the bridge can gratuitously
+	// republish its device list. Without this, a bridge that only pushes devices on its own
+	// periodic timer leaves the hub's device list empty/stale from a hub restart (which drops
+	// the in-process broker's retained state) until that timer next fires — for a bridge with a
+	// multi-minute refresh interval, that's a long, confusing gap. The live *Client is passed in
+	// rather than relying on a closure over an outer variable, since this can fire before
+	// Connect returns (and before that outer variable would be assigned).
+	OnReconnect func(*Client)
+	UIHTTP      UIHTTPHandler
 }
 
 // Connect dials the hub and announces presence.
 func Connect(cfg ClientConfig) (*Client, error) {
 	c := &Client{
-		bridgeID: cfg.BridgeID,
-		kind:     cfg.Kind,
-		onCmd:    cfg.OnCommand,
-		onUI:     cfg.OnUI,
-		uiHTTP:   cfg.UIHTTP,
-		hello:    cfg.Hello,
+		bridgeID:    cfg.BridgeID,
+		kind:        cfg.Kind,
+		onCmd:       cfg.OnCommand,
+		onUI:        cfg.OnUI,
+		onReconnect: cfg.OnReconnect,
+		uiHTTP:      cfg.UIHTTP,
+		hello:       cfg.Hello,
 	}
 	if c.hello.Kind == "" {
 		c.hello.Kind = cfg.Kind
@@ -498,6 +509,12 @@ func Connect(cfg ClientConfig) (*Client, error) {
 			// heartbeat loop only once per Client, not once per connection,
 			// or each reconnect leaks another permanently-running goroutine.
 			c.heartbeatOnce.Do(func() { go c.heartbeat(mc) })
+			if c.onReconnect != nil {
+				// Run off the MQTT callback goroutine: onReconnect typically publishes
+				// (network round trip via tok.Wait()), which must not block the client's
+				// internal connection-handling goroutine.
+				go c.onReconnect(c)
+			}
 		})
 	c.client = mqtt.NewClient(opts)
 	tok := c.client.Connect()

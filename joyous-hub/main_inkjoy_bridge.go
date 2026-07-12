@@ -176,6 +176,10 @@ func main() {
 		OnCommand: func(cmd protocol.CmdPayload) {
 			handleInkJoyBridgeCommand(ctx, srv, encodeHub, devices, sendDelivery, inkjoyRetry, hubInkjoyCache, hubClient, cmd)
 		},
+		// Gratuitously republish devices on every (re)connect — including the first — so a hub
+		// restart (which drops the in-process broker's retained device state) doesn't leave the
+		// Devices tab empty until the next inkjoyBridgeSyncLoop tick.
+		OnReconnect: func(c *bridgehub.Client) { inkjoyBridgeSyncOnce(c, devices) },
 	})
 	if connectErr != nil {
 		log.Fatalf("hub connect: %v", connectErr)
@@ -237,14 +241,18 @@ func inkjoyBridgeSyncLoop(ctx context.Context, client *bridgehub.Client, reg *De
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			devs := bridgeDevicesFromRegistry(reg, DeviceTypeInkJoy)
-			_ = client.PublishDevices(devs)
-			_ = client.PublishUIState(protocol.UIStatePayload{
-				Revision: int(time.Now().Unix()),
-				State:    marshalBridgeUI(devs),
-			})
+			inkjoyBridgeSyncOnce(client, reg)
 		}
 	}
+}
+
+func inkjoyBridgeSyncOnce(client *bridgehub.Client, reg *DeviceRegistry) {
+	devs := bridgeDevicesFromRegistry(reg, DeviceTypeInkJoy)
+	_ = client.PublishDevices(devs)
+	_ = client.PublishUIState(protocol.UIStatePayload{
+		Revision: int(time.Now().Unix()),
+		State:    marshalBridgeUI(devs),
+	})
 }
 
 func handleInkJoyBridgeCommand(

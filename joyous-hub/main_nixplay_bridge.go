@@ -94,14 +94,16 @@ func main() {
 		OnCommand: func(cmd protocol.CmdPayload) {
 			handleNixplayBridgeCommand(ctx, state, hubClient, cmd)
 		},
-		UIHTTP: bridgeUI,
+		// Gratuitously republish devices on every (re)connect — including the first — so a hub
+		// restart (which drops the in-process broker's retained device state) doesn't leave the
+		// Devices tab empty until the next 5-minute playlistRefreshInterval tick.
+		OnReconnect: func(c *bridgehub.Client) { refreshNixplayPlaylists(ctx, state, c) },
+		UIHTTP:      bridgeUI,
 	})
 	if err != nil {
 		log.Fatalf("hub connect: %v", err)
 	}
 	defer hubClient.Disconnect()
-
-	refreshNixplayPlaylists(ctx, state, hubClient)
 
 	go func() {
 		tick := time.NewTicker(playlistRefreshInterval)

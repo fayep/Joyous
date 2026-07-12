@@ -134,7 +134,11 @@ func main() {
 		OnCommand: func(cmd protocol.CmdPayload) {
 			handleSamsungBridgeCommand(ctx, hub, hubClient, cmd)
 		},
-		UIHTTP: uiHandler,
+		// Gratuitously republish devices on every (re)connect — including the first — so a hub
+		// restart (which drops the in-process broker's retained device state) doesn't leave the
+		// Devices tab empty until the next samsungBridgeSyncLoop tick.
+		OnReconnect: func(c *bridgehub.Client) { samsungBridgeSyncOnce(c, devices) },
+		UIHTTP:      uiHandler,
 	})
 	if err != nil {
 		log.Fatalf("hub connect: %v", err)
@@ -200,15 +204,19 @@ func samsungBridgeSyncLoop(ctx context.Context, client *bridgehub.Client, reg *D
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			devs := bridgeDevicesFromRegistry(reg, DeviceTypeSamsung)
-			_ = client.PublishDevices(devs)
-			state, _ := json.Marshal(map[string]any{"devices": devs})
-			_ = client.PublishUIState(protocol.UIStatePayload{
-				Revision: int(time.Now().Unix()),
-				State:    state,
-			})
+			samsungBridgeSyncOnce(client, reg)
 		}
 	}
+}
+
+func samsungBridgeSyncOnce(client *bridgehub.Client, reg *DeviceRegistry) {
+	devs := bridgeDevicesFromRegistry(reg, DeviceTypeSamsung)
+	_ = client.PublishDevices(devs)
+	state, _ := json.Marshal(map[string]any{"devices": devs})
+	_ = client.PublishUIState(protocol.UIStatePayload{
+		Revision: int(time.Now().Unix()),
+		State:    state,
+	})
 }
 
 func handleSamsungBridgeCommand(ctx context.Context, hub *Hub, client *bridgehub.Client, cmd protocol.CmdPayload) {
