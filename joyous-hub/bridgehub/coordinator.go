@@ -110,9 +110,16 @@ func (c *Coordinator) handleBridgeTopic(topic string, payload []byte) {
 		if env.Type == protocol.TypeHello {
 			hello, _ := protocol.DecodePayload[protocol.HelloPayload](env)
 			c.mu.Lock()
+			prev, known := c.bridges[bridgeID]
+			wasOnline := known && time.Since(prev.lastSeen) <= bridgePresenceTTL
 			c.bridges[bridgeID] = bridgeRecord{hello: hello, lastSeen: time.Now()}
 			c.mu.Unlock()
-			log.Printf("bridgehub: bridge %q online kind=%s caps=%v", bridgeID, hello.Kind, hello.Capabilities)
+			// publishHello also runs as a 15s keepalive heartbeat (see Client.heartbeat),
+			// not just on connect — only log when the bridge actually transitions from
+			// unknown/offline to online, or every heartbeat tick spams the log forever.
+			if !wasOnline {
+				log.Printf("bridgehub: bridge %q online kind=%s caps=%v", bridgeID, hello.Kind, hello.Capabilities)
+			}
 		}
 	case "devices":
 		if env.Type == protocol.TypeDevices && c.store != nil {
