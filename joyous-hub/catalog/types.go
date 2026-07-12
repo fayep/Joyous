@@ -34,6 +34,7 @@ type Image struct {
 	PeopleLikely    bool
 	PeopleAnalyzed  bool
 	PeopleDetectVer int
+	RotateOverride  int
 	ContentHash     string
 	StorageKind     string
 	SourceProvider  string

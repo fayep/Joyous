@@ -217,9 +217,12 @@ func (h *Hub) prepareSamsungPNG(imageID, overlayToken string, dev *Device) ([]by
 	}
 	frameID := SamsungFrameID(dev)
 	profile := h.samsungDisplayProfile(dev, frameID)
-	crops, _ := h.images.GetCrops(imageID)
-	crop, hasCrop := cropForFormat(crops, profile.CropFormat)
-	img, err := prepareSamsungFrameRGBA(raw, profile, crop, hasCrop)
+	meta, err := h.images.GetMeta(imageID)
+	if err != nil {
+		return nil, err
+	}
+	crop, hasCrop := cropForFormat(meta.Crops, profile.CropFormat)
+	img, err := prepareSamsungFrameRGBA(raw, profile, crop, hasCrop, meta.RotateOverride)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +242,7 @@ func (h *Hub) prepareSamsungPNG(imageID, overlayToken string, dev *Device) ([]by
 	return encodeSamsungPNGFromRGBA(img, pipe)
 }
 
-func prepareSamsungFrameRGBA(raw []byte, profile SamsungDisplayProfile, crop CropRect, hasCrop bool) (image.Image, error) {
+func prepareSamsungFrameRGBA(raw []byte, profile SamsungDisplayProfile, crop CropRect, hasCrop bool, rotateOverride int) (image.Image, error) {
 	tw, th := profile.Width, profile.Height
 	if tw <= 0 || th <= 0 {
 		tw, th = samsungW, samsungH
@@ -248,6 +251,7 @@ func prepareSamsungFrameRGBA(raw []byte, profile SamsungDisplayProfile, crop Cro
 	if err != nil {
 		return nil, err
 	}
+	img = applyRotateOverride(img, rotateOverride)
 	if hasCrop && crop.W > 0 && crop.H > 0 {
 		img = applyCrop(img, crop)
 	} else {

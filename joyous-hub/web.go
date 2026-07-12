@@ -260,19 +260,21 @@ func (h *Hub) handleImageGet(w http.ResponseWriter, r *http.Request, id string) 
 	json.NewEncoder(w).Encode(meta)
 }
 
-// handleImagePatch serves PATCH /api/images/{id} — updates display name and/or chroma override.
+// handleImagePatch serves PATCH /api/images/{id} — updates display name, chroma override,
+// tags, and/or rotation override.
 func (h *Hub) handleImagePatch(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
 		Name            *string   `json:"name"`
 		ChromaBoostMode *string   `json:"chroma_boost_mode"`
 		Tags            *[]string `json:"tags"`
+		RotateOverride  *int      `json:"rotate_override"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if body.Name == nil && body.ChromaBoostMode == nil && body.Tags == nil {
-		http.Error(w, "name, chroma_boost_mode, or tags required", http.StatusBadRequest)
+	if body.Name == nil && body.ChromaBoostMode == nil && body.Tags == nil && body.RotateOverride == nil {
+		http.Error(w, "name, chroma_boost_mode, tags, or rotate_override required", http.StatusBadRequest)
 		return
 	}
 	chromaMode := ""
@@ -285,7 +287,7 @@ func (h *Hub) handleImagePatch(w http.ResponseWriter, r *http.Request, id string
 			return
 		}
 	}
-	meta, err := h.images.PatchMeta(id, body.Name, chromaMode, body.Tags)
+	meta, err := h.images.PatchMeta(id, body.Name, chromaMode, body.Tags, body.RotateOverride)
 	if err != nil {
 		code := http.StatusBadRequest
 		if strings.Contains(err.Error(), "not found") {
@@ -662,6 +664,16 @@ const indexHTML = `<!DOCTYPE html>
     border:0;background:rgba(255,255,255,.12);color:#fff;font-size:28px;line-height:1;
     width:44px;height:44px;border-radius:999px;cursor:pointer;
   }
+  .album-zoom-rotate{
+    position:absolute;top:max(10px,env(safe-area-inset-top));left:max(10px,env(safe-area-inset-left));
+    display:flex;gap:8px;
+  }
+  .album-zoom-rotate button{
+    border:0;background:rgba(255,255,255,.12);color:#fff;font-size:20px;line-height:1;
+    width:44px;height:44px;border-radius:999px;cursor:pointer;
+  }
+  .album-zoom-rotate button:hover{background:rgba(255,255,255,.22)}
+  .album-zoom-rotate button:disabled{opacity:.4;cursor:default}
   /* crop modal */
   #crop-modal{display:none;position:fixed;inset:0;background:#000c;z-index:1000;align-items:center;justify-content:center;touch-action:none;overscroll-behavior:none}
   #crop-modal.open{display:flex;overflow:hidden}
@@ -765,6 +777,10 @@ const indexHTML = `<!DOCTYPE html>
     </div>
   </div>
   <div id="album-zoom" aria-hidden="true">
+    <div class="album-zoom-rotate">
+      <button type="button" id="album-zoom-rotate-ccw" aria-label="Rotate left" onclick="rotateAlbumZoomImage(-90)">&#8634;</button>
+      <button type="button" id="album-zoom-rotate-cw" aria-label="Rotate right" onclick="rotateAlbumZoomImage(90)">&#8635;</button>
+    </div>
     <button type="button" class="album-zoom-close" aria-label="Close" onclick="closeAlbumZoom()">&times;</button>
     <div id="album-zoom-stage" onclick="if(event.target===this) closeAlbumZoom()">
       <img id="album-zoom-img" alt="">
@@ -1541,6 +1557,40 @@ function openAlbumZoom(id){
   albumZoomScrollY=window.scrollY;
   document.documentElement.style.overflow='hidden';
   document.body.style.overflow='hidden';
+}
+
+// rotateAlbumZoomImage sends an additional 90deg correction (see ImageMeta.RotateOverride in
+// images.go) — for sources like legacy Nixplay imports whose rotation lived only in the
+// exporting app's own database, never in EXIF, so decodeAnyImage's automatic correction alone
+// can't fix them. Applies everywhere the image is rendered (thumbnail, preview, and every
+// device's send path), not just this zoom view.
+async function rotateAlbumZoomImage(delta){
+  const id=albumZoomId;
+  if(!id) return;
+  const meta=images.find(i=>i.id===id);
+  if(!meta) return;
+  const buttons=[document.getElementById('album-zoom-rotate-ccw'),document.getElementById('album-zoom-rotate-cw')];
+  buttons.forEach(b=>{ if(b) b.disabled=true; });
+  try{
+    const current=meta.rotate_override||0;
+    const next=((current+delta)%360+360)%360;
+    const r=await fetch('/api/images/'+encodeURIComponent(id),{
+      method:'PATCH',headers:sessionHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({rotate_override:next})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    const updated=await r.json();
+    Object.assign(meta,updated);
+    const img=document.getElementById('album-zoom-img');
+    if(img&&albumZoomId===id){
+      img.onload=()=>layoutAlbumZoom();
+      img.src='/images/'+encodeURIComponent(id)+'/preview?v='+next+'-'+Date.now();
+    }
+  }catch(e){
+    showToast('rotate-'+id,'Rotate failed: '+e.message,{type:'error'});
+  }finally{
+    buttons.forEach(b=>{ if(b) b.disabled=false; });
+  }
 }
 
 function closeAlbumZoom(){

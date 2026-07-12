@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"net/http"
@@ -734,7 +735,7 @@ func TestPatchMetaChromaEvictsCache(t *testing.T) {
 	if err := os.WriteFile(cacheFile, []byte("cached"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PatchMeta(id, nil, "on", nil); err != nil {
+	if _, err := store.PatchMeta(id, nil, "on", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
@@ -743,6 +744,94 @@ func TestPatchMetaChromaEvictsCache(t *testing.T) {
 	meta, err := store.readMeta(id)
 	if err != nil || meta.ChromaBoost == nil || !*meta.ChromaBoost {
 		t.Fatalf("meta=%+v err=%v", meta, err)
+	}
+}
+
+// TestPatchMetaRotateOverrideAppliesAndEvictsCaches covers the manual-rotate-button / batch
+// nixplay-rotation-fix mechanism: setting rotate_override persists, swaps stored width/height on
+// a quarter turn, and evicts the thumbnail/preview/bin caches so they regenerate with the new
+// orientation instead of serving a stale pre-rotation render.
+func TestPatchMetaRotateOverrideAppliesAndEvictsCaches(t *testing.T) {
+	dir := t.TempDir()
+	store := NewImageStore(dir)
+	data, err := os.ReadFile(filepath.Join("testdata", "exif", "orient1.jpg"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	id, err := store.Store(bytes.NewReader(data), "legacy.jpg")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	meta, err := store.GetMeta(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origW, origH := meta.Width, meta.Height
+
+	// Prime caches so we can observe eviction.
+	if _, err := store.ServeThumb(id); err != nil {
+		t.Fatalf("ServeThumb: %v", err)
+	}
+	if _, err := store.ServePreview(id); err != nil {
+		t.Fatalf("ServePreview: %v", err)
+	}
+	if _, err := os.Stat(store.thumbPath(id)); err != nil {
+		t.Fatalf("expected thumb cached before patch: %v", err)
+	}
+
+	rotate := 90
+	meta, err = store.PatchMeta(id, nil, "", nil, &rotate)
+	if err != nil {
+		t.Fatalf("PatchMeta: %v", err)
+	}
+	if meta.RotateOverride != 90 {
+		t.Fatalf("RotateOverride: got %d want 90", meta.RotateOverride)
+	}
+	if meta.Width != origH || meta.Height != origW {
+		t.Fatalf("dimensions not swapped on quarter turn: got %dx%d want %dx%d", meta.Width, meta.Height, origH, origW)
+	}
+	if _, err := os.Stat(store.thumbPath(id)); !os.IsNotExist(err) {
+		t.Fatal("expected thumb cache evicted after rotate_override change")
+	}
+	if _, err := os.Stat(store.previewPath(id)); !os.IsNotExist(err) {
+		t.Fatal("expected preview cache evicted after rotate_override change")
+	}
+
+	// orient1.jpg: top-left red, bottom-right yellow. 90° CW moves red to top-right.
+	thumb, err := store.ServeThumb(id)
+	if err != nil {
+		t.Fatalf("ServeThumb after rotate: %v", err)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(thumb))
+	if err != nil {
+		t.Fatalf("decode thumb: %v", err)
+	}
+	b := img.Bounds()
+	if !colorsNear(pixelAt(img, b.Max.X-1, 0), color.RGBA{255, 0, 0, 255}) {
+		t.Fatalf("top-right after rotate: got %+v want red", pixelAt(img, b.Max.X-1, 0))
+	}
+}
+
+func TestPatchMetaRotateOverrideNormalizesAndRejectsNonQuarterTurn(t *testing.T) {
+	dir := t.TempDir()
+	store := NewImageStore(dir)
+	id, err := store.Store(bytes.NewReader([]byte{0x01, 0x02}), "photo.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	negative := -90
+	meta, err := store.PatchMeta(id, nil, "", nil, &negative)
+	if err != nil {
+		t.Fatalf("PatchMeta(-90): %v", err)
+	}
+	if meta.RotateOverride != 270 {
+		t.Fatalf("RotateOverride: got %d want 270 (normalized from -90)", meta.RotateOverride)
+	}
+
+	bad := 45
+	if _, err := store.PatchMeta(id, nil, "", nil, &bad); err == nil {
+		t.Fatal("expected error for non-multiple-of-90 rotate_override")
 	}
 }
 

@@ -48,6 +48,10 @@ func main() {
 	discoverSubnetsFlag := flag.String("discover-subnets", fileCfg.DiscoverSubnets, "comma-separated LAN prefixes for Samsung MDC fallback sweep")
 	probeNetworkFlag := flag.String("probe-network", "", "test TCP connectivity to IP:1515 and exit")
 	logDirFlag := flag.String("log-dir", fileCfg.LogDir, "append hub logs to stdout.log and stderr.log in this directory")
+	fixNixplayRotationFlag := flag.Bool("fix-nixplay-rotation", false, "batch-correct gallery image rotation using a recovered Nixplay export (see -nixplay-recovered-dir, -nixplay-db), then exit")
+	nixplayRecoveredDirFlag := flag.String("nixplay-recovered-dir", "", "directory of recovered Nixplay photos (photos_recovered/*.jpg), used with -fix-nixplay-rotation")
+	nixplayDBFlag := flag.String("nixplay-db", "", "path to a recovered NixDatabase.db, used with -fix-nixplay-rotation")
+	fixNixplayDryRunFlag := flag.Bool("fix-nixplay-rotation-dry-run", true, "report matches and corrections without writing changes (used with -fix-nixplay-rotation)")
 	flag.String("config", cfgPath, "config file")
 	flag.Parse()
 
@@ -83,6 +87,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("image store: %v", err)
 	}
+
+	if *fixNixplayRotationFlag {
+		if err := runFixNixplayRotation(imageStore, *nixplayRecoveredDirFlag, *nixplayDBFlag, *fixNixplayDryRunFlag); err != nil {
+			log.Fatalf("fix-nixplay-rotation: %v", err)
+		}
+		return
+	}
+
 	colorStore := NewColorStore(*dataDir)
 	imageStore.SetColorStore(colorStore)
 	displayPreview := NewDisplayPreviewStore(*dataDir)

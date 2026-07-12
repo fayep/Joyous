@@ -53,6 +53,11 @@ type ImageMeta struct {
 	PeopleAnalyzed   bool `json:"people_analyzed,omitempty"`
 	PeopleDetectVer  int  `json:"people_detect_ver,omitempty"`
 	Tags             []string `json:"tags,omitempty"`
+	// RotateOverride is an additional 0/90/180/270° clockwise correction applied after EXIF
+	// orientation, for sources (e.g. Nixplay-imported photos, whose rotation lived only in the
+	// exporting app's own database, never in EXIF) where EXIF alone doesn't produce the correct
+	// orientation. See applyRotateOverride and (*ImageStore).PatchMeta.
+	RotateOverride int `json:"rotate_override,omitempty"`
 }
 
 // ImageStore manages raw image storage and a bounded converted-bin cache.
@@ -370,13 +375,13 @@ func (s *ImageStore) Rename(id, name string) (ImageMeta, error) {
 	if name == "" {
 		return ImageMeta{}, fmt.Errorf("name required")
 	}
-	return s.PatchMeta(id, &name, "", nil)
+	return s.PatchMeta(id, &name, "", nil, nil)
 }
 
-// PatchMeta updates display name, chroma override, and/or tags.
+// PatchMeta updates display name, chroma override, tags, and/or rotation override.
 // chromaMode is "", "global", "on", or "off"; empty string leaves chroma unchanged.
-// tags non-nil replaces the image tag set.
-func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string, tags *[]string) (ImageMeta, error) {
+// tags non-nil replaces the image tag set. rotateOverride, if non-nil, must be a multiple of 90.
+func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string, tags *[]string, rotateOverride *int) (ImageMeta, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return ImageMeta{}, err
@@ -418,6 +423,23 @@ func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string, tags 
 		meta.Tags = *tags
 		changed = true
 	}
+	rotateChanged := false
+	if rotateOverride != nil {
+		norm, err := normalizeRotateDegrees(*rotateOverride)
+		if err != nil {
+			return ImageMeta{}, err
+		}
+		if norm != meta.RotateOverride {
+			// A net quarter-turn (90 or 270) swaps which dimension is "width" — keep the
+			// stored size in sync so crop UIs and album-grid aspect ratios stay correct.
+			if (norm%180 != 0) != (meta.RotateOverride%180 != 0) {
+				meta.Width, meta.Height = meta.Height, meta.Width
+			}
+			meta.RotateOverride = norm
+			changed = true
+			rotateChanged = true
+		}
+	}
 	if !changed {
 		return meta, nil
 	}
@@ -425,6 +447,10 @@ func (s *ImageStore) PatchMeta(id string, name *string, chromaMode string, tags 
 		return ImageMeta{}, err
 	}
 	s.evictBinCacheForImage(id)
+	if rotateChanged {
+		os.Remove(s.thumbPath(id))
+		os.Remove(s.previewPath(id))
+	}
 	return meta, nil
 }
 
@@ -687,6 +713,7 @@ func (s *ImageStore) generatePreview(id, cachePath string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		img = applyRotateOverride(img, meta.RotateOverride)
 	}
 
 	// Scale to fit within previewMaxW × previewMaxH, preserving aspect ratio.
@@ -739,6 +766,7 @@ func (s *ImageStore) generateThumb(id string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		img = applyRotateOverride(img, meta.RotateOverride)
 	}
 
 	// Apply the largest-area stored crop to the thumbnail.
@@ -1078,15 +1106,16 @@ func (s *ImageStore) prepareInkJoyFrameRGBA(id string, portrait bool) (image.Ima
 	if portrait {
 		cropKey = "3:4"
 	}
-	img, _, err := prepareInkJoyFrameFromRaw(raw, meta.Crops[cropKey], portrait)
+	img, _, err := prepareInkJoyFrameFromRaw(raw, meta.Crops[cropKey], portrait, meta.RotateOverride)
 	return img, meta.FlatRGB, err
 }
 
-func prepareInkJoyFrameFromRaw(raw []byte, crop CropRect, portrait bool) (image.Image, bool, error) {
+func prepareInkJoyFrameFromRaw(raw []byte, crop CropRect, portrait bool, rotateOverride int) (image.Image, bool, error) {
 	img, err := decodeAnyImage(raw)
 	if err != nil {
 		return nil, false, err
 	}
+	img = applyRotateOverride(img, rotateOverride)
 	if crop.W > 0 && crop.H > 0 {
 		img = applyCrop(img, crop)
 	}
@@ -1153,7 +1182,7 @@ func convertBin(raw []byte) ([]byte, error) {
 }
 
 func convertImageWithCrop(raw []byte, crop CropRect, portrait bool, flatRGB bool) ([]byte, error) {
-	img, _, err := prepareInkJoyFrameFromRaw(raw, crop, portrait)
+	img, _, err := prepareInkJoyFrameFromRaw(raw, crop, portrait, 0)
 	if err != nil {
 		return nil, err
 	}

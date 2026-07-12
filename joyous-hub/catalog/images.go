@@ -49,20 +49,20 @@ func (db *DB) UpsertImage(img Image, crops map[string]Crop) error {
 	}
 	_, err = tx.Exec(`INSERT INTO images (
 		id, name, size, width, height, orientation, flat_rgb, chroma_boost,
-		people_likely, people_analyzed, people_detect_ver,
+		people_likely, people_analyzed, people_detect_ver, rotate_override,
 		content_hash, storage_kind, source_provider, source_asset_id, rel_path,
 		added_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		name=excluded.name, size=excluded.size, width=excluded.width, height=excluded.height,
 		orientation=excluded.orientation, flat_rgb=excluded.flat_rgb, chroma_boost=excluded.chroma_boost,
 		people_likely=excluded.people_likely, people_analyzed=excluded.people_analyzed,
-		people_detect_ver=excluded.people_detect_ver,
+		people_detect_ver=excluded.people_detect_ver, rotate_override=excluded.rotate_override,
 		content_hash=excluded.content_hash, storage_kind=excluded.storage_kind,
 		source_provider=excluded.source_provider, source_asset_id=excluded.source_asset_id,
 		rel_path=excluded.rel_path, updated_at=excluded.updated_at`,
 		img.ID, img.Name, img.Size, img.Width, img.Height, img.Orientation, flat, chroma,
-		boolToInt(img.PeopleLikely), boolToInt(img.PeopleAnalyzed), img.PeopleDetectVer,
+		boolToInt(img.PeopleLikely), boolToInt(img.PeopleAnalyzed), img.PeopleDetectVer, img.RotateOverride,
 		nullStr(img.ContentHash), img.StorageKind, nullStr(img.SourceProvider), nullStr(img.SourceAssetID),
 		img.RelPath, formatTime(img.AddedAt), formatTime(img.UpdatedAt),
 	)
@@ -125,7 +125,7 @@ func (db *DB) UpdateDimensions(id string, width, height int) error {
 
 const imageSelectCols = `
 	id, name, size, width, height, orientation, flat_rgb, chroma_boost,
-	people_likely, people_analyzed, people_detect_ver,
+	people_likely, people_analyzed, people_detect_ver, rotate_override,
 	COALESCE(content_hash,''), COALESCE(storage_kind,'hub'),
 	COALESCE(source_provider,''), COALESCE(source_asset_id,''),
 	rel_path, added_at, updated_at`
@@ -155,7 +155,7 @@ func scanImage(row *sql.Row) (Image, error) {
 	var addedAt, updatedAt string
 	err := row.Scan(
 		&img.ID, &img.Name, &img.Size, &img.Width, &img.Height, &img.Orientation, &flat, &chroma,
-		&peopleLikely, &peopleAnalyzed, &img.PeopleDetectVer,
+		&peopleLikely, &peopleAnalyzed, &img.PeopleDetectVer, &img.RotateOverride,
 		&img.ContentHash, &img.StorageKind, &img.SourceProvider, &img.SourceAssetID,
 		&img.RelPath, &addedAt, &updatedAt,
 	)
@@ -181,7 +181,7 @@ func scanImageRows(rows *sql.Rows) (Image, error) {
 	var addedAt, updatedAt string
 	err := rows.Scan(
 		&img.ID, &img.Name, &img.Size, &img.Width, &img.Height, &img.Orientation, &flat, &chroma,
-		&peopleLikely, &peopleAnalyzed, &img.PeopleDetectVer,
+		&peopleLikely, &peopleAnalyzed, &img.PeopleDetectVer, &img.RotateOverride,
 		&img.ContentHash, &img.StorageKind, &img.SourceProvider, &img.SourceAssetID,
 		&img.RelPath, &addedAt, &updatedAt,
 	)
