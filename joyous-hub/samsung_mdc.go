@@ -120,7 +120,7 @@ func mdcContentDownloadPacket(url string) ([]byte, error) {
 
 // SendMDCContentDownload wakes the display if needed, then sends content.json URL via MDC.
 func SendMDCContentDownload(ip, contentJSONURL, pin, wifiMAC string) error {
-	return pushSamsungContent(ip, contentJSONURL, pin, wifiMAC, false, 0, nil, SamsungPushOptions{})
+	return pushSamsungContent(ip, contentJSONURL, pin, wifiMAC, false, 0, nil, SamsungPushOptions{}, nil)
 }
 
 // SamsungSleepFunc runs a battery check and sends MDCSleepNow (see Hub.sleepSamsungDisplay).
@@ -135,16 +135,19 @@ type SamsungPushOptions struct {
 }
 
 // PushSamsungContent wakes if needed, pushes content, and optionally sleeps after a delay.
-func PushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc, opts SamsungPushOptions) error {
-	return pushSamsungContent(ip, contentJSONURL, pin, wifiMAC, autoSleep, sleepAfterSec, sleepFn, opts)
+// onWakeAttempt, if non-nil, is called on every poll while waiting for a manual power-button
+// wake (see waitForMDCAwakeManual) — the only way to surface that multi-minute wait as
+// progress to a caller, since this function is otherwise a single blocking call.
+func PushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc, opts SamsungPushOptions, onWakeAttempt func(attempt int)) error {
+	return pushSamsungContent(ip, contentJSONURL, pin, wifiMAC, autoSleep, sleepAfterSec, sleepFn, opts, onWakeAttempt)
 }
 
-func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc, opts SamsungPushOptions) error {
+func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc, opts SamsungPushOptions, onWakeAttempt func(attempt int)) error {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
 	logOutbound("mdc push start ip=%s url=%s wake_mac=%t auto_sleep=%t deep_sleep=%t restore_standby=%t", ip, contentJSONURL, wifiMAC != "", autoSleep, opts.DeepSleepActive, opts.RestoreStandby)
-	if err := ensureMDCAwakeForPush(ip, pin, wifiMAC, opts.DeepSleepActive); err != nil {
+	if err := ensureMDCAwakeForPush(ip, pin, wifiMAC, opts.DeepSleepActive, onWakeAttempt); err != nil {
 		logOutbound("mdc push wake fail ip=%s err=%v", ip, err)
 		return err
 	}
@@ -186,7 +189,7 @@ func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool,
 
 // ensureMDCAwakeForPush tries remote wake when needed, then polls MDC until the frame
 // responds (e.g. after the user presses the power button on the display).
-func ensureMDCAwakeForPush(ip, pin, wifiMAC string, deepSleepActive bool) error {
+func ensureMDCAwakeForPush(ip, pin, wifiMAC string, deepSleepActive bool, onWakeAttempt func(attempt int)) error {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
@@ -195,7 +198,7 @@ func ensureMDCAwakeForPush(ip, pin, wifiMAC string, deepSleepActive bool) error 
 	}
 	if deepSleepActive {
 		logOutbound("mdc push deep sleep ip=%s — waiting for power button", ip)
-		return waitForMDCAwakeManual(ip, pin, mdcManualWakeTimeout, mdcManualWakePoll)
+		return waitForMDCAwakeManual(ip, pin, mdcManualWakeTimeout, mdcManualWakePoll, onWakeAttempt)
 	}
 	if wifiMAC != "" {
 		if err := WakeSamsungDisplay(ip, pin, wifiMAC); err == nil {
@@ -205,10 +208,14 @@ func ensureMDCAwakeForPush(ip, pin, wifiMAC string, deepSleepActive bool) error 
 	} else {
 		logOutbound("mdc push frame asleep ip=%s — waiting for power button (no WiFi MAC for remote wake)", ip)
 	}
-	return waitForMDCAwakeManual(ip, pin, mdcManualWakeTimeout, mdcManualWakePoll)
+	return waitForMDCAwakeManual(ip, pin, mdcManualWakeTimeout, mdcManualWakePoll, onWakeAttempt)
 }
 
-func waitForMDCAwakeManual(ip, pin string, timeout, interval time.Duration) error {
+// waitForMDCAwakeManual polls until the frame responds or timeout elapses. This is the one
+// call in the whole push path that can legitimately take minutes (waiting on a human to hold
+// the power button), so onWakeAttempt — called every poll, before the log throttle below —
+// is the only way a caller finds out it's still in progress rather than stuck.
+func waitForMDCAwakeManual(ip, pin string, timeout, interval time.Duration, onWakeAttempt func(attempt int)) error {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
@@ -219,6 +226,9 @@ func waitForMDCAwakeManual(ip, pin string, timeout, interval time.Duration) erro
 	attempt := 0
 	for time.Now().Before(deadline) {
 		attempt++
+		if onWakeAttempt != nil {
+			onWakeAttempt(attempt)
+		}
 		if attempt == 1 || attempt%6 == 0 {
 			logOutbound("mdc push waiting ip=%s attempt=%d — press power button on display", ip, attempt)
 		}

@@ -891,6 +891,14 @@ func (h *Hub) handleSamsungSleep(w http.ResponseWriter, r *http.Request, frameID
 
 // pushSamsungFrame MDC-pushes the frame's current PNG (wake → content.json → optional sleep).
 func (h *Hub) pushSamsungFrame(frameID string, dev *Device) error {
+	return h.pushSamsungFrameWithProgress(frameID, dev, nil)
+}
+
+// pushSamsungFrameWithProgress is pushSamsungFrame plus an optional callback invoked on every
+// poll while waiting for a manual power-button wake (see waitForMDCAwakeManual) — that wait
+// can legitimately take minutes, and this is the only way a caller (the samsung-bridge, to
+// relay "retrying" status to the hub) finds out it's still in progress rather than stuck.
+func (h *Hub) pushSamsungFrameWithProgress(frameID string, dev *Device, onWakeAttempt func(attempt int)) error {
 	h.ensureSamsungMAC(dev.IP, dev.MDCPin)
 	frameID = h.resolveSamsungFrameID(frameID)
 	if dev2 := h.samsungDeviceByFrameID(frameID); dev2 != nil {
@@ -921,7 +929,7 @@ func (h *Hub) pushSamsungFrame(frameID string, dev *Device) error {
 	err := PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, sleepFn, SamsungPushOptions{
 		DeepSleepActive: cfg.DeepSleepActive,
 		RestoreStandby:  restoreStandby,
-	})
+	}, onWakeAttempt)
 	if err == nil {
 		h.devices.TouchSamsung(dev.IP, "mdc_push")
 		if restoreStandby {

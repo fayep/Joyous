@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"testing"
+	"time"
 )
 
 func TestMDCBatteryQueryPacket(t *testing.T) {
@@ -74,4 +76,54 @@ func TestSamsungWakeMagicKey(t *testing.T) {
 func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// closedLocalIP returns a loopback address with nothing listening, so mdcSessionOK's dial
+// fails fast (connection refused) instead of waiting out a real timeout.
+func closedLocalIP(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split host: %v", err)
+	}
+	return host
+}
+
+// TestWaitForMDCAwakeManualReportsEveryAttempt covers a fix for a frame stuck showing
+// "Sending…" in the UI while the bridge log clearly showed it retrying every ~5s waiting for
+// a power-button wake: waitForMDCAwakeManual is the one call in the push path that can
+// legitimately block for minutes, so onWakeAttempt must fire on every poll of this loop
+// itself — an outer retry loop wrapped around the whole (blocking) call never sees the
+// individual attempts, which is exactly what previously made no progress reach the hub.
+func TestWaitForMDCAwakeManualReportsEveryAttempt(t *testing.T) {
+	ip := closedLocalIP(t)
+	var attempts []int
+	err := waitForMDCAwakeManual(ip, "", 35*time.Millisecond, 10*time.Millisecond, func(attempt int) {
+		attempts = append(attempts, attempt)
+	})
+	if err == nil {
+		t.Fatal("expected an error: nothing is listening on this address")
+	}
+	if len(attempts) < 2 {
+		t.Fatalf("expected at least 2 reported attempts before giving up, got %v", attempts)
+	}
+	for i, a := range attempts {
+		if a != i+1 {
+			t.Fatalf("attempts not sequential from 1: %v", attempts)
+		}
+	}
+}
+
+func TestWaitForMDCAwakeManualNilCallbackIsSafe(t *testing.T) {
+	ip := closedLocalIP(t)
+	err := waitForMDCAwakeManual(ip, "", 15*time.Millisecond, 10*time.Millisecond, nil)
+	if err == nil {
+		t.Fatal("expected an error: nothing is listening on this address")
+	}
 }
