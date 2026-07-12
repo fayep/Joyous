@@ -233,7 +233,14 @@ func (s *SamsungStore) ListFrames() ([]string, error) {
 	return out, nil
 }
 
-// writePNGLocked replaces the frame PNG using lockfile protocol.
+// writePNGLocked replaces the frame PNG using lockfile protocol. Every call — the real MDC push
+// path, calibration uploads, and the manual "upload an image directly to this frame" endpoint
+// alike — bumps the push file_id (see setSamsungPushFileID). content.json advertises this as
+// both the manifest id and the download FileName; the real phone-app protocol we're
+// interoperating with treats an unchanged file_id as "already downloaded, nothing to do" and
+// skips redownloading the image, so writing new PNG bytes without bumping it left the frame
+// stuck on stale content whenever content.json was next served from a path that didn't already
+// call setSamsungPushFileID itself (the manual upload endpoint did not).
 func (s *SamsungStore) writePNGLocked(frameID string, pngData []byte) error {
 	if !validFrameID(frameID) {
 		return fmt.Errorf("invalid frame id")
@@ -267,7 +274,11 @@ func (s *SamsungStore) writePNGLocked(frameID string, pngData []byte) error {
 		os.Remove(tmp)
 		return cerr
 	}
-	return os.Rename(tmp, s.pngPath(frameID))
+	if err := os.Rename(tmp, s.pngPath(frameID)); err != nil {
+		return err
+	}
+	setSamsungPushFileID(frameID, newSamsungPushFileID())
+	return nil
 }
 
 // StoreUpload decodes raw image bytes, dithers to Samsung palette, and writes PNG.

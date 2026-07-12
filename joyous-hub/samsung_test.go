@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -212,6 +213,110 @@ func TestSamsungUploadAPI(t *testing.T) {
 	}
 	if _, err := os.Stat(s.pngPath("kitchen")); err != nil {
 		t.Fatal("png not written")
+	}
+}
+
+// TestWritePNGLockedBumpsPushFileID covers a bug where a frame's physical protocol treats an
+// unchanged content.json file_id/FileName as "already downloaded, nothing to do" — writing new
+// PNG bytes via a path that never called setSamsungPushFileID (e.g. the manual "upload an image
+// directly to this frame" endpoint, handleSamsungImageUpload) left the frame stuck showing the
+// previous image even though the hub's own PNG (and its ETag) had genuinely changed. Every write
+// through writePNGLocked must bump the push file_id so any subsequent content.json fetch reflects
+// the change, regardless of which caller wrote the PNG.
+func TestWritePNGLockedBumpsPushFileID(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSamsungStore(dir)
+	// samsungPush is a package-level global keyed by frameID (see samsung_push.go) shared by
+	// every test in this package — a frameID reused across tests (e.g. "kitchen") can already
+	// have a push file_id set by another test that ran first. Use a name unique to this test.
+	frameID := "write-png-locked-bumps-fileid-test"
+
+	if before := getSamsungPushFileID(frameID); before != "" {
+		t.Fatalf("expected no push file_id before any write, got %q", before)
+	}
+
+	if err := s.writePNGLocked(frameID, testPNG()); err != nil {
+		t.Fatal(err)
+	}
+	first := getSamsungPushFileID(frameID)
+	if first == "" {
+		t.Fatal("expected a push file_id to be assigned after writePNGLocked")
+	}
+
+	if err := s.writePNGLocked(frameID, testPNG()); err != nil {
+		t.Fatal(err)
+	}
+	second := getSamsungPushFileID(frameID)
+	if second == "" || second == first {
+		t.Fatalf("expected a fresh push file_id on the second write: first=%q second=%q", first, second)
+	}
+}
+
+// TestSamsungImageUploadBumpsContentJSONFileID is the end-to-end version of
+// TestWritePNGLockedBumpsPushFileID through the actual manual-upload HTTP handler: two uploads
+// of different content must produce two different content.json file_ids, or a real frame would
+// skip re-downloading the second image.
+func TestSamsungImageUploadBumpsContentJSONFileID(t *testing.T) {
+	h := buildTestHub(t)
+	// See TestWritePNGLockedBumpsPushFileID: samsungPush is a global keyed by frameID, so avoid
+	// "kitchen" (used by TestSamsungUploadAPI) to keep this test's fileID sequence independent.
+	frameID := "samsung-image-upload-bumps-fileid-test"
+
+	uploadOnce := func(pixel uint8) {
+		img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+		for y := 0; y < 4; y++ {
+			for x := 0; x < 4; x++ {
+				img.Set(x, y, color.RGBA{pixel, pixel, pixel, 255})
+			}
+		}
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, img); err != nil {
+			t.Fatal(err)
+		}
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		fw, err := mw.CreateFormFile("file", "manual.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write(buf.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		mw.Close()
+		req := httptest.NewRequest("POST", "/api/samsung/"+frameID+"/image", &body)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		rec := httptest.NewRecorder()
+		h.handleSamsungImageUpload(rec, req, frameID)
+		if rec.Code != 200 {
+			t.Fatalf("upload status %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	contentJSONFileID := func() string {
+		rec := httptest.NewRecorder()
+		h.handleSamsungContentJSON(rec, samsungFrameHTTPRequest("GET", "/samsung/"+frameID+"/content.json", "192.168.1.108"), frameID)
+		if rec.Code != 200 {
+			t.Fatalf("content.json status %d: %s", rec.Code, rec.Body.String())
+		}
+		var manifest struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &manifest); err != nil {
+			t.Fatal(err)
+		}
+		return manifest.ID
+	}
+
+	uploadOnce(10)
+	firstID := contentJSONFileID()
+	if firstID == "" {
+		t.Fatal("expected a non-empty file_id after first upload")
+	}
+
+	uploadOnce(200)
+	secondID := contentJSONFileID()
+	if secondID == firstID {
+		t.Fatalf("content.json file_id unchanged after a second, different upload: %q", secondID)
 	}
 }
 
