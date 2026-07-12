@@ -706,9 +706,17 @@ const indexHTML = `<!DOCTYPE html>
   .mqtt-copy{margin-left:auto;font-size:.68rem;padding:2px 8px;border:1px solid #ccc;border-radius:4px;background:#fff;cursor:pointer;color:#333}
   .mqtt-copy:hover{background:#f0f0f0}
   .mqtt-empty{color:#888;font-size:.9rem;margin:0}
+  #toast-stack{position:fixed;top:1rem;right:1rem;z-index:9999;display:flex;flex-direction:column;gap:.5rem;max-width:320px}
+  .toast{background:#1a1a2e;color:#fff;padding:.7rem 1rem;border-radius:6px;box-shadow:0 2px 8px #0004;font-size:.85rem;line-height:1.4;opacity:0;transform:translateX(8px);transition:opacity .15s,transform .15s;pointer-events:auto;position:relative}
+  .toast.show{opacity:1;transform:translateX(0)}
+  .toast.toast-success{background:#1e6b3a}
+  .toast.toast-error{background:#8a2332}
+  .toast-close{position:absolute;top:.3rem;right:.4rem;background:none;border:none;color:#fff;opacity:.6;cursor:pointer;font-size:.9rem;line-height:1;padding:.2rem}
+  .toast-close:hover{opacity:1}
 </style>
 </head>
 <body>
+<div id="toast-stack"></div>
 <header>
   <h1>Joyous</h1>
   <nav>
@@ -1066,6 +1074,41 @@ document.addEventListener('visibilitychange',()=>{
 
 let devices=[], images=[], activeTab='album', inkjoyBridgeOnline=false, nixplayBridgeOnline=false;
 let schedState={}; // deviceId -> {albumId, times:[...], enabled} — in-progress schedule editor state
+
+// ── Toasts (top-right) ───────────────────────────────────────────────────────
+const toastStack=document.getElementById('toast-stack');
+const toastEls={}; // id -> element, so repeated updates (e.g. retry ticks) replace in place
+
+function showToast(id,message,opts){
+  opts=opts||{};
+  let el=toastEls[id];
+  if(!el){
+    el=document.createElement('div');
+    toastStack.appendChild(el);
+    toastEls[id]=el;
+  }
+  clearTimeout(el._hideTimer);
+  el.className='toast'+(opts.type?' toast-'+opts.type:'');
+  el.textContent=message;
+  if(opts.closable){
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='toast-close';
+    btn.textContent='×';
+    btn.onclick=()=>dismissToast(id);
+    el.appendChild(btn);
+  }
+  requestAnimationFrame(()=>el.classList.add('show'));
+  if(opts.autoHideMs) el._hideTimer=setTimeout(()=>dismissToast(id),opts.autoHideMs);
+}
+
+function dismissToast(id){
+  const el=toastEls[id];
+  if(!el) return;
+  clearTimeout(el._hideTimer);
+  el.classList.remove('show');
+  setTimeout(()=>{el.remove();delete toastEls[id];},200);
+}
 
 async function refreshBridgeNav(){
   try{
@@ -2330,18 +2373,20 @@ async function waitSendDelivered(sendId,onTick){
   return false;
 }
 
-// applySendDeliveryTick renders live /api/send/{sendId} status onto a feedback button. The
-// "retrying" status (and the power-button hint for Samsung) comes straight from the server —
-// see send_delivery.go's IncrementRetry and main_samsung_bridge.go's pushSamsungFrameWithRetry
-// — rather than the client guessing from a fixed timer how long a send "should" take.
-function applySendDeliveryTick(el,j,dev){
-  if(!el||!j) return;
+// showSendProgressToast renders live /api/send/{sendId} status as a top-right toast (not
+// button/status-line text — a "Retrying (N)…" message crammed into a small button was hard to
+// read and fighting for space with the button's own label). The "retrying" status and the
+// power-button hint for Samsung come straight from the server — see send_delivery.go's
+// IncrementRetry and samsung_mdc.go's waitForMDCAwakeManual — rather than the client guessing
+// from a fixed timer how long a send "should" take.
+function showSendProgressToast(toastId,j,dev){
+  if(!toastId||!j) return;
   if(j.status==='retrying'){
     const hint=dev&&dev.type==='samsung'?SAMSUNG_DEEP_SLEEP_WAKE_MSG+' — ':'';
-    el.textContent=hint+'Retrying ('+j.retry_attempts+')…';
+    showToast(toastId,hint+'Retrying ('+j.retry_attempts+')…');
     return;
   }
-  if(j.status==='downloading') el.textContent='Downloading…';
+  if(j.status==='downloading') showToast(toastId,'Downloading…');
 }
 
 async function doSend(imageId, deviceId, feedbackBtn){
@@ -2358,9 +2403,11 @@ async function doSend(imageId, deviceId, feedbackBtn){
     }
     const sendId=await postDisplay(deviceId,imageId);
     if(sendId&&feedbackBtn&&dev?.type!=='samsung') feedbackBtn.textContent='Downloading…';
+    const toastId=sendId?'send-'+sendId:null;
     const delivered=sendId?await waitSendDelivered(sendId,j=>{
-      if(feedbackBtn) applySendDeliveryTick(feedbackBtn,j,dev);
+      showSendProgressToast(toastId,j,dev);
     }):false;
+    if(toastId) dismissToast(toastId);
     if(feedbackBtn){
       feedbackBtn.textContent=delivered?'✓ Sent':(sendId?'Sent (unconfirmed)':'✓ Sent');
       setTimeout(()=>{feedbackBtn.textContent=orig;feedbackBtn.disabled=false;},2000);
@@ -2532,9 +2579,11 @@ async function sendCalibrationChart(){
     const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/calibration',{method:'POST'});
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
+    const toastId=j.send_id?'send-'+j.send_id:null;
     const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      if(st) applySendDeliveryTick(st,j,{type:'samsung'});
+      showSendProgressToast(toastId,j,{type:'samsung'});
     }):false;
+    if(toastId) dismissToast(toastId);
     if(st) st.textContent=delivered?'✓ Sent to display':'Sent (unconfirmed)';
     await loadDevicesInner();
     loadSamsungFrames();
@@ -3162,9 +3211,11 @@ async function overlaySend(deviceId){
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
     if(btn&&d?.type!=='samsung') btn.textContent='Downloading…';
+    const toastId=j.send_id?'send-'+j.send_id:null;
     const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      if(btn) applySendDeliveryTick(btn,j,d);
+      showSendProgressToast(toastId,j,d);
     }):false;
+    if(toastId) dismissToast(toastId);
     if(btn){
       btn.textContent=delivered?'✓ Sent':'Sent (unconfirmed)';
       setTimeout(()=>{btn.textContent=orig;btn.disabled=false;},2000);
@@ -3880,9 +3931,11 @@ async function samsungPushCurrent(){
     const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/push',{method:'POST'});
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
+    const toastId=j.send_id?'send-'+j.send_id:null;
     const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      if(st) applySendDeliveryTick(st,j,dev);
+      showSendProgressToast(toastId,j,dev);
     }):false;
+    if(toastId) dismissToast(toastId);
     if(document.getElementById('samsung-auto-sleep').checked){
       const delay=parseInt(document.getElementById('samsung-sleep-delay').value,10)||15;
       if(st) st.textContent=delivered?('✓ Pushed — frame will sleep in ~'+delay+'s…'):'Pushed (unconfirmed)';
