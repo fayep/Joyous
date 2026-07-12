@@ -30,6 +30,7 @@ type Hub struct {
 	inkjoyRetry    *InkJoySendRetry
 	overlay        *OverlayStore
 	color          *ColorStore
+	scheduledSends *ScheduledSendStore
 	weather        weatherClient
 	bridgeCoord    *bridgehub.Coordinator
 	hubIP          string
@@ -1047,6 +1048,7 @@ document.addEventListener('visibilitychange',()=>{
 });
 
 let devices=[], images=[], activeTab='album', inkjoyBridgeOnline=false, nixplayBridgeOnline=false;
+let schedState={}; // deviceId -> {albumId, times:[...], enabled} — in-progress schedule editor state
 
 async function refreshBridgeNav(){
   try{
@@ -2809,28 +2811,133 @@ async function ijDeleteDevice(){
   loadIJFrames();
 }
 
+function deviceStatusHTML(d){
+  const type=d.type||'inkjoy';
+  return type==='samsung'
+    ? (d.connected?'<span class="badge online">active</span>':'<span class="badge offline">'+samsungOfflineLabel(d)+'</span>')
+    : (d.connected?'<span class="badge online">online</span>':'<span class="badge offline">'+inkjoyOfflineLabel(d)+'</span>');
+}
+
+function deviceMetaHTML(d){
+  const type=d.type||'inkjoy';
+  return type==='inkjoy'
+    ? ((d.firmware?'fw '+d.firmware+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.rssi?'📶'+d.rssi+'dBm ':''))
+    : (d.ip?d.ip+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.power_source?('<span style="color:#666">'+d.power_source+' </span>'):'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
+}
+
+function deviceCardHTML(d){
+  const label=d.name||d.mac||d.ip||d.id;
+  const type=d.type||'inkjoy';
+  const refreshBtn=type==='inkjoy'?'<button class="btn btn-sm btn-primary" onclick="refreshDevice(\''+d.id+'\')">Refresh display</button> ':'';
+  return '<div class="card" id="card-'+d.id+'" data-device-id="'+d.id+'">'+
+    '<span class="badge" style="background:#eee;color:#333;margin-right:.5rem">'+type+'</span>'+
+    '<strong id="label-'+d.id+'">'+label+'</strong> '+
+    '<span id="status-'+d.id+'">'+deviceStatusHTML(d)+'</span> '+
+    '<span id="meta-'+d.id+'" style="margin-left:.5rem;color:#666;font-size:.9rem">'+deviceMetaHTML(d)+'</span>'+
+    '<div style="margin-top:.5rem">'+refreshBtn+
+    '<button class="btn btn-sm btn-primary" onclick="sendToFrame(\''+d.id+'\')">Send image</button> '+
+    '<button class="btn btn-sm" onclick="toggleSchedule(\''+d.id+'\')">Scheduled sends</button>'+
+    '</div>'+
+    '<div id="sched-'+d.id+'" style="display:none;margin-top:.6rem;padding-top:.6rem;border-top:1px solid #eee"></div>'+
+    '</div>';
+}
+
+// loadDevicesInner patches the existing card for each still-present device in place
+// (label/status/meta only) rather than replacing the whole #device-list innerHTML, so an
+// open "Scheduled sends" editor — or any other in-progress interaction inside a card — isn't
+// destroyed by the 5s poll. Cards are only fully added/removed when a device appears/disappears.
 async function loadDevicesInner(){
   const r=await fetch('/api/devices'); devices=await r.json();
   const el=document.getElementById('device-list');
   if(!devices||!devices.length){el.innerHTML='<p>No frames yet. Connect an InkJoy frame via MQTT, or click Discover for Samsung displays.</p>';return;}
-  el.innerHTML=devices.map(d=>{
+  if(!el.querySelector('.card')) el.innerHTML=''; // coming from the empty-state message or first load
+  const seen=new Set();
+  devices.forEach(d=>{
+    seen.add(d.id);
+    const card=document.getElementById('card-'+d.id);
+    if(!card){
+      el.insertAdjacentHTML('beforeend', deviceCardHTML(d));
+      return;
+    }
     const label=d.name||d.mac||d.ip||d.id;
-    const type=d.type||'inkjoy';
-    const status=type==='samsung'
-      ? (d.connected?'<span class="badge online">active</span>':'<span class="badge offline">'+samsungOfflineLabel(d)+'</span>')
-      : (d.connected?'<span class="badge online">online</span>':'<span class="badge offline">'+inkjoyOfflineLabel(d)+'</span>');
-    const meta=type==='inkjoy'
-      ? ((d.firmware?'fw '+d.firmware+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.rssi?'📶'+d.rssi+'dBm ':''))
-      : (d.ip?d.ip+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.power_source?('<span style="color:#666">'+d.power_source+' </span>'):'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
-    const refreshBtn=type==='inkjoy'?'<button class="btn btn-sm btn-primary" onclick="refreshDevice(\''+d.id+'\')">Refresh display</button> ':'';
-    return '<div class="card">'+
-      '<span class="badge" style="background:#eee;color:#333;margin-right:.5rem">'+type+'</span>'+
-      '<strong>'+label+'</strong> '+status+' '+
-      '<span style="margin-left:.5rem;color:#666;font-size:.9rem">'+meta+'</span>'+
-      '<div style="margin-top:.5rem">'+refreshBtn+
-      '<button class="btn btn-sm btn-primary" onclick="sendToFrame(\''+d.id+'\')">Send image</button>'+
-      '</div></div>';
-  }).join('');
+    const labelEl=document.getElementById('label-'+d.id);
+    if(labelEl) labelEl.textContent=label;
+    const statusEl=document.getElementById('status-'+d.id);
+    if(statusEl) statusEl.innerHTML=deviceStatusHTML(d);
+    const metaEl=document.getElementById('meta-'+d.id);
+    if(metaEl) metaEl.innerHTML=deviceMetaHTML(d);
+  });
+  el.querySelectorAll('.card[data-device-id]').forEach(card=>{
+    if(!seen.has(card.dataset.deviceId)) card.remove();
+  });
+}
+
+// ── Scheduled sends (Devices tab) ────────────────────────────────────────────
+
+async function toggleSchedule(deviceId){
+  const el=document.getElementById('sched-'+deviceId);
+  if(!el)return;
+  if(el.style.display==='none'){
+    el.style.display='block';
+    await loadSchedule(deviceId);
+  }else{
+    el.style.display='none';
+  }
+}
+
+async function loadSchedule(deviceId){
+  const el=document.getElementById('sched-'+deviceId);
+  if(!el)return;
+  el.innerHTML='Loading…';
+  if(!albums||!albums.length) await loadAlbums();
+  try{
+    const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/schedule');
+    const cfg=r.ok?await r.json():{};
+    schedState[deviceId]={albumId:cfg.album_id||'',times:(cfg.times||[]).slice(),enabled:!!cfg.enabled};
+  }catch(e){
+    schedState[deviceId]={albumId:'',times:[],enabled:false};
+  }
+  renderSchedule(deviceId);
+}
+
+function renderSchedule(deviceId){
+  const el=document.getElementById('sched-'+deviceId);
+  if(!el)return;
+  const st=schedState[deviceId]||{albumId:'',times:[],enabled:false};
+  const albumOpts='<option value="">— choose album —</option>'+
+    albums.map(a=>'<option value="'+a.id+'"'+(a.id===st.albumId?' selected':'')+'>'+escHtml(a.name||a.id)+'</option>').join('');
+  const timeRows=st.times.map((t,i)=>
+    '<div style="margin:.25rem 0"><input type="time" value="'+t+'" onchange="updateSchedTime(\''+deviceId+'\','+i+',this.value)"> '+
+    '<button type="button" class="btn btn-sm" onclick="removeSchedTime(\''+deviceId+'\','+i+')">✕</button></div>'
+  ).join('');
+  el.innerHTML=
+    '<div style="color:#666;font-size:.85rem;margin-bottom:.4rem">Send a random photo from an album at each time below.</div>'+
+    '<label style="display:block;margin-bottom:.4rem"><input type="checkbox" '+(st.enabled?'checked':'')+' onchange="setSchedEnabled(\''+deviceId+'\',this.checked)"> Enabled</label>'+
+    '<select onchange="setSchedAlbum(\''+deviceId+'\',this.value)">'+albumOpts+'</select>'+
+    '<div style="margin-top:.5rem">'+(timeRows||'<span style="color:#888;font-size:.85rem">No times set.</span>')+'</div>'+
+    '<button type="button" class="btn btn-sm" onclick="addSchedTime(\''+deviceId+'\')">+ Add time</button> '+
+    '<button type="button" class="btn btn-sm btn-primary" onclick="saveSchedule(\''+deviceId+'\')">Save</button>'+
+    '<span id="sched-status-'+deviceId+'" style="margin-left:.5rem;color:#666;font-size:.85rem"></span>';
+}
+
+function setSchedAlbum(deviceId,albumId){schedState[deviceId].albumId=albumId;}
+function setSchedEnabled(deviceId,enabled){schedState[deviceId].enabled=enabled;}
+function addSchedTime(deviceId){schedState[deviceId].times.push('09:00');renderSchedule(deviceId);}
+function removeSchedTime(deviceId,i){schedState[deviceId].times.splice(i,1);renderSchedule(deviceId);}
+function updateSchedTime(deviceId,i,v){schedState[deviceId].times[i]=v;}
+
+async function saveSchedule(deviceId){
+  const st=schedState[deviceId];
+  if(!st)return;
+  if(st.enabled&&!st.albumId){alert('Choose an album first.');return;}
+  if(st.enabled&&!st.times.length){alert('Add at least one time first.');return;}
+  const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/schedule',{
+    method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({album_id:st.albumId,times:st.times,enabled:st.enabled})
+  });
+  if(!r.ok){alert('Error: '+(await r.text()));return;}
+  const status=document.getElementById('sched-status-'+deviceId);
+  if(status){status.textContent='Saved';setTimeout(()=>{if(status)status.textContent='';},1500);}
 }
 
 showTab('album', document.querySelector('nav button.active'));

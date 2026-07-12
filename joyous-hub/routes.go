@@ -20,6 +20,12 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 		hub.handleDeviceDelete(w, r, r.PathValue("id"))
 	})
 	mux.HandleFunc("POST /api/devices/discover", hub.handleDiscover)
+	mux.HandleFunc("GET /api/devices/{id}/schedule", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleScheduledSendGet(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("PUT /api/devices/{id}/schedule", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleScheduledSendPut(w, r, r.PathValue("id"))
+	})
 	mux.HandleFunc("GET /api/ui/revision", hub.handleUIRevision)
 	mux.HandleFunc("GET /api/tags", hub.handleTagsList)
 	mux.HandleFunc("GET /api/albums", hub.handleAlbumsList)

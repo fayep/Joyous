@@ -150,6 +150,7 @@ func main() {
 		sendDelivery:   sendDelivery,
 		overlay:        NewOverlayStore(*dataDir),
 		color:          colorStore,
+		scheduledSends: NewScheduledSendStore(*dataDir),
 		publisher:      &bridgeCoordinatorPublisher{coord: bridgeCoord},
 		bridgeCoord:    bridgeCoord,
 		joyousMQTTLog:  joyousMQTTLog,
@@ -175,6 +176,8 @@ func main() {
 		log.Fatalf("broker serve: %v", err)
 	}
 	log.Printf("Joyous MQTT broker listening on %s (bridges connect here)", *mqttAddr)
+
+	startScheduledSendScheduler(ctx, hub)
 
 	go func() {
 		log.Printf("HTTP server listening on %s (images at http://%s)", *httpAddr, addr)

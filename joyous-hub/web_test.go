@@ -33,6 +33,7 @@ func buildTestHub(t *testing.T) *Hub {
 		sendDelivery:   NewSendDeliveryTracker(),
 		overlay:        NewOverlayStore(dir),
 		color:          colorStore,
+		scheduledSends: NewScheduledSendStore(dir),
 		publisher:      &noopPublisher{},
 		mqttLog:        NewMQTTLogBuffer(20),
 	}
