@@ -35,7 +35,6 @@ type Hub struct {
 	hubIP          string
 	publisher      MQTTPublisher
 	serverAddr     string
-	mqttPort       int
 	mqttLog        *MQTTLogBuffer // inkjoy-bridge frame MQTT (unused on hub)
 	joyousMQTTLog  *MQTTLogBuffer // hub broker: bridge↔hub joyous protocol
 }
@@ -113,46 +112,6 @@ func localHHMMToUTC(hhmm string) string {
 		return hhmm
 	}
 	return t.UTC().Format("15:04")
-}
-
-// handleBLEScan serves POST /api/inkjoy/ble/scan — scans for IJ_ BLE frames.
-func (h *Hub) handleBLEScan(w http.ResponseWriter, r *http.Request) {
-	frames, err := ScanBLEFrames(8 * time.Second)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(frames)
-}
-
-// handleBLEAdopt serves POST /api/inkjoy/ble/adopt — provisions a frame via BluFi.
-func (h *Hub) handleBLEAdopt(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Address string `json:"address"`
-		SSID    string `json:"ssid"`
-		WifiPwd string `json:"wifi_pwd"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Address == "" || body.SSID == "" {
-		http.Error(w, "address, ssid and wifi_pwd required", http.StatusBadRequest)
-		return
-	}
-
-	// Derive MQTT host from hub's server address (same host, different port).
-	mqttHost := h.hubIP
-	if mqttHost == "" {
-		mqttHost, _, _ = net.SplitHostPort(h.serverAddr)
-	}
-	if mqttHost == "" {
-		mqttHost = h.serverAddr
-	}
-
-	if err := AdoptBLEFrame(body.Address, body.SSID, body.WifiPwd, mqttHost, h.mqttPort, "inkjoy", "inkjoy"); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 // handleSleep serves POST /api/devices/{id}/sleep — sends wifi_sleep to an InkJoy frame.
@@ -2557,7 +2516,7 @@ async function startBLEScan(){
   const res=document.getElementById('ble-scan-results');
   btn.disabled=true; st.textContent='Scanning for 8 seconds…'; res.innerHTML='';
   try{
-    const r=await fetch('/api/inkjoy/ble/scan',{method:'POST'});
+    const r=await fetch('/inkjoy/api/ble/scan',{method:'POST'});
     if(!r.ok) throw new Error(await r.text());
     const frames=await r.json();
     if(!frames||!frames.length){st.textContent='No InkJoy frames found nearby.';return;}
@@ -2601,7 +2560,7 @@ async function submitAdopt(){
   const btn=document.getElementById('adopt-submit-btn');
   st.textContent='Connecting via Bluetooth…'; btn.disabled=true;
   try{
-    const r=await fetch('/api/inkjoy/ble/adopt',{
+    const r=await fetch('/inkjoy/api/ble/adopt',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({address:adoptTarget.address,ssid,wifi_pwd:pwd})
     });

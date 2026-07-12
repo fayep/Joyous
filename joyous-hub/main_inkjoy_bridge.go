@@ -143,6 +143,10 @@ func main() {
 	})
 	inkjoyRetry := NewInkJoySendRetry(&Hub{
 		devices: devices, sendDelivery: sendDelivery, publisher: srvPublisher{srv: srv},
+		// overlay/images/color are wired so a hub-mode retry (r.resend unset)
+		// can still rebuild an overlay-enabled send body — buildSendImageBody
+		// hard-errors on a nil h.overlay when the entry's overlayToken is set.
+		overlay: overlayStore, images: imageStore, color: colorStore,
 	})
 	srv.SetInjectedPlayCheck(isInjectedPlay, func(ackMsgid string, result int) {
 		inkjoyRetry.OnPlayAck(ackMsgid, result)
@@ -300,8 +304,6 @@ func handleInkJoyBridgeCommand(
 		if json.Unmarshal(cmd.Body, &cfg) == nil && cfg.Host != "" {
 			_ = srv.PublishToFrame(dev.MAC, inkjoybridge.BuildMQTTConfigPayload(dev.MAC, cfg))
 		}
-	case protocol.CmdBLEScan, protocol.CmdBLEAdopt:
-		log.Printf("inkjoy-bridge: BLE commands handled locally (not yet forwarded via MQTT cmd)")
 	case "mqtt.publish":
 		var body struct {
 			Topic   string `json:"topic"`

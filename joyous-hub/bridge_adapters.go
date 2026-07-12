@@ -107,6 +107,9 @@ func (a *playRelayAdapter) OnExternalPlay(mac string, payload []byte) {
 // SyncBridgeDevices replaces devices owned by a bridge with a fresh snapshot.
 // Hub-observed Samsung contacts (HTTP pulls on :18080) are preserved when newer
 // than the bridge snapshot — otherwise devices.sync every 10s marks frames offline.
+// This preservation is Samsung-specific (only Samsung has that independent
+// hub-side contact channel); InkJoy and Nixplay devices apply the bridge's
+// snapshot as-is.
 func (r *DeviceRegistry) SyncBridgeDevices(bridgeID string, devices []protocol.BridgeDevice) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -117,26 +120,24 @@ func (r *DeviceRegistry) SyncBridgeDevices(bridgeID string, devices []protocol.B
 	}
 	preserved := make(map[string]contact)
 	for id, d := range r.m {
-		if d.bridgeID == bridgeID {
+		if d.bridgeID == bridgeID && d.Type == DeviceTypeSamsung {
 			preserved[id] = contact{
 				lastSeen:        d.LastSeen,
 				lastAction:      d.LastAction,
 				deepSleepActive: d.DeepSleepActive,
 			}
+		}
+		if d.bridgeID == bridgeID {
 			delete(r.m, id)
 		}
 	}
 	for _, bd := range devices {
 		r.applyBridgeDeviceLocked(bridgeID, bd)
-		p, ok := preserved[bd.ID]
-		if !ok {
-			continue
-		}
 		d := r.m[bd.ID]
-		if d == nil {
+		if d == nil || d.Type != DeviceTypeSamsung {
 			continue
 		}
-		if p.lastSeen.After(d.LastSeen) {
+		if p, ok := preserved[bd.ID]; ok && p.lastSeen.After(d.LastSeen) {
 			d.LastSeen = p.lastSeen
 			if p.lastAction != "" {
 				d.LastAction = p.lastAction
@@ -147,9 +148,7 @@ func (r *DeviceRegistry) SyncBridgeDevices(bridgeID string, devices []protocol.B
 				d.DeepSleepActive = false
 			}
 		}
-		if d.Type == DeviceTypeSamsung {
-			ApplySamsungConnected(d)
-		}
+		ApplySamsungConnected(d)
 	}
 }
 

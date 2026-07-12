@@ -38,9 +38,15 @@ type Client struct {
 	email    string
 	password string
 
-	mu          sync.Mutex
+	mu          sync.Mutex // protects token/tokenExpiry
 	token       string
 	tokenExpiry time.Time
+
+	// signInMu serializes ensureToken's check-then-sign-in so concurrent
+	// callers (e.g. the periodic playlist refresh and a concurrent
+	// send.image) don't each independently discover an expired token and
+	// both perform a redundant /v1/auth/signin.
+	signInMu sync.Mutex
 }
 
 // NewClient builds a client for the given Nixplay account. Call EnsureToken
@@ -92,6 +98,9 @@ func (c *Client) SignIn(ctx context.Context) error {
 
 // ensureToken signs in if there's no token yet or it's near expiry.
 func (c *Client) ensureToken(ctx context.Context) (string, error) {
+	c.signInMu.Lock()
+	defer c.signInMu.Unlock()
+
 	c.mu.Lock()
 	token := c.token
 	expiry := c.tokenExpiry

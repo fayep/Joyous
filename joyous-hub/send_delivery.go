@@ -100,7 +100,10 @@ func (t *SendDeliveryTracker) BindInkJoy(sendID, msgid string) {
 		}
 		d.inkjoyMsgID = msgid
 	}
-	// Hub registers sends; bridge only binds msgid from send.image cmd.
+	// Bridge can bind a msgid for a sendID the hub hasn't (or no longer)
+	// Register()'d — see TestBindInkJoyWithoutRegister. Track it anyway so
+	// SendIDForInkJoyMsgid still resolves; CompleteInkJoy's own byID lookup
+	// is what actually gates whether a completion has anywhere to land.
 	t.inkjoyByMsgID[msgid] = sendID
 }
 

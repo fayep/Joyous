@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"slices"
 	"sync"
 	"time"
 
@@ -238,31 +239,38 @@ func (c *Coordinator) ProxyUIHTTP(ctx context.Context, bridgeID string, req prot
 	return c.ProxyBridgeHTTP(ctx, bridgeID, req)
 }
 
-// BridgeOnline reports whether a bridge has announced presence recently.
-func (c *Coordinator) BridgeOnline(bridgeID string) bool {
-	c.mu.RLock()
-	rec, ok := c.bridges[bridgeID]
-	c.mu.RUnlock()
-	if !ok {
-		return false
-	}
+// bridgeOnlineLocked reports whether rec is within the presence TTL. Callers
+// must hold c.mu (read or write).
+func bridgeOnlineLocked(rec bridgeRecord) bool {
 	return time.Since(rec.lastSeen) <= bridgePresenceTTL
 }
 
+// BridgeOnline reports whether a bridge has announced presence recently.
+//
+// This and HasCapability each take their own lock and check the TTL against
+// time.Now() at the moment they're called — two calls made from different,
+// causally-unrelated requests (e.g. a UI list request, then a later proxy
+// request) can therefore disagree if lastSeen crosses the TTL boundary
+// between them. That's an inherent property of polling a freshness window
+// from independent call sites, not a fixable bug in either method itself;
+// don't rely on one call's result still being true by the time of another.
+func (c *Coordinator) BridgeOnline(bridgeID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	rec, ok := c.bridges[bridgeID]
+	return ok && bridgeOnlineLocked(rec)
+}
+
 // HasCapability reports whether an online bridge advertises a capability.
+// See BridgeOnline's doc comment for the same-TTL caveat.
 func (c *Coordinator) HasCapability(bridgeID, cap string) bool {
 	c.mu.RLock()
+	defer c.mu.RUnlock()
 	rec, ok := c.bridges[bridgeID]
-	c.mu.RUnlock()
-	if !ok || time.Since(rec.lastSeen) > bridgePresenceTTL {
+	if !ok || !bridgeOnlineLocked(rec) {
 		return false
 	}
-	for _, c := range rec.hello.Capabilities {
-		if c == cap {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(rec.hello.Capabilities, cap)
 }
 
 // UIState returns cached bridge tab state.
@@ -341,13 +349,14 @@ func splitTopic(topic string) []string {
 
 // Client connects a bridge process to the hub broker.
 type Client struct {
-	bridgeID string
-	kind     string
-	client   mqtt.Client
-	onCmd    func(protocol.CmdPayload)
-	onUI     func(protocol.UIActionPayload)
-	uiHTTP   UIHTTPHandler
-	hello    protocol.HelloPayload
+	bridgeID      string
+	kind          string
+	client        mqtt.Client
+	onCmd         func(protocol.CmdPayload)
+	onUI          func(protocol.UIActionPayload)
+	uiHTTP        UIHTTPHandler
+	hello         protocol.HelloPayload
+	heartbeatOnce sync.Once
 }
 
 // UIHTTPHandler serves bridge-owned configuration pages.
@@ -389,7 +398,11 @@ func Connect(cfg ClientConfig) (*Client, error) {
 			mc.Subscribe(protocol.HubTopic(cfg.BridgeID, "cmd"), 1, c.onCmdMessage)
 			mc.Subscribe(protocol.HubTopic(cfg.BridgeID, "ui"), 1, c.onUIMessage)
 			c.publishHello(mc)
-			go c.heartbeat(mc)
+			// paho reuses the same mqtt.Client across auto-reconnects, so
+			// OnConnectHandler fires again on every reconnect — start the
+			// heartbeat loop only once per Client, not once per connection,
+			// or each reconnect leaks another permanently-running goroutine.
+			c.heartbeatOnce.Do(func() { go c.heartbeat(mc) })
 		})
 	c.client = mqtt.NewClient(opts)
 	tok := c.client.Connect()
@@ -400,12 +413,16 @@ func Connect(cfg ClientConfig) (*Client, error) {
 	return c, nil
 }
 
+// heartbeat runs once for the lifetime of the Client (see heartbeatOnce in
+// Connect). mc is the same underlying mqtt.Client across auto-reconnects, so
+// this single loop just skips publishing while disconnected rather than
+// exiting — exiting here would mean no heartbeat resumes after a reconnect.
 func (c *Client) heartbeat(mc mqtt.Client) {
 	tick := time.NewTicker(15 * time.Second)
 	defer tick.Stop()
 	for range tick.C {
 		if mc == nil || !mc.IsConnected() {
-			return
+			continue
 		}
 		c.publishHello(mc)
 	}
@@ -434,7 +451,7 @@ func (c *Client) onCmdMessage(_ mqtt.Client, msg mqtt.Message) {
 
 func longRunningBridgeCmd(cmd string) bool {
 	switch cmd {
-	case protocol.CmdSendImage, protocol.CmdBLEScan, protocol.CmdBLEAdopt:
+	case protocol.CmdSendImage:
 		return true
 	default:
 		return false

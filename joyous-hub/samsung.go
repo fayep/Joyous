@@ -575,12 +575,24 @@ func (h *Hub) handleSamsungPNG(w http.ResponseWriter, r *http.Request, frameID s
 		return
 	}
 	path := h.samsung.pngPath(frameID)
-	info, err := os.Stat(path)
+	// Open once and derive size/etag/body from the same file descriptor: a
+	// concurrent writePNGLocked rename swaps the directory entry to a new
+	// inode but never touches bytes already open here, so Content-Length
+	// always matches what's actually written below — a separate Stat (or
+	// PNGInfo's own independent Stat) plus ReadFile can straddle a rename.
+	f, err := os.Open(path)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	etag, _, _ := h.samsung.PNGInfo(frameID)
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d", frameID, info.Size(), info.ModTime().UnixNano())))
+	etag := hex.EncodeToString(sum[:8])
 	h.noteSamsungFrameSeen(r, frameID, "png")
 	if h.sendDelivery != nil && r.Method != http.MethodHead {
 		h.sendDelivery.CompleteSamsung(frameID, etag)
@@ -597,7 +609,7 @@ func (h *Hub) handleSamsungPNG(w http.ResponseWriter, r *http.Request, frameID s
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(f)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return

@@ -1,3 +1,8 @@
+//go:build inkjoybridge
+
+// BLE (BluFi) frame provisioning. Only inkjoy-bridge needs this — the plain
+// hub doesn't talk Bluetooth at all; BLE scan/adopt is tunneled to the bridge
+// over MQTT via inkjoy_bridge_ui.go, the same way its config UI is.
 package main
 
 import (

@@ -150,8 +150,6 @@ const (
 	CmdSamsungSleep  = "samsung.sleep"
 	CmdSamsungConfig = "samsung.config"
 	CmdDeviceTouch   = "device.touch" // hub → bridge: LastSeen/action from hub-side contact
-	CmdBLEScan       = "ble.scan"
-	CmdBLEAdopt      = "ble.adopt"
 )
 
 // CropRect is a normalized (0–1) rectangle within the source image.

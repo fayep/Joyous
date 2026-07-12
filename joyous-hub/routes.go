@@ -6,8 +6,9 @@ import (
 )
 
 func registerRoutes(mux *http.ServeMux, hub *Hub) {
-	mux.HandleFunc("POST /api/inkjoy/ble/scan", hub.handleBLEScan)
-	mux.HandleFunc("POST /api/inkjoy/ble/adopt", hub.handleBLEAdopt)
+	// BLE scan/adopt are handled by inkjoy-bridge (see inkjoy_bridge_ui.go)
+	// and reached through the generic bridge proxy at /inkjoy/api/ble/…
+	// (bridge_routes.go); the hub itself has no Bluetooth dependency.
 	mux.HandleFunc("GET /api/devices", hub.handleDevices)
 	mux.HandleFunc("PATCH /api/devices/{id}", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleDevicePatch(w, r, r.PathValue("id"))

@@ -138,7 +138,6 @@ func main() {
 	if addr == "" {
 		addr = localAddr(*httpAddr)
 	}
-	mqttPortNum := DefaultInkJoyFrameMQTTPort
 	hubIP := resolvedLANIP(addr)
 	hub := &Hub{
 		devices:        devices,
@@ -155,7 +154,6 @@ func main() {
 		bridgeCoord:    bridgeCoord,
 		joyousMQTTLog:  joyousMQTTLog,
 		serverAddr:     addr,
-		mqttPort:       mqttPortNum,
 		hubIP:          hubIP,
 	}
 	hub.migrateSamsungFramesOnStartup()

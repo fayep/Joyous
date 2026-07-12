@@ -97,14 +97,30 @@ func (r *InkJoySendRetry) track(sendID, deviceID, imageID, overlayToken, hubBase
 	if oldSendID, ok := r.byDevice[deviceID]; ok && oldSendID != sendID {
 		r.removeLocked(oldSendID)
 	}
+	// bridgeDeliverInkJoyImage calls TrackFromBridge on every successful
+	// publish, including bridge-mode resends (doRetry's r.resend callback) —
+	// not just the first send for this sendID. Preserve attempts/created
+	// across those re-tracks, or the give-up limits (inkjoySendMaxAttempts/
+	// inkjoySendMaxAge) never trip: doRetry can't increment the old *entry
+	// itself since this replaces it in r.pending before doRetry's post-resend
+	// code runs.
+	attempts := 1
+	created := time.Now()
+	if existing, ok := r.pending[sendID]; ok {
+		attempts = existing.attempts + 1
+		created = existing.created
+		if existing.ackTimer != nil {
+			existing.ackTimer.Stop()
+		}
+	}
 	entry := &inkjoyRetryEntry{
 		sendID:       sendID,
 		deviceID:     deviceID,
 		imageID:      imageID,
 		overlayToken: overlayToken,
 		hubBaseURL:   hubBaseURL,
-		attempts:     1,
-		created:      time.Now(),
+		attempts:     attempts,
+		created:      created,
 		lastAttempt:  time.Now(),
 	}
 	r.pending[sendID] = entry
@@ -275,19 +291,14 @@ func (r *InkJoySendRetry) onAckTimeout(sendID string) {
 
 func (r *InkJoySendRetry) doRetry(entry *inkjoyRetryEntry) {
 	if r.resend != nil {
-		err := r.resend(entry)
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		cur, ok := r.pending[entry.sendID]
-		if !ok || cur != entry {
-			return
-		}
-		entry.attempts++
-		entry.lastAttempt = time.Now()
-		if err != nil {
+		// bridgeDeliverInkJoyImage calls TrackFromBridge (see track(), which
+		// carries attempts/created forward and reschedules the ack timer)
+		// before it even attempts the MQTT publish below — on both success
+		// and publish failure. So there's nothing left to update on `entry`
+		// here; it's already stale by the time resend() returns. Only log.
+		if err := r.resend(entry); err != nil {
 			log.Printf("inkjoy send retry publish failed device=%s: %v", entry.deviceID, err)
 		}
-		r.scheduleAckTimeoutLocked(entry)
 		return
 	}
 	if r.hub == nil {
@@ -300,7 +311,7 @@ func (r *InkJoySendRetry) doRetry(entry *inkjoyRetryEntry) {
 	}
 	if r.hub.sendDelivery != nil {
 		d := r.hub.sendDelivery.Get(entry.sendID)
-		if d == nil || d.Status != sendStatusPending {
+		if d == nil || (d.Status != sendStatusPending && d.Status != sendStatusDownloading) {
 			r.Clear(entry.sendID)
 			return
 		}

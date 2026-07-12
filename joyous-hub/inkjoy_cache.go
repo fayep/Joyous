@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -212,34 +213,60 @@ func (c *InkJoyCache) binPath(mac, name string) string {
 	return filepath.Join(c.dir, inkjoyMACDir(mac), name+".bin")
 }
 
+// Save writes bin atomically: to a temp file in the same directory, fsynced,
+// then renamed over the final path. This means a concurrent ServeHTTP reader
+// that already has the old file open (see below) keeps seeing the complete
+// old inode's bytes — never a half-written or truncated file — and any write
+// failure leaves the previous file (if any) untouched instead of a corrupt one.
 func (c *InkJoyCache) Save(mac, name string, bin []byte) error {
 	path := c.binPath(mac, name)
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	tmp, err := os.CreateTemp(dir, ".tmp-"+name+"-*")
 	if err != nil {
 		return err
 	}
-	_, werr := f.Write(bin)
-	serr := f.Sync()
-	cerr := f.Close()
-	if werr != nil {
-		return werr
+	tmpPath := tmp.Name()
+	_, werr := tmp.Write(bin)
+	serr := tmp.Sync()
+	cerr := tmp.Close()
+	if werr != nil || serr != nil || cerr != nil {
+		os.Remove(tmpPath)
+		if werr != nil {
+			return werr
+		}
+		if serr != nil {
+			return serr
+		}
+		return cerr
 	}
-	if serr != nil {
-		return serr
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
 	}
-	return cerr
+	return nil
 }
 
 func (c *InkJoyCache) ServeHTTP(w http.ResponseWriter, r *http.Request, mac, name string) {
 	setInkjoyCacheResponseHeaders(w)
 	path := c.binPath(mac, name)
-	info, err := os.Stat(path)
+	// Open once and derive size/etag from the same file descriptor used to
+	// read the body: a concurrent Save() rename swaps the directory entry to
+	// a new inode but never touches bytes already open here, so Content-Length
+	// (and everything else) always matches what's actually written below —
+	// unlike a separate Stat+ReadFile pair, which can straddle a rename.
+	f, err := os.Open(path)
 	if err != nil {
 		log.Printf("inkjoy cache miss mac=%s name=%s path=%s", inkjoyMACDir(mac), name, path)
 		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	etag := fmt.Sprintf("%x-%d", info.ModTime().UnixNano(), info.Size())
@@ -259,7 +286,7 @@ func (c *InkJoyCache) ServeHTTP(w http.ResponseWriter, r *http.Request, mac, nam
 	}
 	log.Printf("inkjoy cache hit mac=%s name=%s bytes=%d", inkjoyMACDir(mac), name, info.Size())
 
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(f)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
