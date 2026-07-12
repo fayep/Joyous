@@ -282,31 +282,46 @@ func TestSamsungImageUploadBumpsContentJSONFileID(t *testing.T) {
 		}
 	}
 
-	contentJSONFileID := func() string {
+	contentJSONManifest := func() (id, fileName string) {
 		rec := httptest.NewRecorder()
 		h.handleSamsungContentJSON(rec, samsungFrameHTTPRequest("GET", "/samsung/"+frameID+"/content.json", "192.168.1.108"), frameID)
 		if rec.Code != 200 {
 			t.Fatalf("content.json status %d: %s", rec.Code, rec.Body.String())
 		}
 		var manifest struct {
-			ID string `json:"id"`
+			ID       string `json:"id"`
+			Schedule []struct {
+				Contents []struct {
+					FileName string `json:"file_name"`
+				} `json:"contents"`
+			} `json:"schedule"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &manifest); err != nil {
 			t.Fatal(err)
 		}
-		return manifest.ID
+		if len(manifest.Schedule) == 0 || len(manifest.Schedule[0].Contents) == 0 {
+			t.Fatal("manifest missing schedule/contents")
+		}
+		return manifest.ID, manifest.Schedule[0].Contents[0].FileName
 	}
 
 	uploadOnce(10)
-	firstID := contentJSONFileID()
+	firstID, firstFileName := contentJSONManifest()
 	if firstID == "" {
 		t.Fatal("expected a non-empty file_id after first upload")
 	}
 
 	uploadOnce(200)
-	secondID := contentJSONFileID()
+	secondID, secondFileName := contentJSONManifest()
 	if secondID == firstID {
 		t.Fatalf("content.json file_id unchanged after a second, different upload: %q", secondID)
+	}
+	// file_name (and file_path, which is built from it) is where the frame stores the download
+	// on its own storage — it must stay stable across pushes to the same frame, or the frame
+	// accumulates a new never-cleaned-up file per send instead of overwriting the one
+	// "currently showing" image in place. Only the change-detection id should vary.
+	if firstFileName != secondFileName {
+		t.Fatalf("file_name changed across pushes to the same frame: %q -> %q (should stay stable)", firstFileName, secondFileName)
 	}
 }
 

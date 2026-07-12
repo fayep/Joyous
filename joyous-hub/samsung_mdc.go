@@ -57,8 +57,16 @@ func samsungContentFileID(frameID string, pngData []byte) string {
 	return frameID + "-" + strings.ToUpper(hex.EncodeToString(sum[:8]))
 }
 
-// buildContentJSON returns the manifest Samsung mobile deploy expects.
-func buildContentJSON(imageURL, fileID string, fileSize int) []byte {
+// buildContentJSON returns the manifest Samsung mobile deploy expects. contentID (samsungContentFileID)
+// is purely a change-detection token — it's what the manifest's top-level "id" and the content's
+// "file_id" carry, and what the frame echoes straight back in its content-transfer-progress
+// callback (see samsung_content_transfer.go) — so it must change whenever the pushed image
+// changes. fileName is the on-device storage location (file_path/file_name) and must stay
+// *stable* per frame (frameID-based — confirmed working against a real transfer, see
+// samsungContentFileID's doc comment): tying it to contentID too, as an earlier version of this
+// function did, would make every push write to a new never-cleaned-up path on the frame's own
+// storage instead of overwriting the one "currently showing" file in place.
+func buildContentJSON(imageURL, contentID, fileName string, fileSize int) []byte {
 	type content struct {
 		ImageURL string `json:"image_url"`
 		FileID   string `json:"file_id"`
@@ -89,17 +97,17 @@ func buildContentJSON(imageURL, fileID string, fileSize int) []byte {
 			StartTime: "00:00:00",
 			Contents: []content{{
 				ImageURL: imageURL,
-				FileID:   fileID,
-				FilePath: fmt.Sprintf("/home/owner/content/Downloads/vxtplayer/epaper/mobile/contents/%s/%s.png", fileID, fileID),
+				FileID:   contentID,
+				FilePath: fmt.Sprintf("/home/owner/content/Downloads/vxtplayer/epaper/mobile/contents/%s/%s.png", fileName, fileName),
 				Duration: 91326,
 				FileSize: fmt.Sprintf("%d", fileSize),
-				FileName: fileID + ".png",
+				FileName: fileName + ".png",
 			}},
 		}},
 		Name:        "joyous-hub",
 		Version:     1,
 		CreateTime:  time.Now().Format("2006-01-02 15:04:05"),
-		ID:          fileID,
+		ID:          contentID,
 		ProgramID:   "com.samsung.ios.ePaper",
 		ContentType: "ImageContent",
 		DeployType:  "MOBILE",

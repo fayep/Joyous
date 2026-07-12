@@ -140,7 +140,7 @@ func TestParseMDCResponse(t *testing.T) {
 }
 
 func TestBuildContentJSON(t *testing.T) {
-	b := buildContentJSON("http://host/img.png", "A1B2C3D4-E5F6-7890-ABCD-EF1234567890", 12345)
+	b := buildContentJSON("http://host/img.png", "kitchen-A1B2C3D4E5F67890", "kitchen", 12345)
 	if len(b) == 0 {
 		t.Fatal("empty json")
 	}
@@ -149,5 +149,8 @@ func TestBuildContentJSON(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `http:\/\/host\/img.png`) {
 		t.Fatal("expected escaped slashes in image_url")
+	}
+	if !strings.Contains(string(b), `"file_name":"kitchen.png"`) {
+		t.Fatal("expected stable frameID-based file_name, not the content id")
 	}
 }

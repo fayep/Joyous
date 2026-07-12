@@ -645,13 +645,13 @@ func (h *Hub) handleSamsungContentJSON(w http.ResponseWriter, r *http.Request, f
 	if addr == "" {
 		addr = r.Host
 	}
-	fileID := samsungContentFileID(frameID, data)
+	contentID := samsungContentFileID(frameID, data)
 	frameIP := frameIDToIP(frameID)
 	if dev := h.samsungDeviceByFrameID(frameID); dev != nil && dev.IP != "" {
 		frameIP = dev.IP
 	}
 	imageURL := samsungImageURL(addr, frameIP, frameID)
-	manifest := buildContentJSON(imageURL, fileID, len(data))
+	manifest := buildContentJSON(imageURL, contentID, frameID, len(data))
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write(manifest)
