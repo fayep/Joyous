@@ -67,6 +67,14 @@ func TestServeContentTransferProgressStillAcksOnMissingFields(t *testing.T) {
 	}
 }
 
+// TestReportProgressUpdatesKnownDeviceLastAction covers correlating a callback's content_id
+// back to a device now that content.json's id is content-addressed (samsungContentFileID), not
+// the frame's own static id — see resolveSamsungFrameByContentID. This must work even though
+// the push (which wrote the PNG) and this callback handler run in the same process here just as
+// they do in the real samsung-bridge binary; the fix is specifically for the case where they
+// don't (a bridge-driven send, where the hub serves content.json in a separate process) — see
+// samsungContentFileID's doc comment for why recomputing from the shared-on-disk PNG works
+// regardless of which process wrote it.
 func TestReportProgressUpdatesKnownDeviceLastAction(t *testing.T) {
 	hub := buildTestHub(t)
 	hub.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.50"})
@@ -75,11 +83,15 @@ func TestReportProgressUpdatesKnownDeviceLastAction(t *testing.T) {
 		t.Fatal("expected samsung device to be registered")
 	}
 	frameID := SamsungFrameID(dev)
+	png := testPNG()
+	if err := hub.samsung.writePNGLocked(frameID, png); err != nil {
+		t.Fatalf("writePNGLocked: %v", err)
+	}
 
 	h := &samsungBridgeHTTPHandler{hub: hub}
 	progress := samsungContentTransferProgress{
 		DeviceID:           "0WPSHNPY800618B",
-		ContentID:          frameID,
+		ContentID:          samsungContentFileID(frameID, png),
 		Status:             "Successful",
 		CurrentImageStatus: samsungImageDownloadStatus{ImageID: "x", ImageName: "x", Status: "Successful"},
 	}

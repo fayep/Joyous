@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"joyous-hub/bridgehub"
@@ -112,14 +113,14 @@ func (h *samsungBridgeHTTPHandler) serveContentTransferProgress(method string, b
 // reportProgress relays transfer state to the main hub's device registry, the same way
 // InkJoy frames' own MQTT state feedback drives their status in the Devices UI.
 //
-// content.json's manifest "id" (see buildContentJSON in samsung_mdc.go) is the fileID
-// recorded via setSamsungPushFileID at push time — but that push happens in *this* bridge
-// process while content.json is served by the main hub process (a separate memory space), so
-// its lookup misses and it falls back to using the frame's own ID as the manifest id. The
-// frame then echoes that back here as contentId, so for the bridge-driven send path (which
-// scheduled sends and CmdSendImage both use) contentId is effectively the frame ID.
+// content.json's manifest "id" (samsungContentFileID in samsung_mdc.go) is derived from the
+// frame id and its current PNG content, not looked up from any state recorded at push time —
+// see that function's doc comment for why. The frame echoes that id back here as content_id, so
+// resolving it back to a device means recomputing the same function for each known frame (the
+// bridge and the hub share the same PNG files on disk — see hub_data_dir) and matching against
+// content_id, rather than treating content_id as if it were the frame id directly.
 func (h *samsungBridgeHTTPHandler) reportProgress(progress samsungContentTransferProgress) {
-	dev := h.hub.samsungDeviceByFrameID(progress.ContentID)
+	dev := h.resolveSamsungFrameByContentID(progress.ContentID)
 	if dev == nil || dev.IP == "" {
 		return
 	}
@@ -128,4 +129,27 @@ func (h *samsungBridgeHTTPHandler) reportProgress(progress samsungContentTransfe
 	if h.client != nil {
 		_ = h.client.PublishDevices(bridgeDevicesFromRegistry(h.hub.devices, DeviceTypeSamsung))
 	}
+}
+
+// resolveSamsungFrameByContentID finds which known frame a content-transfer-progress callback's
+// content_id belongs to by recomputing samsungContentFileID for each frame's current PNG and
+// matching — see reportProgress for why this can't be a simple map lookup.
+func (h *samsungBridgeHTTPHandler) resolveSamsungFrameByContentID(contentID string) *Device {
+	if contentID == "" || h.hub.samsung == nil {
+		return nil
+	}
+	frameIDs, err := h.hub.samsung.ListFrames()
+	if err != nil {
+		return nil
+	}
+	for _, frameID := range frameIDs {
+		data, err := os.ReadFile(h.hub.samsung.pngPath(frameID))
+		if err != nil {
+			continue
+		}
+		if samsungContentFileID(frameID, data) == contentID {
+			return h.hub.samsungDeviceByFrameID(frameID)
+		}
+	}
+	return nil
 }

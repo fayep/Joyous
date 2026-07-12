@@ -233,14 +233,9 @@ func (s *SamsungStore) ListFrames() ([]string, error) {
 	return out, nil
 }
 
-// writePNGLocked replaces the frame PNG using lockfile protocol. Every call — the real MDC push
-// path, calibration uploads, and the manual "upload an image directly to this frame" endpoint
-// alike — bumps the push file_id (see setSamsungPushFileID). content.json advertises this as
-// both the manifest id and the download FileName; the real phone-app protocol we're
-// interoperating with treats an unchanged file_id as "already downloaded, nothing to do" and
-// skips redownloading the image, so writing new PNG bytes without bumping it left the frame
-// stuck on stale content whenever content.json was next served from a path that didn't already
-// call setSamsungPushFileID itself (the manual upload endpoint did not).
+// writePNGLocked replaces the frame PNG using lockfile protocol. content.json's manifest id
+// (see samsungContentFileID) is derived from these bytes each time it's served, not remembered
+// from whenever they were written, so there's nothing to update here when they change.
 func (s *SamsungStore) writePNGLocked(frameID string, pngData []byte) error {
 	if !validFrameID(frameID) {
 		return fmt.Errorf("invalid frame id")
@@ -274,11 +269,7 @@ func (s *SamsungStore) writePNGLocked(frameID string, pngData []byte) error {
 		os.Remove(tmp)
 		return cerr
 	}
-	if err := os.Rename(tmp, s.pngPath(frameID)); err != nil {
-		return err
-	}
-	setSamsungPushFileID(frameID, newSamsungPushFileID())
-	return nil
+	return os.Rename(tmp, s.pngPath(frameID))
 }
 
 // StoreUpload decodes raw image bytes, dithers to Samsung palette, and writes PNG.
@@ -654,10 +645,7 @@ func (h *Hub) handleSamsungContentJSON(w http.ResponseWriter, r *http.Request, f
 	if addr == "" {
 		addr = r.Host
 	}
-	fileID := getSamsungPushFileID(frameID)
-	if fileID == "" {
-		fileID = frameID
-	}
+	fileID := samsungContentFileID(frameID, data)
 	frameIP := frameIDToIP(frameID)
 	if dev := h.samsungDeviceByFrameID(frameID); dev != nil && dev.IP != "" {
 		frameIP = dev.IP
@@ -923,10 +911,8 @@ func (h *Hub) pushSamsungFrameWithProgress(frameID string, dev *Device, onWakeAt
 	if addr == "" {
 		addr = "localhost:8080"
 	}
-	fileID := newSamsungPushFileID()
-	setSamsungPushFileID(frameID, fileID)
 	contentURL := samsungMDCContentURL(addr, dev.IP, frameID)
-	logOutbound("samsung push frame=%s ip=%s file_id=%s content=%s", frameID, dev.IP, fileID, contentURL)
+	logOutbound("samsung push frame=%s ip=%s content=%s", frameID, dev.IP, contentURL)
 	cfg, _ := h.samsung.LoadConfig(frameID)
 	wifiMAC := h.samsungWakeMAC(frameID, dev)
 	autoSleep := samsungAutoSleepAfterPush(cfg)

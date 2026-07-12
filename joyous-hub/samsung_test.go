@@ -216,50 +216,40 @@ func TestSamsungUploadAPI(t *testing.T) {
 	}
 }
 
-// TestWritePNGLockedBumpsPushFileID covers a bug where a frame's physical protocol treats an
-// unchanged content.json file_id/FileName as "already downloaded, nothing to do" — writing new
-// PNG bytes via a path that never called setSamsungPushFileID (e.g. the manual "upload an image
-// directly to this frame" endpoint, handleSamsungImageUpload) left the frame stuck showing the
-// previous image even though the hub's own PNG (and its ETag) had genuinely changed. Every write
-// through writePNGLocked must bump the push file_id so any subsequent content.json fetch reflects
-// the change, regardless of which caller wrote the PNG.
-func TestWritePNGLockedBumpsPushFileID(t *testing.T) {
-	dir := t.TempDir()
-	s := NewSamsungStore(dir)
-	// samsungPush is a package-level global keyed by frameID (see samsung_push.go) shared by
-	// every test in this package — a frameID reused across tests (e.g. "kitchen") can already
-	// have a push file_id set by another test that ran first. Use a name unique to this test.
-	frameID := "write-png-locked-bumps-fileid-test"
-
-	if before := getSamsungPushFileID(frameID); before != "" {
-		t.Fatalf("expected no push file_id before any write, got %q", before)
+// TestSamsungContentFileIDIsDeterministicAndContentAddressed covers the fix for a bug where a
+// frame's physical protocol treats an unchanged content.json file_id/FileName as "already
+// downloaded, nothing to do." The previous approach (an in-memory map bumped at push time) broke
+// in the real deployment because the process that triggers a push (samsung-bridge) and the
+// process that serves content.json for that push (the hub, at hub.serverAddr) are separate OS
+// processes with no shared memory — so content.json always fell back to the frame's own static
+// id, and the frame reported that same static value back regardless of which photo was actually
+// sent. samsungContentFileID must be a pure function of (frameID, pngData): same inputs always
+// produce the same id (so re-serving unchanged content doesn't force a spurious redownload), but
+// different content must produce a different id, and different frames with byte-identical
+// content must not collide (reportProgress disambiguates callbacks between frames by this id
+// alone — see samsung_content_transfer.go).
+func TestSamsungContentFileIDIsDeterministicAndContentAddressed(t *testing.T) {
+	a := samsungContentFileID("kitchen", []byte("photo-a"))
+	aAgain := samsungContentFileID("kitchen", []byte("photo-a"))
+	if a != aAgain {
+		t.Fatalf("not deterministic: %q vs %q", a, aAgain)
 	}
-
-	if err := s.writePNGLocked(frameID, testPNG()); err != nil {
-		t.Fatal(err)
+	b := samsungContentFileID("kitchen", []byte("photo-b"))
+	if a == b {
+		t.Fatalf("different content produced the same id: %q", a)
 	}
-	first := getSamsungPushFileID(frameID)
-	if first == "" {
-		t.Fatal("expected a push file_id to be assigned after writePNGLocked")
-	}
-
-	if err := s.writePNGLocked(frameID, testPNG()); err != nil {
-		t.Fatal(err)
-	}
-	second := getSamsungPushFileID(frameID)
-	if second == "" || second == first {
-		t.Fatalf("expected a fresh push file_id on the second write: first=%q second=%q", first, second)
+	otherFrame := samsungContentFileID("living-room", []byte("photo-a"))
+	if a == otherFrame {
+		t.Fatalf("different frames with identical content collided: %q", a)
 	}
 }
 
 // TestSamsungImageUploadBumpsContentJSONFileID is the end-to-end version of
-// TestWritePNGLockedBumpsPushFileID through the actual manual-upload HTTP handler: two uploads
-// of different content must produce two different content.json file_ids, or a real frame would
-// skip re-downloading the second image.
+// TestSamsungContentFileIDIsDeterministicAndContentAddressed through the actual manual-upload
+// HTTP handler: two uploads of different content must produce two different content.json
+// file_ids, or a real frame would skip re-downloading the second image.
 func TestSamsungImageUploadBumpsContentJSONFileID(t *testing.T) {
 	h := buildTestHub(t)
-	// See TestWritePNGLockedBumpsPushFileID: samsungPush is a global keyed by frameID, so avoid
-	// "kitchen" (used by TestSamsungUploadAPI) to keep this test's fileID sequence independent.
 	frameID := "samsung-image-upload-bumps-fileid-test"
 
 	uploadOnce := func(pixel uint8) {
