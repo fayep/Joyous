@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math/rand"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -260,5 +261,87 @@ func TestScheduledSendHandlersRoundTrip(t *testing.T) {
 	h.handleScheduledSendGet(unknownRec, httptest.NewRequest("GET", "/api/devices/nope/schedule", nil), "nope")
 	if unknownRec.Code != 404 {
 		t.Fatalf("expected 404 for unknown device, got %d", unknownRec.Code)
+	}
+}
+
+func TestScheduledSendHandlersNilStore(t *testing.T) {
+	// A Hub with no scheduledSends store (e.g. a hand-rolled test/misconfigured Hub) must
+	// fail cleanly with 500, not panic with a nil pointer dereference.
+	h := &Hub{devices: NewDeviceRegistry(t.TempDir())}
+	h.devices.MarkConnected("AABBCCDDEEFF")
+	deviceID := "AABBCCDDEEFF"
+
+	rec := httptest.NewRecorder()
+	h.handleScheduledSendGet(rec, httptest.NewRequest("GET", "/api/devices/"+deviceID+"/schedule", nil), deviceID)
+	if rec.Code != 500 {
+		t.Fatalf("GET with nil store: got %d %s, want 500", rec.Code, rec.Body.String())
+	}
+
+	putRec := httptest.NewRecorder()
+	putReq := httptest.NewRequest("PUT", "/api/devices/"+deviceID+"/schedule", strings.NewReader(`{"enabled":false}`))
+	putReq.Header.Set("Content-Type", "application/json")
+	h.handleScheduledSendPut(putRec, putReq, deviceID)
+	if putRec.Code != 500 {
+		t.Fatalf("PUT with nil store: got %d %s, want 500", putRec.Code, putRec.Body.String())
+	}
+}
+
+func TestScheduledSendPutRejectsCorruptExistingConfig(t *testing.T) {
+	store := NewScheduledSendStore(t.TempDir())
+	deviceID := "AABBCCDDEEFF"
+	if err := store.ensureDir(); err != nil {
+		t.Fatalf("ensureDir: %v", err)
+	}
+	// Seed a corrupt config file so Get() returns a real unmarshal error, not just a
+	// clean "no config yet" (missing-file) result.
+	if err := os.WriteFile(store.path(deviceID), []byte("{not valid json"), 0644); err != nil {
+		t.Fatalf("seed corrupt file: %v", err)
+	}
+
+	h := &Hub{devices: NewDeviceRegistry(t.TempDir()), scheduledSends: store}
+	h.devices.MarkConnected(deviceID)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/api/devices/"+deviceID+"/schedule", strings.NewReader(`{"enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.handleScheduledSendPut(rec, req, deviceID)
+	if rec.Code != 500 {
+		t.Fatalf("PUT with corrupt existing config: got %d %s, want 500 (must not silently reset state)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDeviceDeleteRemovesScheduledSendConfig(t *testing.T) {
+	h := buildTestHub(t)
+	deviceID := "AABBCCDDEEFF"
+	h.devices.MarkConnected(deviceID)
+
+	album, err := h.images.CreateSmartAlbum("album1", "Test Album", catalog.Filter{})
+	if err != nil {
+		t.Fatalf("CreateSmartAlbum: %v", err)
+	}
+	if err := h.scheduledSends.Save(ScheduledSendConfig{
+		DeviceID: deviceID,
+		AlbumID:  album.ID,
+		Times:    []string{"09:00"},
+		Enabled:  true,
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if cfg, _ := h.scheduledSends.Get(deviceID); !cfg.Enabled {
+		t.Fatal("expected schedule config to exist before delete")
+	}
+
+	rec := httptest.NewRecorder()
+	h.handleDeviceDelete(rec, httptest.NewRequest("DELETE", "/api/devices/"+deviceID, nil), deviceID)
+	if rec.Code != 200 {
+		t.Fatalf("delete device: %d %s", rec.Code, rec.Body.String())
+	}
+
+	cfg, err := h.scheduledSends.Get(deviceID)
+	if err != nil {
+		t.Fatalf("Get after delete: %v", err)
+	}
+	if cfg.Enabled || cfg.AlbumID != "" {
+		t.Fatalf("expected scheduled send config to be removed after device delete, got %+v", cfg)
 	}
 }

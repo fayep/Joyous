@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -185,6 +186,11 @@ func (h *Hub) handleDeviceDelete(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	h.devices.Save()
+	if h.scheduledSends != nil {
+		if err := h.scheduledSends.Delete(id); err != nil {
+			log.Printf("device delete %s: remove scheduled send config: %v", id, err)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -2825,8 +2831,14 @@ function deviceMetaHTML(d){
     : (d.ip?d.ip+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.power_source?('<span style="color:#666">'+d.power_source+' </span>'):'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
 }
 
+// deviceLabel is the display-name fallback chain shared by initial card render and
+// the poll-driven patch below, so both paths can never drift out of sync.
+function deviceLabel(d){
+  return d.name||d.mac||d.ip||d.id;
+}
+
 function deviceCardHTML(d){
-  const label=d.name||d.mac||d.ip||d.id;
+  const label=escHtml(deviceLabel(d));
   const type=d.type||'inkjoy';
   const refreshBtn=type==='inkjoy'?'<button class="btn btn-sm btn-primary" onclick="refreshDevice(\''+d.id+'\')">Refresh display</button> ':'';
   return '<div class="card" id="card-'+d.id+'" data-device-id="'+d.id+'">'+
@@ -2845,7 +2857,10 @@ function deviceCardHTML(d){
 // loadDevicesInner patches the existing card for each still-present device in place
 // (label/status/meta only) rather than replacing the whole #device-list innerHTML, so an
 // open "Scheduled sends" editor — or any other in-progress interaction inside a card — isn't
-// destroyed by the 5s poll. Cards are only fully added/removed when a device appears/disappears.
+// destroyed by the 5s poll. Cards are only fully added/removed when a device appears/disappears;
+// devices is already server-sorted, so re-appending each card in that order (appendChild moves
+// an existing node rather than recreating it) keeps on-screen order in sync as devices are
+// added/renamed, without disturbing any card's contents or open editor.
 async function loadDevicesInner(){
   const r=await fetch('/api/devices'); devices=await r.json();
   const el=document.getElementById('device-list');
@@ -2854,18 +2869,19 @@ async function loadDevicesInner(){
   const seen=new Set();
   devices.forEach(d=>{
     seen.add(d.id);
-    const card=document.getElementById('card-'+d.id);
+    let card=document.getElementById('card-'+d.id);
     if(!card){
       el.insertAdjacentHTML('beforeend', deviceCardHTML(d));
-      return;
+      card=document.getElementById('card-'+d.id);
+    }else{
+      const labelEl=document.getElementById('label-'+d.id);
+      if(labelEl) labelEl.textContent=deviceLabel(d);
+      const statusEl=document.getElementById('status-'+d.id);
+      if(statusEl) statusEl.innerHTML=deviceStatusHTML(d);
+      const metaEl=document.getElementById('meta-'+d.id);
+      if(metaEl) metaEl.innerHTML=deviceMetaHTML(d);
     }
-    const label=d.name||d.mac||d.ip||d.id;
-    const labelEl=document.getElementById('label-'+d.id);
-    if(labelEl) labelEl.textContent=label;
-    const statusEl=document.getElementById('status-'+d.id);
-    if(statusEl) statusEl.innerHTML=deviceStatusHTML(d);
-    const metaEl=document.getElementById('meta-'+d.id);
-    if(metaEl) metaEl.innerHTML=deviceMetaHTML(d);
+    if(card) el.appendChild(card);
   });
   el.querySelectorAll('.card[data-device-id]').forEach(card=>{
     if(!seen.has(card.dataset.deviceId)) card.remove();

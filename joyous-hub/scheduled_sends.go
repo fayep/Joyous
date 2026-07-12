@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,7 +36,12 @@ func scheduledSendsEnabled(cfg ScheduledSendConfig) bool {
 }
 
 // ScheduledSendStore manages per-device schedule config on disk, one JSON file per device.
+// mu is a single coarse lock across all devices — this store sees at most a few writes per
+// minute (the scheduler tick plus occasional editor saves), so per-device locking isn't
+// warranted, but without any lock the scheduler goroutine and a concurrent HTTP PUT can race
+// to write the same file with the loser's update silently dropped.
 type ScheduledSendStore struct {
+	mu  sync.Mutex
 	dir string
 }
 
@@ -72,6 +78,8 @@ func (s *ScheduledSendStore) Get(deviceID string) (ScheduledSendConfig, error) {
 	if deviceID == "" {
 		return ScheduledSendConfig{}, fmt.Errorf("device id required")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	data, err := os.ReadFile(s.path(deviceID))
 	if os.IsNotExist(err) {
 		return ScheduledSendConfig{DeviceID: deviceID}, nil
@@ -91,6 +99,8 @@ func (s *ScheduledSendStore) Save(cfg ScheduledSendConfig) error {
 	if cfg.DeviceID == "" {
 		return fmt.Errorf("device id required")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.ensureDir(); err != nil {
 		return err
 	}
@@ -106,6 +116,8 @@ func (s *ScheduledSendStore) Delete(deviceID string) error {
 	if deviceID == "" {
 		return fmt.Errorf("device id required")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	err := os.Remove(s.path(deviceID))
 	if os.IsNotExist(err) {
 		return nil
@@ -115,6 +127,8 @@ func (s *ScheduledSendStore) Delete(deviceID string) error {
 
 // All returns every persisted schedule config (enabled or not).
 func (s *ScheduledSendStore) All() ([]ScheduledSendConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	entries, err := os.ReadDir(s.dir)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -190,7 +204,8 @@ func nextScheduledImage(queue []string, candidateIDs []string, rng *rand.Rand) (
 var scheduledSendRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 // checkScheduledSends sweeps every persisted schedule and fires any that are due. Called
-// once a minute from startScheduledSendScheduler.
+// once a minute from startScheduledSendScheduler. albumImageIDs is cached per sweep (keyed by
+// AlbumID) so devices sharing an album and fire time don't each repeat the same catalog query.
 func (h *Hub) checkScheduledSends() {
 	if h.scheduledSends == nil {
 		return
@@ -201,29 +216,39 @@ func (h *Hub) checkScheduledSends() {
 		log.Printf("scheduled sends: list configs: %v", err)
 		return
 	}
+	albumImageIDs := make(map[string][]string)
 	for _, cfg := range cfgs {
 		due := scheduledSendDueTimes(cfg, now)
 		if len(due) == 0 {
 			continue
 		}
-		h.runScheduledSend(cfg, due[0], now)
+		ids, ok := albumImageIDs[cfg.AlbumID]
+		if !ok {
+			images, err := h.images.ListAlbumImages(cfg.AlbumID)
+			if err != nil {
+				log.Printf("scheduled send %s: album %s unavailable: %v", cfg.DeviceID, cfg.AlbumID, err)
+				albumImageIDs[cfg.AlbumID] = nil
+				continue
+			}
+			ids = make([]string, len(images))
+			for i, im := range images {
+				ids[i] = im.ID
+			}
+			albumImageIDs[cfg.AlbumID] = ids
+		}
+		h.runScheduledSend(cfg, due[0], now, ids)
 	}
 }
 
-func (h *Hub) runScheduledSend(cfg ScheduledSendConfig, firedTime string, now time.Time) {
+func (h *Hub) runScheduledSend(cfg ScheduledSendConfig, firedTime string, now time.Time, albumImageIDs []string) {
 	if _, ok := h.devices.Get(cfg.DeviceID); !ok {
 		return
 	}
-	images, err := h.images.ListAlbumImages(cfg.AlbumID)
-	if err != nil || len(images) == 0 {
-		log.Printf("scheduled send %s: album %s empty or unavailable: %v", cfg.DeviceID, cfg.AlbumID, err)
+	if len(albumImageIDs) == 0 {
+		log.Printf("scheduled send %s: album %s empty or unavailable", cfg.DeviceID, cfg.AlbumID)
 		return
 	}
-	ids := make([]string, len(images))
-	for i, im := range images {
-		ids[i] = im.ID
-	}
-	imageID, queue, ok := nextScheduledImage(cfg.Queue, ids, scheduledSendRand)
+	imageID, queue, ok := nextScheduledImage(cfg.Queue, albumImageIDs, scheduledSendRand)
 	if !ok {
 		return
 	}
@@ -287,6 +312,10 @@ func normalizeScheduledSendTimes(times []string) ([]string, error) {
 
 // handleScheduledSendGet serves GET /api/devices/{id}/schedule.
 func (h *Hub) handleScheduledSendGet(w http.ResponseWriter, r *http.Request, deviceID string) {
+	if h.scheduledSends == nil {
+		http.Error(w, "scheduled sends not configured", http.StatusInternalServerError)
+		return
+	}
 	if _, ok := h.devices.Get(deviceID); !ok {
 		http.Error(w, "device not found", http.StatusNotFound)
 		return
@@ -302,6 +331,10 @@ func (h *Hub) handleScheduledSendGet(w http.ResponseWriter, r *http.Request, dev
 
 // handleScheduledSendPut serves PUT /api/devices/{id}/schedule.
 func (h *Hub) handleScheduledSendPut(w http.ResponseWriter, r *http.Request, deviceID string) {
+	if h.scheduledSends == nil {
+		http.Error(w, "scheduled sends not configured", http.StatusInternalServerError)
+		return
+	}
 	if _, ok := h.devices.Get(deviceID); !ok {
 		http.Error(w, "device not found", http.StatusNotFound)
 		return
@@ -334,7 +367,11 @@ func (h *Hub) handleScheduledSendPut(w http.ResponseWriter, r *http.Request, dev
 			return
 		}
 	}
-	existing, _ := h.scheduledSends.Get(deviceID)
+	existing, err := h.scheduledSends.Get(deviceID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	cfg := ScheduledSendConfig{
 		DeviceID:       deviceID,
 		AlbumID:        body.AlbumID,
