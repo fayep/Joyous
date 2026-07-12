@@ -212,14 +212,16 @@ func deliverNixplayImage(ctx context.Context, state *nixplayBridgeState, body pr
 	return state.nx.UploadPhoto(uploadCtx, playlistID, jpegName, jpegData)
 }
 
-// ensureNixplayJPEG returns data as JPEG bytes, converting HEIC (or anything
-// else decodeAnyImage understands) if needed. Nixplay's upload API requires
-// fileType "image/jpeg" — album originals are sometimes HEIC (iPhone photos).
+// ensureNixplayJPEG returns data as JPEG bytes, converting HEIC (or anything else
+// decodeAnyImage understands) if needed. Nixplay's upload API requires fileType
+// "image/jpeg" — album originals are sometimes HEIC (iPhone photos).
+//
+// Always re-encodes through decodeAnyImage, even when the original is already a JPEG:
+// decodeAnyImage bakes EXIF orientation into the pixels (applyExifOrientation), and Nixplay's
+// frame rendering does not reliably honor an EXIF orientation tag left in the uploaded JPEG —
+// a source JPEG forwarded as-is (the previous shortcut here) could come out rotated on the
+// physical frame even though every other viewer displays it correctly.
 func ensureNixplayJPEG(data []byte, fileName string) ([]byte, string, error) {
-	ext := strings.ToLower(filepath.Ext(fileName))
-	if ext == ".jpg" || ext == ".jpeg" {
-		return data, fileName, nil
-	}
 	img, err := decodeAnyImage(data)
 	if err != nil {
 		return nil, "", fmt.Errorf("decode %s: %w", fileName, err)
