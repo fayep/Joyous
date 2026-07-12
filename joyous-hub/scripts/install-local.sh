@@ -37,12 +37,16 @@ SAMSUNG_CONFIG_FILE="$CONFIG_DIR/samsung-config.yaml"
 NIXPLAY_CONFIG_FILE="$CONFIG_DIR/nixplay-config.yaml"
 STAGING_BIN="$INSTALL_ROOT/bin/joyous-hub"
 ENTITLEMENTS="${ENTITLEMENTS:-$INSTALL_ROOT/entitlements.plist}"
+INKJOY_ENTITLEMENTS="${INKJOY_ENTITLEMENTS:-$INSTALL_ROOT/entitlements-inkjoy.plist}"
 USER_ID="$(id -u)"
 DOMAIN="gui/${USER_ID}"
 TARGET="${DOMAIN}/${LABEL}"
 
 if [[ ! -f "$ENTITLEMENTS" ]]; then
 	ENTITLEMENTS="$SCRIPT_DIR/../entitlements.plist"
+fi
+if [[ ! -f "$INKJOY_ENTITLEMENTS" ]]; then
+	INKJOY_ENTITLEMENTS="$SCRIPT_DIR/../entitlements-inkjoy.plist"
 fi
 
 stop_service() {
@@ -154,6 +158,8 @@ write_bridge_app() {
 	local bundle_id="$4"
 	local network_desc="$5"
 	local staging_bin="$6"
+	local bluetooth_desc="${7:-}"       # empty = omit NSBluetoothAlwaysUsageDescription (only InkJoy needs BLE)
+	local entitlements="${8:-$ENTITLEMENTS}" # only InkJoy passes one with com.apple.security.device.bluetooth
 
 	echo "==> building ${app_bundle} ..."
 	local macos="$INSTALL_ROOT/${app_bundle}/Contents/MacOS"
@@ -161,6 +167,12 @@ write_bridge_app() {
 	cp "$staging_bin" "$macos/${executable}"
 	chmod +x "$macos/${executable}"
 	printf 'APPL????' >"$INSTALL_ROOT/${app_bundle}/Contents/PkgInfo"
+	local bluetooth_block=""
+	if [[ -n "$bluetooth_desc" ]]; then
+		bluetooth_block="	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>${bluetooth_desc}</string>
+"
+	fi
 	cat >"$INSTALL_ROOT/${app_bundle}/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -188,9 +200,7 @@ write_bridge_app() {
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>${network_desc}</string>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>${display_name} uses Bluetooth to adopt InkJoy e-paper frames.</string>
-	<key>NSBonjourServices</key>
+${bluetooth_block}	<key>NSBonjourServices</key>
 	<array>
 		<string>_upnp._tcp</string>
 	</array>
@@ -199,8 +209,8 @@ write_bridge_app() {
 EOF
 
 	local app="$INSTALL_ROOT/${app_bundle}"
-	if [[ -f "$ENTITLEMENTS" ]]; then
-		codesign --force --sign - --entitlements "$ENTITLEMENTS" --timestamp=none "$app"
+	if [[ -f "$entitlements" ]]; then
+		codesign --force --sign - --entitlements "$entitlements" --timestamp=none "$app"
 	else
 		codesign --force --sign - --timestamp=none "$app"
 	fi
@@ -253,7 +263,9 @@ EOF
 
 	write_bridge_app "$app_bundle" "$executable" "InkJoy Bridge" "$label" \
 		"InkJoy Bridge connects photo frames to Joyous Hub over MQTT and discovers frames on your LAN." \
-		"$staging_bin"
+		"$staging_bin" \
+		"InkJoy Bridge uses Bluetooth to adopt new e-paper frames." \
+		"$INKJOY_ENTITLEMENTS"
 
 	cat >"$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

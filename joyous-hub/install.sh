@@ -94,6 +94,7 @@ rsync -av \
 	"$REMOTE:${REMOTE_DIR}/src/"
 rsync -av \
 	"$SCRIPT_DIR/entitlements.plist" \
+	"$SCRIPT_DIR/entitlements-inkjoy.plist" \
 	"$REMOTE:${REMOTE_DIR}/"
 rsync -av \
 	"$SCRIPT_DIR/scripts/build-binary.sh" \
