@@ -11,6 +11,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"joyous-hub/protocol"
 )
 
 const defaultPollInterval = 60
@@ -245,8 +248,24 @@ func (s *SamsungStore) writePNGLocked(frameID string, pngData []byte) error {
 	defer os.Remove(lock)
 
 	tmp := s.pngPath(frameID) + ".tmp"
-	if err := os.WriteFile(tmp, pngData, 0644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
 		return err
+	}
+	_, werr := f.Write(pngData)
+	serr := f.Sync()
+	cerr := f.Close()
+	if werr != nil {
+		os.Remove(tmp)
+		return werr
+	}
+	if serr != nil {
+		os.Remove(tmp)
+		return serr
+	}
+	if cerr != nil {
+		os.Remove(tmp)
+		return cerr
 	}
 	return os.Rename(tmp, s.pngPath(frameID))
 }
@@ -445,19 +464,69 @@ type samsungStatusResponse struct {
 func (h *Hub) noteSamsungFrameSeen(r *http.Request, frameID, action string) {
 	clientIP := requestClientIP(r)
 	frameID = h.resolveSamsungFrameID(frameID)
+	touched := false
 	dev := h.samsungDeviceByFrameID(frameID)
 	if dev != nil && dev.IP != "" {
 		if clientIP == dev.IP || frameIDIsMAC(frameID) {
-			h.devices.TouchSamsung(dev.IP, action)
-			return
+			touched = h.devices.TouchSamsung(dev.IP, action)
 		}
 	}
-	if ip := frameIDToIP(frameID); ip != "" && clientIP == ip {
-		h.devices.TouchSamsung(ip, action)
+	if !touched {
+		if ip := frameIDToIP(frameID); ip != "" && clientIP == ip {
+			touched = h.devices.TouchSamsung(ip, action)
+		}
+	}
+	if touched {
+		h.maybeClearSamsungDeepSleepOnFrameContact(frameID)
+		if dev := h.samsungDeviceByFrameID(frameID); dev != nil {
+			h.notifySamsungBridgeContact(dev.ID, action)
+		}
 	}
 }
 
+// notifySamsungBridgeContact tells samsung-bridge about hub-side frame contact so
+// devices.sync LastSeen/action match (wake, HTTP pulls, etc. happen on the hub).
+func (h *Hub) notifySamsungBridgeContact(deviceID, action string) {
+	if deviceID == "" || action == "" || h.bridgeCoord == nil {
+		return
+	}
+	if !h.bridgeCoord.BridgeOnline(string(DeviceTypeSamsung)) {
+		return
+	}
+	body, err := json.Marshal(map[string]string{"action": action})
+	if err != nil {
+		return
+	}
+	if err := h.bridgeCoord.PublishCommand(string(DeviceTypeSamsung), protocol.CmdPayload{
+		Cmd:      protocol.CmdDeviceTouch,
+		DeviceID: deviceID,
+		Body:     body,
+	}); err != nil {
+		log.Printf("samsung bridge contact notify device=%s: %v", deviceID, err)
+	}
+}
+
+// maybeClearSamsungDeepSleepOnFrameContact clears sticky deep-sleep when the frame
+// is HTTP-polling outside the inactive window (button wake; network is back).
+func (h *Hub) maybeClearSamsungDeepSleepOnFrameContact(frameID string) {
+	if h.samsung == nil {
+		return
+	}
+	cfg, err := h.samsung.LoadConfig(frameID)
+	if err != nil || !cfg.DeepSleepActive {
+		return
+	}
+	now := time.Now()
+	if InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) &&
+		InInactiveWindow(now, cfg.InactiveBegin, cfg.InactiveEnd) {
+		return
+	}
+	h.clearSamsungDeepSleepAfterPush(frameID)
+	log.Printf("samsung deep sleep cleared after frame contact frame=%s", frameID)
+}
+
 func (h *Hub) handleSamsungStatus(w http.ResponseWriter, r *http.Request, frameID string) {
+	setSamsungCacheResponseHeaders(w)
 	if !validFrameID(frameID) {
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
@@ -495,6 +564,7 @@ func (h *Hub) handleSamsungStatus(w http.ResponseWriter, r *http.Request, frameI
 }
 
 func (h *Hub) handleSamsungPNG(w http.ResponseWriter, r *http.Request, frameID string) {
+	setSamsungCacheResponseHeaders(w)
 	if !validFrameID(frameID) {
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
@@ -505,14 +575,26 @@ func (h *Hub) handleSamsungPNG(w http.ResponseWriter, r *http.Request, frameID s
 		return
 	}
 	path := h.samsung.pngPath(frameID)
-	data, err := os.ReadFile(path)
+	// Open once and derive size/etag/body from the same file descriptor: a
+	// concurrent writePNGLocked rename swaps the directory entry to a new
+	// inode but never touches bytes already open here, so Content-Length
+	// always matches what's actually written below — a separate Stat (or
+	// PNGInfo's own independent Stat) plus ReadFile can straddle a rename.
+	f, err := os.Open(path)
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	etag, _, _ := h.samsung.PNGInfo(frameID)
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d", frameID, info.Size(), info.ModTime().UnixNano())))
+	etag := hex.EncodeToString(sum[:8])
 	h.noteSamsungFrameSeen(r, frameID, "png")
-	if h.sendDelivery != nil {
+	if h.sendDelivery != nil && r.Method != http.MethodHead {
 		h.sendDelivery.CompleteSamsung(frameID, etag)
 	}
 	if inm := r.Header.Get("If-None-Match"); inm != "" && inm == `"`+etag+`"` {
@@ -522,10 +604,21 @@ func (h *Hub) handleSamsungPNG(w http.ResponseWriter, r *http.Request, frameID s
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("ETag", `"`+etag+`"`)
 	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	w.Write(data)
 }
 
 func (h *Hub) handleSamsungContentJSON(w http.ResponseWriter, r *http.Request, frameID string) {
+	setSamsungCacheResponseHeaders(w)
 	if !validFrameID(frameID) {
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
 		return
@@ -791,6 +884,7 @@ func (h *Hub) handleSamsungSleep(w http.ResponseWriter, r *http.Request, frameID
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	h.notifySamsungBridgeContact(dev.ID, "mdc_sleep")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -870,6 +964,7 @@ func (h *Hub) handleSamsungPush(w http.ResponseWriter, r *http.Request, frameID 
 		http.Error(w, err.Error(), code)
 		return
 	}
+	h.notifySamsungBridgeContact(dev.ID, "mdc_push")
 	out := map[string]any{"ok": true}
 	if sendID != "" {
 		out["send_id"] = sendID
@@ -900,6 +995,8 @@ func (h *Hub) handleSamsungWake(w http.ResponseWriter, r *http.Request, frameID 
 		return
 	}
 	h.devices.TouchSamsung(dev.IP, "mdc_wake")
+	h.maybeClearSamsungDeepSleepOnFrameContact(frameID)
+	h.notifySamsungBridgeContact(dev.ID, "mdc_wake")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }

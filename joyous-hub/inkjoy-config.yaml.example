@@ -1,0 +1,48 @@
+# InkJoy bridge configuration
+#
+# macOS:  ~/Library/Application Support/Joyous/inkjoy-config.yaml
+# Linux:  ~/.config/Joyous/inkjoy-config.yaml
+#
+# CLI flags override these values. Upstream credentials can also come from
+# INKJOY_MQTT_USER / INKJOY_MQTT_PASSWORD when left blank here.
+
+# Joyous hub broker (bridge registers here)
+hub_mqtt: "tcp://127.0.0.1:1883"
+
+# Joyous hub HTTP (album sends + cloud play relay cache URLs)
+hub_http: "http://127.0.0.1:18080"
+
+# Frame-facing MQTT broker (frames connect here — :11883 on macOS installs)
+listen_mqtt: ":11883"
+
+# InkJoy cloud MQTT broker (empty = local-only, no cloud forwarding)
+upstream: "13.39.148.101:1883"
+upstream_usr: ""
+upstream_pwd: ""
+
+# frame → cloud (/device/report/{MAC}) — actions forwarded upstream
+upstream_allow: "login,heart,play_ack,fpga_ota_ack,sleep,image_refresh_ack,ota_ack,wifi_sleep_ack,mqtt_config_ack"
+
+# cloud → frame (/inkjoyap/{MAC}) — actions forwarded to the frame
+downstream_allow: "login_ack,heart_ack,play,device_config,shutdown_ack,image_refresh_ack,wifi_sleep"
+
+# cloud → frame — handled by the bridge instead of reaching the frame (checked first)
+intercept: "mqtt_config,wifi_sleep,ota,fpga"
+
+# Bridge device registry, captures
+data_dir: "./data-inkjoy"
+
+# Hub data_dir — must match hub config.yaml data_dir exactly (case-sensitive volumes).
+# When unset, inkjoy-bridge reads ~/Library/Application Support/Joyous/config.yaml.
+hub_data_dir: ""
+
+# Unknown MQTT actions → {capture_dir}/frame-to-broker|broker-to-frame|intercept/
+# empty or "auto" → {data_dir}/capture; "off" to disable
+capture_dir: ""
+
+# Blocked OTA/FPGA: save MQTT JSON + firmware under {ota_dir}
+# empty or "auto" → {data_dir}/ota; "off" to disable
+ota_dir: ""
+
+# Optional directory for bridge file logging (launchd uses its own paths)
+log_dir: ""

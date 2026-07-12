@@ -9,6 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"joyous-hub/inkjoybridge"
+	"joyous-hub/protocol"
 )
 
 // buildTestHub creates a Hub wired to a temp dir, with a no-op publisher.
@@ -67,7 +70,7 @@ func TestGetDevicesEmpty(t *testing.T) {
 func TestGetDevicesWithData(t *testing.T) {
 	h := buildTestHub(t)
 	h.devices.MarkConnected("AABBCCDDEEFF")
-	h.devices.UpdateHeart("AABBCCDDEEFF", HeartInfo{Battery: 77, Firmware: "0.5.6"})
+	h.devices.UpdateHeart("AABBCCDDEEFF", inkjoybridge.HeartInfo{Battery: 77, Firmware: "0.5.6"})
 
 	rec := httptest.NewRecorder()
 	h.handleDevices(rec, httptest.NewRequest("GET", "/api/devices", nil))
@@ -508,8 +511,11 @@ func TestDeleteImage(t *testing.T) {
 
 func TestMQTTLogsAPI(t *testing.T) {
 	h := buildTestHub(t)
-	h.mqttLog.AddLocal("frame→hub", "/device/report/AA", []byte(`{"action":"heart"}`), "")
-	h.mqttLog.AddUpstream("hub→cloud", "/device/report/AA", []byte(`{"action":"login"}`), "")
+	h.joyousMQTTLog = NewMQTTLogBuffer(20)
+	payload, _ := protocol.NewEnvelope(protocol.TypeDevices, "inkjoy", protocol.DevicesPayload{})
+	h.joyousMQTTLog.AddJoyousBridgeToHub("joyous/bridge/inkjoy/devices", payload)
+	cmdPayload, _ := protocol.NewEnvelope(protocol.TypeCmd, "inkjoy", protocol.CmdPayload{Cmd: protocol.CmdRefresh})
+	h.joyousMQTTLog.AddJoyousHubToBridge("joyous/hub/inkjoy/cmd", cmdPayload)
 
 	rec := httptest.NewRecorder()
 	h.handleMQTTLogs(rec, httptest.NewRequest("GET", "/api/mqtt/logs", nil))
@@ -523,10 +529,10 @@ func TestMQTTLogsAPI(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Local) != 1 || out.Local[0].Action != "heart" {
+	if len(out.Local) != 1 || out.Local[0].Action != protocol.TypeDevices {
 		t.Fatalf("local=%+v", out.Local)
 	}
-	if len(out.Upstream) != 1 || out.Upstream[0].Action != "login" {
+	if len(out.Upstream) != 1 || out.Upstream[0].Action != protocol.TypeCmd+" · "+protocol.CmdRefresh {
 		t.Fatalf("upstream=%+v", out.Upstream)
 	}
 }

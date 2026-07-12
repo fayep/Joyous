@@ -1,0 +1,33 @@
+# Samsung bridge configuration
+#
+# macOS:  ~/Library/Application Support/Joyous/samsung-config.yaml
+# Linux:  ~/.config/Joyous/samsung-config.yaml
+#
+# CLI flags override these values.
+
+# Joyous hub broker (bridge registers here)
+hub_mqtt: "tcp://127.0.0.1:1883"
+
+# Joyous hub HTTP (album fetch for send.image + frame content cache URLs)
+hub_http: "http://127.0.0.1:18080"
+
+# Public HTTP address embedded in MDC content.json URLs sent to frames.
+# Must be the HUB address (port 18080), not the bridge listen port.
+# When empty, derived from hub_http host + hub config server_addr port.
+server_addr: ""
+
+# Bridge-local data: device registry, per-frame config copies, battery history
+data_dir: "./data-samsung"
+
+# Hub data_dir — must match hub config.yaml data_dir exactly (case-sensitive volumes).
+# Bridge writes frame PNGs to {hub_data_dir}/samsung/{frameId}.png; hub serves them.
+# When unset, samsung-bridge reads ~/Library/Application Support/Joyous/config.yaml.
+hub_data_dir: ""
+
+# LAN for MDC discovery sweep when SSDP is quiet. Prefer CIDR (covers a /23 fully).
+# Bare "192.168.50" only sweeps 192.168.50.0–255, not 192.168.51.x.
+# WoL broadcast is NOT taken from this — it uses the host interface prefix length.
+discover_subnets: "192.168.50.0/23"
+
+# Optional directory for bridge file logging (launchd uses its own paths)
+log_dir: ""

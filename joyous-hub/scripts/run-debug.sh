@@ -6,7 +6,7 @@ set -euo pipefail
 INSTALL_ROOT="${INSTALL_ROOT:-$HOME/joyous-hub}"
 DATA_DIR="${DATA_DIR:-/Volumes/tank/Media/photoframe}"
 HTTP_PORT="${HTTP_PORT:-18080}"
-MQTT_PORT="${MQTT_PORT:-11883}"
+MQTT_PORT="${MQTT_PORT:-1883}"
 SERVER_ADDR="${SERVER_ADDR:-$(hostname -s | tr '[:upper:]' '[:lower:]').local:${HTTP_PORT}}"
 DISCOVER_SUBNETS="${DISCOVER_SUBNETS:-192.168.50}"
 LABEL="com.joyous.hub"

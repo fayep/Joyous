@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Build joyous-hub with version / link metadata ldflags.
-# Usage: build-binary.sh <output-path>
+# Build joyous-hub (or a tagged bridge binary) with version / link metadata ldflags.
+# Usage: build-binary.sh <output-path> [build-tags]
 # Env: SRC_DIR (repo root), JOYOUS_VERSION, JOYOUS_SEAL or INKJOY_SIGN_KEY
 set -euo pipefail
 
 OUT="${1:?output path required}"
+BUILD_TAGS="${2:-}"
 SRC_DIR="${SRC_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 JOYOUS_VERSION="${JOYOUS_VERSION:-dev}"
 
@@ -22,5 +23,9 @@ fi
 	else
 		LDFLAGS="-X joyous-hub/internal/linkmeta.Version=${JOYOUS_VERSION}"
 	fi
-	go build -ldflags "$LDFLAGS" -o "$OUT" .
+	if [[ -n "$BUILD_TAGS" ]]; then
+		go build -tags "$BUILD_TAGS" -ldflags "$LDFLAGS" -o "$OUT" .
+	else
+		go build -ldflags "$LDFLAGS" -o "$OUT" .
+	fi
 )

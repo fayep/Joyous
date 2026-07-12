@@ -39,7 +39,7 @@ func TestLoadHubConfigYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	const content = `
-listen_mqtt: ":11883"
+listen_mqtt: ":1883"
 listen_http: ":18080"
 upstream: ""
 upstream_usr: alice
@@ -56,7 +56,7 @@ log_dir: /var/log/joyous
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenMQTT != ":11883" || cfg.ListenHTTP != ":18080" {
+	if cfg.ListenMQTT != ":1883" || cfg.ListenHTTP != ":18080" {
 		t.Fatalf("listen ports: mqtt=%q http=%q", cfg.ListenMQTT, cfg.ListenHTTP)
 	}
 	if cfg.Upstream != "" || cfg.UpstreamUsr != "alice" || cfg.UpstreamPwd != "secret" {
@@ -98,5 +98,81 @@ func TestApplyEnvOverrides(t *testing.T) {
 	}
 	if cfg.UpstreamPwd != "env-pass" {
 		t.Fatalf("empty yaml pwd not filled from env: %q", cfg.UpstreamPwd)
+	}
+}
+
+func TestDefaultInkJoyConfigPath(t *testing.T) {
+	path, err := DefaultInkJoyConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(path, filepath.Join("Joyous", "inkjoy-config.yaml")) {
+		t.Fatalf("unexpected path suffix: %q", path)
+	}
+}
+
+func TestLoadInkJoyBridgeConfigYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "inkjoy-config.yaml")
+	const content = `
+hub_mqtt: "tcp://127.0.0.1:1999"
+listen_mqtt: ":11883"
+upstream: "cloud.example:1883"
+upstream_usr: alice
+upstream_pwd: secret
+upstream_allow: "login,heart"
+`
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadInkJoyBridgeConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HubMQTT != "tcp://127.0.0.1:1999" || cfg.ListenMQTT != ":11883" {
+		t.Fatalf("listen: hub=%q mqtt=%q", cfg.HubMQTT, cfg.ListenMQTT)
+	}
+	if cfg.Upstream != "cloud.example:1883" || cfg.UpstreamUsr != "alice" {
+		t.Fatalf("upstream: %+v", cfg)
+	}
+	if cfg.UpstreamAllow != "login,heart" {
+		t.Fatalf("upstream_allow: %q", cfg.UpstreamAllow)
+	}
+}
+
+func TestReconcileHubDataDirWithHubConfig(t *testing.T) {
+	hubData := "/Volumes/tank/Media/PhotoFrame"
+	bridgeData := "/Volumes/tank/Media/photoframe"
+	got, changed := reconcileHubDataDirWithHubConfig(hubData, bridgeData)
+	if !changed || got != hubData {
+		t.Fatalf("got %q changed=%v want %q changed=true", got, changed, hubData)
+	}
+	got, changed = reconcileHubDataDirWithHubConfig(hubData, hubData)
+	if changed || got != hubData {
+		t.Fatalf("matching dirs: got %q changed=%v", got, changed)
+	}
+	got, changed = reconcileHubDataDirWithHubConfig(hubData, "")
+	if changed || got != hubData {
+		t.Fatalf("unset bridge dir: got %q changed=%v", got, changed)
+	}
+}
+
+func TestDataDirsEquivalentCase(t *testing.T) {
+	dir := t.TempDir()
+	if !dataDirsEquivalent(dir, dir) {
+		t.Fatal("same path should match")
+	}
+	if dataDirsEquivalent(dir, dir+"/missing") {
+		t.Fatal("missing path should not match")
+	}
+}
+
+func TestApplyInkJoyEnvOverrides(t *testing.T) {
+	t.Setenv("INKJOY_MQTT_USER", "from-env")
+	t.Setenv("INKJOY_MQTT_PASSWORD", "env-pass")
+	cfg := InkJoyBridgeConfig{}
+	applyInkJoyEnvOverrides(&cfg)
+	if cfg.UpstreamUsr != "from-env" || cfg.UpstreamPwd != "env-pass" {
+		t.Fatalf("got usr=%q pwd=%q", cfg.UpstreamUsr, cfg.UpstreamPwd)
 	}
 }

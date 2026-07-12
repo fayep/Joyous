@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"joyous-hub/inkjoybridge"
 )
 
 const (
@@ -19,14 +21,14 @@ const (
 // MessageCapture appends unrecognized MQTT payloads to per-action JSONL files.
 type MessageCapture struct {
 	dir             string
-	upstreamKnown   AllowList
-	downstreamKnown AllowList
-	intercept       AllowList
+	upstreamKnown   inkjoybridge.AllowList
+	downstreamKnown inkjoybridge.AllowList
+	intercept       inkjoybridge.AllowList
 	mu              sync.Mutex
 }
 
 // NewMessageCapture stores unknown messages under dir. Pass empty dir to disable.
-func NewMessageCapture(dir string, upstream, downstream, intercept AllowList) *MessageCapture {
+func NewMessageCapture(dir string, upstream, downstream, intercept inkjoybridge.AllowList) *MessageCapture {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return nil
@@ -137,34 +139,6 @@ func sanitizeCaptureName(action string) string {
 		return "_unknown"
 	}
 	return safe
-}
-
-func mqttAction(payload []byte) string {
-	var env struct {
-		Action string `json:"action"`
-	}
-	if err := json.Unmarshal(payload, &env); err != nil {
-		return ""
-	}
-	return env.Action
-}
-
-func mqttMsgid(payload []byte) string {
-	var env struct {
-		Msgid json.RawMessage `json:"msgid"`
-	}
-	if err := json.Unmarshal(payload, &env); err != nil || len(env.Msgid) == 0 {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(env.Msgid, &s); err == nil {
-		return s
-	}
-	var n json.Number
-	if err := json.Unmarshal(env.Msgid, &n); err == nil {
-		return n.String()
-	}
-	return strings.Trim(string(env.Msgid), `"`)
 }
 
 func captureWriteErr(where string, err error) {

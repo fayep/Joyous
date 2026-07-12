@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"joyous-hub/inkjoybridge"
 )
 
 func TestResolveCaptureDir(t *testing.T) {
@@ -24,9 +26,9 @@ func TestResolveCaptureDir(t *testing.T) {
 
 func TestMessageCaptureRecord(t *testing.T) {
 	dir := t.TempDir()
-	upstream := ParseAllowList("login,heart")
-	downstream := ParseAllowList("play,login_ack")
-	intercept := ParseAllowList("mqtt_config")
+	upstream := inkjoybridge.ParseAllowList("login,heart")
+	downstream := inkjoybridge.ParseAllowList("play,login_ack")
+	intercept := inkjoybridge.ParseAllowList("mqtt_config")
 	c := NewMessageCapture(dir, upstream, downstream, intercept)
 
 	if err := c.RecordUpstream("AABBCCDDEEFF", "login", []byte(`{"action":"login"}`)); err != nil {
@@ -70,7 +72,7 @@ func TestMessageCaptureRecord(t *testing.T) {
 
 func TestMessageCaptureRecordIntercepted(t *testing.T) {
 	dir := t.TempDir()
-	c := NewMessageCapture(dir, ParseAllowList(""), ParseAllowList(""), ParseAllowList(""))
+	c := NewMessageCapture(dir, inkjoybridge.ParseAllowList(""), inkjoybridge.ParseAllowList(""), inkjoybridge.ParseAllowList(""))
 	payload := []byte(`{"action":"mqtt_config","data":{"host":"x"}}`)
 	if err := c.RecordIntercepted("AABBCCDDEEFF", "mqtt_config", payload); err != nil {
 		t.Fatal(err)

@@ -173,7 +173,7 @@ format strings. `[C]` = confirmed from live capture, `[F]` = firmware strings on
 |--------|-------------|-------|
 | `login` | `inkjoy` bool, `ver` str `["M H:%d F:%d.%d.%d"]` (H=hardware model, F=ESP32 fw), `statype` int, `sleep_mode` int, `sleep_begin_time` str `[%02d:%02d]`, `sleep_end_time` str | [C] |
 | `heart` | `type` int, `ack` int, `wifi` str, `wifi_name` str, `ble` str, `tf` str `["absent"\|"present"]`, `tfsize` int, `tfused` int, `orientation` int, `battery` int, `wifi_listen_iv` int, `wifi_rssi` int, `wifi_ch` int, `ble_rssi` int, `version` str `[%d.%d.%d]` | [C] |
-| `shutdown` | _(no data field)_ | [C] sent before power-off; no `clientid`; triggers `shutdown_ack` |
+| `sleep` | `ack` int, `battery` int, `reason` int | [C] sent before power-off; **correction:** an earlier pass at this doc guessed the action name was `shutdown` with no `clientid` — a live capture (2026-07) shows the real action is `sleep`, and it *does* include `clientid`/`stamac` like other frame→broker messages. `reason` enum not fully mapped; `2` observed at 47% battery (nightly wifi_sleep window, not obviously low-battery-triggered). Triggers an ack (name unconfirmed — see note below).
 | `play_ack` | `ack_msgid` str, `result` int | [C+F] bitfield — see **Ack result bitfield** below |
 | `ota_ack` | `ack_msgid` str, `result` int | [F] same encoding as `play_ack` |
 | `fpga_ota_ack` | _(unknown)_ | [F] wire reply to `"fpga"` action |
@@ -183,7 +183,7 @@ format strings. `[C]` = confirmed from live capture, `[F]` = firmware strings on
 | `down_int_img_ack` | `ack_msgid` str, `result` int | [F] |
 | `image_refresh_ack` | _(unknown)_ | [F] |
 | `wifimode_ack` | _(unknown)_ | [F] |
-| `shutdown_ack` | `ack_msgid` str | [C] broker acknowledges frame power-off |
+| `shutdown_ack` | `ack_msgid` str | [C] broker acknowledges frame power-off — **name unconfirmed**: captured when we assumed the frame→broker action was `shutdown`; now that the real action is known to be `sleep` (see above), the ack name may actually be `sleep_ack` instead. Needs re-checking against a live capture. |
 | `image_refresh_ack` | `ack_msgid` str, `result` int | [C] result 113 = success (same complete composite as play done) |
 | `wifi_sleep_ack` | `ack_msgid` str, `result` int | [C] result 106 = accepted (one-shot) |
 | `device_config_ack` | _(unknown)_ | [F] |
@@ -572,3 +572,12 @@ initial pairing of a fresh device).
 - **`wifi_sleep` schedule** — the device has a configurable deep-sleep window
   (`sleep_begin_time`, `sleep_end_time`, `sleep_mode`). How `updatetype`,
   `updatedays`, `updatetimelist` interact with this is not yet mapped.
+
+- **`sleep` ack name and `reason` enum** — a 2026-07 capture confirmed the
+  power-off action is `sleep` (not the previously guessed `shutdown`), with
+  `data: {ack, battery, reason}` and normal `clientid`/`stamac` fields. Only
+  `reason: 2` has been observed (at 47% battery — plausibly the scheduled
+  wifi_sleep window). The ack action name is still whatever was captured
+  under the old `shutdown`/`shutdown_ack` assumption and needs
+  re-confirming as `sleep_ack` (or whatever it actually is) against a fresh
+  capture.

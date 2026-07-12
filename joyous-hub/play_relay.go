@@ -148,9 +148,8 @@ func (h *Hub) saveDisplayPreviewFromBin(mac string, bin []byte) error {
 	return nil
 }
 
-// rewriteExternalPlay downloads a cloud play image, caches it under inkjoy/, and
-// rewrites the play payload to point at the hub. Returns the original payload
-// when the URL is already local or relay fails.
+// rewriteExternalPlay downloads a cloud play image, caches it on the hub data dir,
+// and rewrites the play payload to point at the hub HTTP server.
 func (h *Hub) rewriteExternalPlay(mac string, payload []byte) ([]byte, error) {
 	if h.inkjoy == nil {
 		return payload, nil

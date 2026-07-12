@@ -33,6 +33,24 @@ func TestSendDeliveryInkJoyComplete(t *testing.T) {
 	}
 }
 
+func TestBindInkJoyWithoutRegister(t *testing.T) {
+	tr := NewSendDeliveryTracker()
+	tr.BindInkJoy("hub-send-id", "msg-bridge")
+	if got := tr.SendIDForInkJoyMsgid("msg-bridge"); got != "hub-send-id" {
+		t.Fatalf("msgid map: got %q want hub-send-id", got)
+	}
+}
+
+func TestMarkInkJoyDownloading(t *testing.T) {
+	tr := NewSendDeliveryTracker()
+	send := tr.Register("dev", "img")
+	tr.MarkInkJoyDownloading(send.ID)
+	d := tr.Get(send.ID)
+	if d == nil || d.Status != sendStatusDownloading {
+		t.Fatalf("downloading: %+v", d)
+	}
+}
+
 func TestSendDeliverySamsungDownloading(t *testing.T) {
 	tr := NewSendDeliveryTracker()
 	send := tr.Register("samsung:mac", "img1")

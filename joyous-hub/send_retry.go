@@ -4,6 +4,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"joyous-hub/protocol"
 )
 
 const (
@@ -21,6 +23,10 @@ type InkJoySendRetry struct {
 	pending map[string]*inkjoyRetryEntry
 	// deviceID → sendID (latest pending send per frame)
 	byDevice map[string]string
+	// optional: bridge→hub send delivery reports
+	onSendComplete func(body protocol.SendCompletePayload)
+	// optional: bridge-local resend
+	resend InkJoyRetryResender
 }
 
 type inkjoyRetryEntry struct {
@@ -28,11 +34,15 @@ type inkjoyRetryEntry struct {
 	deviceID     string
 	imageID      string
 	overlayToken string
+	hubBaseURL   string
 	attempts     int
 	created      time.Time
 	lastAttempt  time.Time
 	ackTimer     *time.Timer
 }
+
+// InkJoyRetryResender re-publishes a pending InkJoy send (bridge mode).
+type InkJoyRetryResender func(entry *inkjoyRetryEntry) error
 
 func NewInkJoySendRetry(hub *Hub) *InkJoySendRetry {
 	return &InkJoySendRetry{
@@ -42,20 +52,75 @@ func NewInkJoySendRetry(hub *Hub) *InkJoySendRetry {
 	}
 }
 
+func (r *InkJoySendRetry) SetSendCompleteNotifier(fn func(body protocol.SendCompletePayload)) {
+	r.onSendComplete = fn
+}
+
+func (r *InkJoySendRetry) SetResender(fn InkJoyRetryResender) {
+	r.resend = fn
+}
+
+func (r *InkJoySendRetry) notifySendComplete(body protocol.SendCompletePayload) {
+	if r.onSendComplete != nil && body.SendID != "" && body.DeviceID != "" {
+		r.onSendComplete(body)
+	}
+}
+
+func (r *InkJoySendRetry) deviceIDForSend(sendID string) string {
+	r.mu.Lock()
+	entry := r.pending[sendID]
+	r.mu.Unlock()
+	if entry != nil {
+		return entry.deviceID
+	}
+	if r.hub != nil && r.hub.sendDelivery != nil {
+		if d := r.hub.sendDelivery.Get(sendID); d != nil {
+			return d.DeviceID
+		}
+	}
+	return ""
+}
+
 // Track watches an InkJoy send until play_ack completes or retries are exhausted.
 func (r *InkJoySendRetry) Track(sendID, deviceID, imageID, overlayToken string) {
+	r.track(sendID, deviceID, imageID, overlayToken, "")
+}
+
+// TrackFromBridge is Track with hub_base_url for bridge-side encode retries.
+func (r *InkJoySendRetry) TrackFromBridge(sendID, deviceID, imageID, overlayToken, hubBaseURL string) {
+	r.track(sendID, deviceID, imageID, overlayToken, hubBaseURL)
+}
+
+func (r *InkJoySendRetry) track(sendID, deviceID, imageID, overlayToken, hubBaseURL string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if oldSendID, ok := r.byDevice[deviceID]; ok && oldSendID != sendID {
 		r.removeLocked(oldSendID)
+	}
+	// bridgeDeliverInkJoyImage calls TrackFromBridge on every successful
+	// publish, including bridge-mode resends (doRetry's r.resend callback) —
+	// not just the first send for this sendID. Preserve attempts/created
+	// across those re-tracks, or the give-up limits (inkjoySendMaxAttempts/
+	// inkjoySendMaxAge) never trip: doRetry can't increment the old *entry
+	// itself since this replaces it in r.pending before doRetry's post-resend
+	// code runs.
+	attempts := 1
+	created := time.Now()
+	if existing, ok := r.pending[sendID]; ok {
+		attempts = existing.attempts + 1
+		created = existing.created
+		if existing.ackTimer != nil {
+			existing.ackTimer.Stop()
+		}
 	}
 	entry := &inkjoyRetryEntry{
 		sendID:       sendID,
 		deviceID:     deviceID,
 		imageID:      imageID,
 		overlayToken: overlayToken,
-		attempts:     1,
-		created:      time.Now(),
+		hubBaseURL:   hubBaseURL,
+		attempts:     attempts,
+		created:      created,
 		lastAttempt:  time.Now(),
 	}
 	r.pending[sendID] = entry
@@ -94,15 +159,25 @@ func (r *InkJoySendRetry) OnPlayAck(msgid string, result int) {
 	if sendID == "" {
 		return
 	}
+	deviceID := r.deviceIDForSend(sendID)
+	if deviceID == "" {
+		return
+	}
 	switch result {
 	case inkjoyAckComplete:
 		r.Clear(sendID)
 		r.hub.sendDelivery.CompleteInkJoy(msgid, true)
+		r.notifySendComplete(protocol.SendCompletePayload{
+			SendID: sendID, DeviceID: deviceID, Success: true, Phase: "delivered",
+		})
 	case inkjoyAckInterrupted:
-		r.onFailure(sendID, msgid)
+		r.onFailure(sendID, msgid, deviceID)
 	default:
 		if inkjoyIsProgressResult(result) {
 			r.resetAckTimeout(sendID)
+			r.notifySendComplete(protocol.SendCompletePayload{
+				SendID: sendID, DeviceID: deviceID, Success: true, Phase: "downloading",
+			})
 		}
 	}
 }
@@ -124,7 +199,7 @@ func (r *InkJoySendRetry) triggerRetry(deviceID string, immediate bool) {
 		return
 	}
 	d := r.hub.sendDelivery.Get(sendID)
-	if d == nil || d.Status != sendStatusPending {
+	if d == nil || (d.Status != sendStatusPending && d.Status != sendStatusDownloading) {
 		r.removeLocked(sendID)
 		r.mu.Unlock()
 		return
@@ -133,7 +208,7 @@ func (r *InkJoySendRetry) triggerRetry(deviceID string, immediate bool) {
 	r.doRetry(entry)
 }
 
-func (r *InkJoySendRetry) onFailure(sendID, msgid string) {
+func (r *InkJoySendRetry) onFailure(sendID, msgid, deviceID string) {
 	r.mu.Lock()
 	entry, ok := r.pending[sendID]
 	if !ok {
@@ -141,6 +216,9 @@ func (r *InkJoySendRetry) onFailure(sendID, msgid string) {
 		if r.hub.sendDelivery != nil {
 			r.hub.sendDelivery.CompleteInkJoy(msgid, false)
 		}
+		r.notifySendComplete(protocol.SendCompletePayload{
+			SendID: sendID, DeviceID: deviceID, Success: false, Detail: "interrupted", Phase: "failed",
+		})
 		return
 	}
 	if entry.ackTimer != nil {
@@ -155,13 +233,16 @@ func (r *InkJoySendRetry) onFailure(sendID, msgid string) {
 		if r.hub.sendDelivery != nil {
 			r.hub.sendDelivery.CompleteInkJoy(msgid, false)
 		}
+		r.notifySendComplete(protocol.SendCompletePayload{
+			SendID: sendID, DeviceID: deviceID, Success: false, Detail: "interrupted", Phase: "failed",
+		})
 		return
 	}
-	deviceID := entry.deviceID
+	devID := entry.deviceID
 	imageID := entry.imageID
 	attempts := entry.attempts
 	r.mu.Unlock()
-	log.Printf("inkjoy send interrupted device=%s image=%s attempt=%d — will retry", deviceID, imageID, attempts)
+	log.Printf("inkjoy send interrupted device=%s image=%s attempt=%d — will retry", devID, imageID, attempts)
 	time.AfterFunc(inkjoySendRetryDelay, func() { r.retryBySendID(sendID) })
 }
 
@@ -188,7 +269,7 @@ func (r *InkJoySendRetry) onAckTimeout(sendID string) {
 		return
 	}
 	d := r.hub.sendDelivery.Get(sendID)
-	if d == nil || d.Status != sendStatusPending {
+	if d == nil || (d.Status != sendStatusPending && d.Status != sendStatusDownloading) {
 		r.removeLocked(sendID)
 		r.mu.Unlock()
 		return
@@ -197,6 +278,9 @@ func (r *InkJoySendRetry) onAckTimeout(sendID string) {
 		r.removeLocked(sendID)
 		r.mu.Unlock()
 		r.hub.sendDelivery.Fail(sendID)
+		r.notifySendComplete(protocol.SendCompletePayload{
+			SendID: sendID, DeviceID: entry.deviceID, Success: false, Detail: "timeout", Phase: "failed",
+		})
 		log.Printf("inkjoy send gave up device=%s image=%s after %d attempts", entry.deviceID, entry.imageID, entry.attempts)
 		return
 	}
@@ -206,6 +290,17 @@ func (r *InkJoySendRetry) onAckTimeout(sendID string) {
 }
 
 func (r *InkJoySendRetry) doRetry(entry *inkjoyRetryEntry) {
+	if r.resend != nil {
+		// bridgeDeliverInkJoyImage calls TrackFromBridge (see track(), which
+		// carries attempts/created forward and reschedules the ack timer)
+		// before it even attempts the MQTT publish below — on both success
+		// and publish failure. So there's nothing left to update on `entry`
+		// here; it's already stale by the time resend() returns. Only log.
+		if err := r.resend(entry); err != nil {
+			log.Printf("inkjoy send retry publish failed device=%s: %v", entry.deviceID, err)
+		}
+		return
+	}
 	if r.hub == nil {
 		return
 	}
@@ -216,12 +311,12 @@ func (r *InkJoySendRetry) doRetry(entry *inkjoyRetryEntry) {
 	}
 	if r.hub.sendDelivery != nil {
 		d := r.hub.sendDelivery.Get(entry.sendID)
-		if d == nil || d.Status != sendStatusPending {
+		if d == nil || (d.Status != sendStatusPending && d.Status != sendStatusDownloading) {
 			r.Clear(entry.sendID)
 			return
 		}
 	}
-	err := r.hub.sendInkJoyImage(dev, entry.imageID, entry.overlayToken, entry.sendID)
+	err := r.hub.sendInkJoyImage(dev, entry.imageID, entry.overlayToken, entry.sendID, nil, nil)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cur, ok := r.pending[entry.sendID]

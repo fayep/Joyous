@@ -6,6 +6,8 @@ import (
 	"image/png"
 	"testing"
 	"time"
+
+	"joyous-hub/protocol"
 )
 
 type retryPublisher struct {
@@ -78,5 +80,26 @@ func TestInkJoySendRetryProgressResetsTimeout(t *testing.T) {
 	h.inkjoyRetry.OnPlayAck("msg-1", inkjoyProgressFirst)
 	if h.inkjoyRetry.Attempts(send.ID) != 1 {
 		t.Fatalf("progress should not increment attempts, got %d", h.inkjoyRetry.Attempts(send.ID))
+	}
+}
+
+func TestInkJoySendRetryBridgeBindNotifiesHub(t *testing.T) {
+	h := buildTestHub(t)
+	retry := NewInkJoySendRetry(h)
+	var got []protocol.SendCompletePayload
+	retry.SetSendCompleteNotifier(func(body protocol.SendCompletePayload) {
+		got = append(got, body)
+	})
+	h.sendDelivery.BindInkJoy("bridge-send", "msg-1")
+	retry.TrackFromBridge("bridge-send", "AABBCCDDEEFF", "img1", "", "http://hub")
+
+	retry.OnPlayAck("msg-1", inkjoyProgressFirst)
+	retry.OnPlayAck("msg-1", inkjoyAckComplete)
+
+	if len(got) != 2 {
+		t.Fatalf("notifications=%d want 2", len(got))
+	}
+	if got[0].Phase != "downloading" || got[1].Phase != "delivered" {
+		t.Fatalf("phases: %+v", got)
 	}
 }

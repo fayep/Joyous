@@ -6,10 +6,11 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"joyous-hub/protocol"
 )
 
 // injectedPlays tracks msgIDs of play messages we sent so we can suppress
@@ -27,41 +28,24 @@ func isInjectedPlay(ackMsgid string) bool {
 	return ok
 }
 
-func (h *Hub) sendInkJoyImage(dev *Device, imageID, overlayToken, sendID string) error {
-	addr := h.serverAddr
-	if addr == "" {
-		addr = "localhost:8080"
+func (h *Hub) sendInkJoyImage(dev *Device, imageID, overlayToken, sendID string, overlayCfg *OverlayConfig, overlayWeather *WeatherSnapshot) error {
+	if h.bridgeCoord == nil || !h.bridgeCoord.BridgeOnline(string(DeviceTypeInkJoy)) {
+		return fmt.Errorf("inkjoy bridge offline")
 	}
-	_, port, _ := net.SplitHostPort(addr)
-	if port == "" {
-		port = "8080"
+	body, err := buildSendImageBody(h, imageID, overlayToken, sendID, overlayCfg, overlayWeather)
+	if err != nil {
+		return err
 	}
-	ip := dev.HubIP
-	if ip == "" {
-		ip = h.hubIP
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
 	}
-	if ip != "" {
-		addr = net.JoinHostPort(ip, port)
-	}
-	portrait := dev.Portrait
-	if overlayToken != "" {
-		if _, err := os.Stat(h.images.overlayCacheFile(imageID, overlayToken, portrait)); err != nil {
-			return fmt.Errorf("overlay bin: %w", err)
-		}
-	} else if _, err := h.images.ServeBinOrientation(imageID, portrait); err != nil {
-		return fmt.Errorf("image convert: %w", err)
-	}
-	file := imageBinFilename(imageID, overlayToken, portrait)
-	imgURL := fmt.Sprintf("http://%s/images/%s", addr, file)
-	payload, msgid := buildPlayPayload(dev.MAC, imgURL)
-	if h.sendDelivery != nil {
-		h.sendDelivery.UnbindInkJoy(sendID)
-		h.sendDelivery.BindInkJoy(sendID, msgid)
-	}
-	registerInjectedPlay(msgid)
-	topic := "/inkjoyap/" + dev.MAC
-	logOutbound("mqtt publish topic=%s image=%s url=%s portrait=%v overlay=%s", topic, imageID, imgURL, portrait, overlayToken)
-	err := h.publisher.Publish(topic, payload)
+	logOutbound("bridge cmd send.image device=%s image=%s crops=%d", dev.ID, imageID, len(body.Crops))
+	err = h.bridgeCoord.PublishCommand(string(DeviceTypeInkJoy), protocol.CmdPayload{
+		Cmd:      protocol.CmdSendImage,
+		DeviceID: dev.ID,
+		Body:     payload,
+	})
 	logFrameSend(dev.ID, imageID, "inkjoy", err)
 	if err == nil {
 		h.displayPreview.Clear(dev.MAC)
@@ -70,27 +54,55 @@ func (h *Hub) sendInkJoyImage(dev *Device, imageID, overlayToken, sendID string)
 	return err
 }
 
-func (h *Hub) sendSamsungImage(dev *Device, imageID, overlayToken, sendID string) error {
-	frameID := SamsungFrameID(dev)
-	meta, err := h.images.readMeta(imageID)
+func (h *Hub) sendSamsungImage(dev *Device, imageID, overlayToken, sendID string, overlayCfg *OverlayConfig, overlayWeather *WeatherSnapshot) error {
+	if h.bridgeCoord == nil || !h.bridgeCoord.BridgeOnline(string(DeviceTypeSamsung)) {
+		return fmt.Errorf("samsung bridge offline")
+	}
+	body, err := buildSendImageBody(h, imageID, overlayToken, sendID, overlayCfg, overlayWeather)
 	if err != nil {
 		return err
 	}
-	pngData, err := h.prepareSamsungPNG(imageID, overlayToken, dev)
+	payload, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("convert samsung png: %w", err)
-	}
-	if err := h.samsung.writePNGLocked(frameID, pngData); err != nil {
 		return err
 	}
-	etag, _, _ := h.samsung.PNGInfo(frameID)
-	if h.sendDelivery != nil {
-		h.sendDelivery.BindSamsung(sendID, frameID, etag)
-	}
-	_ = meta
-	logOutbound("samsung prepare frame=%s ip=%s png=%dB overlay=%s", frameID, dev.IP, len(pngData), overlayToken)
-	err = h.pushSamsungFrame(frameID, dev)
+	logOutbound("bridge cmd send.image device=%s image=%s crops=%d", dev.ID, imageID, len(body.Crops))
+	err = h.bridgeCoord.PublishCommand(string(DeviceTypeSamsung), protocol.CmdPayload{
+		Cmd:      protocol.CmdSendImage,
+		DeviceID: dev.ID,
+		Body:     payload,
+	})
 	logFrameSend(dev.ID, imageID, "samsung", err)
+	if err == nil {
+		h.devices.SetLastImage(dev.ID, imageID, overlayToken)
+	}
+	return err
+}
+
+// sendNixplayImage uploads an album image to the Nixplay playlist ("gallery")
+// identified by dev.ID. Unlike InkJoy/Samsung, Nixplay is a cloud target: the
+// bridge uploads to Nixplay's own S3 bucket, there is no frame pull step, and
+// crops/overlay are not applied (Nixplay handles per-frame-model resizing
+// server-side).
+func (h *Hub) sendNixplayImage(dev *Device, imageID, overlayToken, sendID string, overlayCfg *OverlayConfig, overlayWeather *WeatherSnapshot) error {
+	if h.bridgeCoord == nil || !h.bridgeCoord.BridgeOnline(string(DeviceTypeNixplay)) {
+		return fmt.Errorf("nixplay bridge offline")
+	}
+	body, err := buildSendImageBody(h, imageID, overlayToken, sendID, overlayCfg, overlayWeather)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	logOutbound("bridge cmd send.image device=%s image=%s", dev.ID, imageID)
+	err = h.bridgeCoord.PublishCommand(string(DeviceTypeNixplay), protocol.CmdPayload{
+		Cmd:      protocol.CmdSendImage,
+		DeviceID: dev.ID,
+		Body:     payload,
+	})
+	logFrameSend(dev.ID, imageID, "nixplay", err)
 	if err == nil {
 		h.devices.SetLastImage(dev.ID, imageID, overlayToken)
 	}
@@ -129,6 +141,17 @@ func resolvedLANIP(addr string) string {
 
 // handleDiscover runs SSDP discovery and merges results into the device registry.
 func (h *Hub) handleDiscover(w http.ResponseWriter, r *http.Request) {
+	if h.bridgeCoord != nil && h.bridgeCoord.BridgeOnline(string(DeviceTypeSamsung)) {
+		if err := h.bridgeCoord.PublishCommand(string(DeviceTypeSamsung), protocol.CmdPayload{
+			Cmd: protocol.CmdDiscover,
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "delegated": "samsung-bridge"})
+		return
+	}
 	logOutbound("discover start subnets=%v", discoverSubnets)
 	frames, ssdpSeen, err := DiscoverPhotoFrames(0)
 	if err != nil {

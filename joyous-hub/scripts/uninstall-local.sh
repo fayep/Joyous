@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LABEL="com.joyous.hub"
-PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 USER_ID="$(id -u)"
-TARGET="gui/${USER_ID}/${LABEL}"
+DOMAIN="gui/${USER_ID}"
 
-launchctl bootout "$TARGET" 2>/dev/null || true
-rm -f "$PLIST"
-echo "Removed launchd service ${LABEL}"
+remove_service() {
+	local label="$1"
+	local plist="$HOME/Library/LaunchAgents/${label}.plist"
+	local target="${DOMAIN}/${label}"
+
+	launchctl bootout "$target" 2>/dev/null || true
+	rm -f "$plist"
+	echo "Removed launchd service ${label}"
+}
+
+remove_service "com.joyous.hub"
+remove_service "com.joyous.inkjoy-bridge"
+remove_service "com.joyous.samsung-bridge"
+remove_service "com.joyous.nixplay-bridge"

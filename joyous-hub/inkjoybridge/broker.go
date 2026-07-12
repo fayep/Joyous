@@ -1,4 +1,4 @@
-package main
+package inkjoybridge
 
 import (
 	"encoding/json"
@@ -29,7 +29,6 @@ func IsFrameClientID(s string) bool {
 }
 
 // ExtractTopicMAC pulls the MAC address from a known topic pattern.
-// Returns ("", false) if the topic is not recognised or the MAC is invalid.
 func ExtractTopicMAC(topic string) (string, bool) {
 	for _, prefix := range []string{"/device/report/", "/inkjoyap/"} {
 		if strings.HasPrefix(topic, prefix) {
@@ -58,7 +57,7 @@ type HeartInfo struct {
 	Battery     int
 	RSSI        int
 	Firmware    string
-	Orientation int // raw accelerometer value from DA215S
+	Orientation int
 }
 
 // ParseHeartPayload extracts telemetry from a heart MQTT payload.
@@ -107,7 +106,60 @@ func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 	}, nil
 }
 
-// ShouldIntercept reports whether cloud→frame action is handled locally by the hub.
+// SleepInfo holds data extracted from a frame's sleep (power-off) message.
+// Reason's enum values aren't confirmed yet — observed so far: 2 (seen at
+// 47% battery, so likely the scheduled wifi_sleep window rather than a
+// low-battery trigger, but not verified against other reason values).
+type SleepInfo struct {
+	Battery int
+	Reason  int
+}
+
+// ParseSleepPayload extracts telemetry from a frame's sleep MQTT payload.
+func ParseSleepPayload(payload []byte) (SleepInfo, error) {
+	var msg struct {
+		Data struct {
+			Battery int `json:"battery"`
+			Reason  int `json:"reason"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return SleepInfo{}, err
+	}
+	return SleepInfo{Battery: msg.Data.Battery, Reason: msg.Data.Reason}, nil
+}
+
+// ShouldIntercept reports whether cloud→frame action is handled locally by the bridge.
 func ShouldIntercept(action string, intercept AllowList) bool {
 	return intercept.Allows(action)
+}
+
+// MQTTAction extracts the action field from an InkJoy MQTT JSON payload.
+func MQTTAction(payload []byte) string {
+	var env struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return ""
+	}
+	return env.Action
+}
+
+// MQTTMsgid extracts the msgid field from an InkJoy MQTT JSON payload.
+func MQTTMsgid(payload []byte) string {
+	var env struct {
+		Msgid json.RawMessage `json:"msgid"`
+	}
+	if err := json.Unmarshal(payload, &env); err != nil || len(env.Msgid) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(env.Msgid, &s); err == nil {
+		return s
+	}
+	var n json.Number
+	if err := json.Unmarshal(env.Msgid, &n); err == nil {
+		return n.String()
+	}
+	return strings.Trim(string(env.Msgid), `"`)
 }

@@ -3,31 +3,16 @@
 # macOS:  ~/Library/Application Support/Joyous/config.yaml
 # Linux:  ~/.config/Joyous/config.yaml  ($XDG_CONFIG_HOME/Joyous/config.yaml)
 #
-# CLI flags override these values. Upstream credentials can also come from
-# INKJOY_MQTT_USER / INKJOY_MQTT_PASSWORD when left blank here.
+# InkJoy bridge settings (upstream MQTT, allow lists, frame broker) live in
+# inkjoy-config.yaml in the same directory.
 
-listen_mqtt: ":11883"
+listen_mqtt: ":1883"
 listen_http: ":18080"
-
-# Upstream InkJoy cloud broker (empty = local-only hub, no cloud bridge)
-upstream: "13.39.148.101:1883"
-upstream_usr: ""
-upstream_pwd: ""
-
-# frame → broker (/device/report/{MAC}) — actions forwarded to the cloud
-upstream_allow: "login,heart,play_ack,fpga_ota_ack,shutdown,image_refresh_ack,ota_ack,wifi_sleep_ack,mqtt_config_ack"
-
-# broker → frame (/inkjoyap/{MAC}) — actions forwarded from cloud to frame
-downstream_allow: "login_ack,heart_ack,play,device_config,shutdown_ack,image_refresh_ack,wifi_sleep"
-
-# broker → frame — handled by the hub instead of reaching the frame (checked first)
-# ota/fpga: blocked from frame; MQTT payload + firmware saved under ota_dir
-intercept: "mqtt_config,wifi_sleep,ota,fpga"
 
 # Device registry, uploaded images, Samsung frame configs
 data_dir: "./data"
 
-# Hostname:port shown to frames for image URLs and BLE adopt
+# Hostname:port shown to Samsung frames for image URLs
 server_addr: ""
 
 # Comma-separated LAN prefixes for Samsung MDC discovery fallback
@@ -35,12 +20,3 @@ discover_subnets: ""
 
 # Optional directory for stdout.log / stderr.log (launchd uses its own paths)
 log_dir: ""
-
-# Unknown MQTT actions saved here (outside disposable logs).
-# Intercepted cloud→frame payloads → {capture_dir}/intercept/{action}.jsonl
-# empty or "auto" → {data_dir}/capture; "off" to disable
-capture_dir: ""
-
-# Blocked OTA/FPGA pushes: save MQTT JSON + download firmware immediately.
-# empty or "auto" → {data_dir}/ota; "off" to block without saving
-ota_dir: ""

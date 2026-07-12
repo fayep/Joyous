@@ -1,0 +1,27 @@
+# Nixplay bridge configuration
+#
+# macOS:  ~/Library/Application Support/Joyous/nixplay-config.yaml
+#
+# CLI flags override these values.
+
+# Joyous hub broker (bridge registers here)
+hub_mqtt: "tcp://127.0.0.1:1883"
+
+# Joyous hub HTTP (album fetch for send.image originals)
+hub_http: "http://127.0.0.1:18080"
+
+# Bridge-local data (currently unused, reserved for future caching)
+data_dir: "./data-nixplay"
+
+# macOS Keychain (Passwords app) lookup for the Nixplay account. Add the
+# password once with:
+#
+#   security add-generic-password -a "you@example.com" -s "joyous-hub-nixplay" -w
+#
+# (run that yourself in Terminal — it'll prompt for the password so it never
+# has to be typed into a config file or a chat).
+keychain_service: "joyous-hub-nixplay"
+keychain_account: ""  # your Nixplay account email
+
+# Optional directory for bridge file logging (launchd uses its own paths)
+log_dir: ""

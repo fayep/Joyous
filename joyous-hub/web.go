@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"joyous-hub/bridgehub"
+	"joyous-hub/inkjoybridge"
 )
 
 // MQTTPublisher is satisfied by the real broker and by test doubles.
@@ -28,16 +31,20 @@ type Hub struct {
 	overlay        *OverlayStore
 	color          *ColorStore
 	weather        weatherClient
-	hubIP      string // resolved non-loopback LAN IP, used for play URLs and BLE adoption
-	publisher  MQTTPublisher
-	serverAddr string // e.g. "192.168.1.5:8080" — used in play URLs
-	mqttPort   int    // MQTT broker port the frame should connect to (e.g. 11883)
-	mqttLog    *MQTTLogBuffer
+	bridgeCoord    *bridgehub.Coordinator
+	hubIP          string
+	publisher      MQTTPublisher
+	serverAddr     string
+	mqttLog        *MQTTLogBuffer // inkjoy-bridge frame MQTT (unused on hub)
+	joyousMQTTLog  *MQTTLogBuffer // hub broker: bridge↔hub joyous protocol
 }
 
-// handleMQTTLogs serves GET /api/mqtt/logs — last N messages per side for the web UI.
+// handleMQTTLogs serves GET /api/mqtt/logs — hub↔bridge Joyous MQTT on the hub broker.
 func (h *Hub) handleMQTTLogs(w http.ResponseWriter, r *http.Request) {
-	local, upstream := h.mqttLog.Snapshot()
+	var local, upstream []MQTTLogEntry
+	if h.joyousMQTTLog != nil {
+		local, upstream = h.joyousMQTTLog.Snapshot()
+	}
 	if local == nil {
 		local = []MQTTLogEntry{}
 	}
@@ -105,46 +112,6 @@ func localHHMMToUTC(hhmm string) string {
 		return hhmm
 	}
 	return t.UTC().Format("15:04")
-}
-
-// handleBLEScan serves POST /api/inkjoy/ble/scan — scans for IJ_ BLE frames.
-func (h *Hub) handleBLEScan(w http.ResponseWriter, r *http.Request) {
-	frames, err := ScanBLEFrames(8 * time.Second)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(frames)
-}
-
-// handleBLEAdopt serves POST /api/inkjoy/ble/adopt — provisions a frame via BluFi.
-func (h *Hub) handleBLEAdopt(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Address string `json:"address"`
-		SSID    string `json:"ssid"`
-		WifiPwd string `json:"wifi_pwd"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Address == "" || body.SSID == "" {
-		http.Error(w, "address, ssid and wifi_pwd required", http.StatusBadRequest)
-		return
-	}
-
-	// Derive MQTT host from hub's server address (same host, different port).
-	mqttHost := h.hubIP
-	if mqttHost == "" {
-		mqttHost, _, _ = net.SplitHostPort(h.serverAddr)
-	}
-	if mqttHost == "" {
-		mqttHost = h.serverAddr
-	}
-
-	if err := AdoptBLEFrame(body.Address, body.SSID, body.WifiPwd, mqttHost, h.mqttPort, "inkjoy", "inkjoy"); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 // handleSleep serves POST /api/devices/{id}/sleep — sends wifi_sleep to an InkJoy frame.
@@ -417,40 +384,9 @@ func (h *Hub) handleStatic(w http.ResponseWriter, r *http.Request) {
 // ── MQTT payload helpers ─────────────────────────────────────────────────────
 // Ack result bitfield: see inkjoy_ack.go
 
-func buildActionPayloadFor(mac, action string, data map[string]any) []byte {
-	msg := map[string]any{
-		"action": action,
-		"msgid":  fmt.Sprintf("%d", time.Now().UnixMilli()),
-		"stamac": mac,
-	}
-	if data != nil {
-		msg["data"] = data
-	}
-	b, _ := json.Marshal(msg)
-	return b
-}
-
-// buildAckPayloadFor builds a frame→cloud ack matching real frame shape:
-// clientid, stamac, data.ack_msgid, and result (default inkjoyAckAccepted).
+// buildAckPayloadFor builds a frame→cloud ack matching real frame shape.
 func buildAckPayloadFor(mac, ackAction, ackMsgid string, data map[string]any) []byte {
-	if data == nil {
-		data = map[string]any{}
-	}
-	if ackMsgid != "" {
-		data["ack_msgid"] = ackMsgid
-	}
-	if _, ok := data["result"]; !ok {
-		data["result"] = inkjoyAckAccepted
-	}
-	msg := map[string]any{
-		"action":   ackAction,
-		"clientid": mac,
-		"msgid":    fmt.Sprintf("%d", time.Now().UnixMilli()),
-		"stamac":   mac,
-		"data":     data,
-	}
-	b, _ := json.Marshal(msg)
-	return b
+	return inkjoybridge.BuildAckPayload(mac, ackAction, ackMsgid, data)
 }
 
 // buildPlayPayload returns the MQTT payload and the msgid it embedded.
@@ -746,9 +682,11 @@ const indexHTML = `<!DOCTYPE html>
   .mqtt-entry .action{background:#e8eaf6;color:#1a1a2e;padding:1px 6px;border-radius:4px;font-family:monospace;font-size:.75rem}
   .mqtt-entry .note{color:#856404;background:#fff3cd;padding:1px 6px;border-radius:4px;font-size:.75rem}
   .mqtt-entry .topic{font-family:monospace;font-size:.72rem;color:#666;word-break:break-all;margin-bottom:.25rem}
-  .mqtt-entry pre{margin:0;white-space:pre-wrap;word-break:break-word;font-size:.72rem;line-height:1.35;background:#fff;border:1px solid #eee;border-radius:4px;padding:.4rem .5rem}
+  .mqtt-entry pre{margin:0;white-space:pre-wrap;word-break:break-word;font-size:.72rem;line-height:1.35;background:#fff;border:1px solid #eee;border-radius:4px;padding:.4rem .5rem;user-select:text;-webkit-user-select:text;cursor:text}
   .mqtt-entry.clampable:not(.expanded) pre{display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden}
   .mqtt-expand-hint{font-size:.68rem;color:#888;margin-top:.2rem}
+  .mqtt-copy{margin-left:auto;font-size:.68rem;padding:2px 8px;border:1px solid #ccc;border-radius:4px;background:#fff;cursor:pointer;color:#333}
+  .mqtt-copy:hover{background:#f0f0f0}
   .mqtt-empty{color:#888;font-size:.9rem;margin:0}
 </style>
 </head>
@@ -760,8 +698,8 @@ const indexHTML = `<!DOCTYPE html>
     <button class="active" onclick="showTab('album',this)">Album</button>
     <button onclick="showTab('overlays',this)">Overlays</button>
     <button onclick="showTab('color',this)">Color</button>
-    <button onclick="showTab('inkjoy',this)">InkJoy</button>
-    <button onclick="showTab('mqtt',this)">MQTT</button>
+    <button id="nav-inkjoy" style="display:none" onclick="showTab('inkjoy',this)">InkJoy</button>
+    <button id="nav-mqtt" style="display:none" onclick="showTab('mqtt',this)">MQTT</button>
     <button onclick="showTab('samsung',this)">Samsung</button>
   </nav>
 </header>
@@ -968,107 +906,20 @@ const indexHTML = `<!DOCTYPE html>
     </div>
   </div>
   <div id="tab-inkjoy" style="display:none">
-    <!-- Adopt modal -->
-    <div id="adopt-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:1000;align-items:center;justify-content:center">
-      <div style="background:#fff;border-radius:10px;padding:1.5rem;min-width:320px;max-width:420px">
-        <h3 style="margin-top:0">Adopt frame</h3>
-        <p id="adopt-frame-name" style="font-family:monospace;color:#555;margin:.25rem 0 1rem"></p>
-        <label style="display:block;margin-bottom:.75rem">
-          WiFi network (SSID)<br>
-          <input id="adopt-ssid" style="width:100%;box-sizing:border-box;padding:.4rem;margin-top:.3rem;border:1px solid #ccc;border-radius:4px">
-        </label>
-        <label style="display:block;margin-bottom:1rem">
-          WiFi password<br>
-          <input id="adopt-pwd" type="password" style="width:100%;box-sizing:border-box;padding:.4rem;margin-top:.3rem;border:1px solid #ccc;border-radius:4px">
-        </label>
-        <div id="adopt-status" style="font-size:.9rem;color:#666;min-height:1.2em;margin-bottom:.75rem"></div>
-        <div style="display:flex;gap:.5rem;justify-content:flex-end">
-          <button class="btn btn-sm" onclick="closeAdopt()">Cancel</button>
-          <button class="btn btn-sm btn-primary" id="adopt-submit-btn" onclick="submitAdopt()">Adopt</button>
-        </div>
-      </div>
-    </div>
-    <!-- Calibration modal -->
-    <div id="calibration-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:1000;align-items:center;justify-content:center;padding:1rem" onclick="if(event.target===this)closeCalibrationModal()">
-      <div style="background:#fff;border-radius:10px;padding:1rem 1.25rem;max-width:min(96vw,1200px);max-height:92vh;overflow:auto">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.75rem">
-          <h3 style="margin:0" id="calibration-modal-title">Calibration chart</h3>
-          <button class="btn btn-sm" onclick="closeCalibrationModal()">Close</button>
-        </div>
-        <p id="calibration-modal-desc" style="font-size:.85rem;color:#666;margin:0 0 .75rem"></p>
-        <img id="calibration-modal-img" alt="Calibration chart" style="display:block;max-width:100%;height:auto;border:1px solid #ddd;border-radius:4px">
-        <div style="display:flex;gap:.5rem;margin-top:1rem;flex-wrap:wrap">
-          <button class="btn btn-sm btn-primary" id="calibration-send-btn" onclick="sendCalibrationChart()">Send to frame</button>
-          <span id="calibration-send-status" style="font-size:.85rem;color:#666;align-self:center"></span>
-        </div>
-      </div>
-    </div>
-    <div style="display:flex;gap:1.5rem;align-items:flex-start">
-      <div style="min-width:220px">
-        <div class="section-label">Frames</div>
-        <div id="inkjoy-frame-list"><p style="color:#888;font-size:.9rem">No InkJoy frames yet.</p></div>
-        <div style="margin-top:.75rem">
-          <button class="btn btn-sm btn-primary" id="ble-scan-btn" onclick="startBLEScan()">Find new frames</button>
-          <span id="ble-scan-status" style="display:block;font-size:.8rem;color:#666;margin-top:.4rem"></span>
-        </div>
-        <div id="ble-scan-results" style="margin-top:.75rem"></div>
-      </div>
-      <div id="inkjoy-editor" style="flex:1;display:none">
-        <div class="card">
-          <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem">
-            <div class="dot" id="ij-dot"></div>
-            <h3 style="margin:0" id="ij-title"></h3>
-            <span id="ij-status-badge" class="badge"></span>
-          </div>
-          <div style="display:flex;gap:.5rem;margin-bottom:.75rem">
-            <input id="ij-name-input" placeholder="Friendly name" style="padding:.3rem .5rem;border:1px solid #ccc;border-radius:4px;flex:1">
-            <button class="btn btn-sm btn-primary" onclick="saveIJName()">Rename</button>
-          </div>
-          <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:1rem">
-            <label style="display:flex;align-items:center;gap:.4rem;font-size:.9rem;cursor:pointer">
-              <input type="checkbox" id="ij-portrait" onchange="saveIJPortrait()">
-              Portrait orientation (3:4 crop, rotate 90°)
-            </label>
-          </div>
-          <div class="info-grid" id="ij-info"></div>
-        </div>
-        <div class="card">
-          <div class="section-label" style="margin-top:0">Currently displayed</div>
-          <div id="ij-last-image"><p style="color:#888;font-size:.9rem">Nothing sent yet this session.</p></div>
-          <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
-            <button class="btn btn-sm" style="background:#6c757d;color:#fff" onclick="ijRefresh()">Refresh display</button>
-            <button class="btn btn-sm" onclick="openCalibrationModal('inkjoy')">Calibration chart</button>
-            <button class="btn btn-sm" onclick="openCalibrationModal('inkjoy-lo-ladder')">lo ladder chart</button>
-          </div>
-          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">To send from the shared album, use <strong>Album → Send</strong> and pick this frame.</p>
-        </div>
-        <div class="card">
-          <div class="section-label" style="margin-top:0">Sleep schedule</div>
-          <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap">
-            <label style="font-size:.9rem">Sleep from <input type="time" id="ij-sleep-begin" style="margin-left:.4rem;padding:.3rem"></label>
-            <label style="font-size:.9rem">to <input type="time" id="ij-sleep-end" style="padding:.3rem"></label>
-            <button class="btn btn-sm btn-primary" onclick="ijSaveSleep()">Save</button>
-            <button class="btn btn-sm" style="background:#6c757d;color:#fff" onclick="ijClearSleep()">Clear (always on)</button>
-          </div>
-          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">Frame will not display images during the sleep window. Clear sets begin=end=00:00.</p>
-        </div>
-        <div class="card" style="border:1px solid #f5c6cb">
-          <div class="section-label" style="margin-top:0;color:#dc3545">Danger zone</div>
-          <button class="btn btn-sm" style="background:#dc3545;color:#fff" onclick="ijDeleteDevice()">Remove frame from hub</button>
-          <span style="margin-left:.75rem;font-size:.85rem;color:#888">Does not affect the frame itself.</span>
-        </div>
-      </div>
-    </div>
+    <iframe id="inkjoy-bridge-frame" title="InkJoy configuration" style="width:100%;border:none;min-height:calc(100vh - 5rem);background:#f8f9fa"></iframe>
   </div>
   <div id="tab-mqtt" style="display:none">
-    <p style="color:#666;font-size:.9rem;margin-top:0">Last 20 messages per side. Newest at top. Scroll the column; click a long message to expand its body.</p>
+    <p style="color:#666;font-size:.9rem;margin-top:0">Joyous hub broker (<code>:1883</code>) — last 20 messages per direction. Newest at top.</p>
+    <label style="display:flex;align-items:center;gap:.5rem;margin:.25rem 0 .75rem;font-size:.9rem;color:#555">
+      <input type="checkbox" id="mqtt-hide-ui" onchange="onMqttHideUIChange()"> Hide ui.*, devices.sync, bridge.hello (keeps play &amp; send.image)
+    </label>
     <div class="mqtt-grid">
       <div class="mqtt-col card">
-        <h2>Frame ↔ Hub</h2>
+        <h2>Bridge → Hub</h2>
         <div id="mqtt-local" class="mqtt-log"><p class="mqtt-empty">No messages yet.</p></div>
       </div>
       <div class="mqtt-col card">
-        <h2>Hub ↔ Cloud</h2>
+        <h2>Hub → Bridge</h2>
         <div id="mqtt-upstream" class="mqtt-log"><p class="mqtt-empty">No messages yet.</p></div>
       </div>
     </div>
@@ -1191,17 +1042,52 @@ document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible') checkJoyousUIRevision();
 });
 
-let devices=[], images=[], activeTab='album';
+let devices=[], images=[], activeTab='album', inkjoyBridgeOnline=false;
+
+async function refreshBridgeNav(){
+  try{
+    const r=await fetch('/api/bridges',{cache:'no-store'});
+    if(!r.ok) return;
+    const data=await r.json();
+    const bridges=data.bridges||[];
+    const inkjoy=bridges.find(b=>b.id==='inkjoy'&&b.online&&b.has_config_ui);
+    const wasOnline=inkjoyBridgeOnline;
+    inkjoyBridgeOnline=!!inkjoy;
+    const navIJ=document.getElementById('nav-inkjoy');
+    const navMQ=document.getElementById('nav-mqtt');
+    if(navIJ) navIJ.style.display=inkjoyBridgeOnline?'':'none';
+    if(navMQ) navMQ.style.display='';
+    if(!inkjoyBridgeOnline){
+      const frame=document.getElementById('inkjoy-bridge-frame');
+      if(frame){ frame.dataset.loaded=''; frame.removeAttribute('src'); }
+    }
+    if(!inkjoyBridgeOnline&&activeTab==='inkjoy'){
+      showTab('devices',document.querySelector('nav button'));
+    }
+    if(inkjoyBridgeOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
+    if(inkjoyBridgeOnline&&!wasOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
+  }catch(_){}
+}
+
+function loadInkjoyBridgeFrame(){
+  const frame=document.getElementById('inkjoy-bridge-frame');
+  if(!frame||frame.dataset.loaded==='1') return;
+  frame.src='/inkjoy/';
+  frame.dataset.loaded='1';
+}
+
+refreshBridgeNav();
+setInterval(refreshBridgeNav,5000);
 
 function showTab(name,btn){
   activeTab=name;
   document.querySelectorAll('[id^=tab-]').forEach(e=>e.style.display='none');
   document.getElementById('tab-'+name).style.display='';
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
+  if(btn) btn.classList.add('active');
   stopTabRefresh();
   if(name==='devices') startTabRefresh(5000, refreshDevicesTab);
-  else if(name==='inkjoy') startTabRefresh(5000, refreshInkjoyTab);
+  else if(name==='inkjoy'){ loadInkjoyBridgeFrame(); }
   else if(name==='samsung') startTabRefresh(60000, refreshSamsungTab);
   else if(name==='album') startTabRefresh(5000, refreshAlbumTab);
   else if(name==='overlays') loadOverlaysTab();
@@ -1212,9 +1098,46 @@ function showTab(name,btn){
 
 let mqttLogTimer=null;
 const mqttExpanded=new Set();
+let mqttHideUIInitialized=false;
 function mqttEntryKey(e){ return e.time+'\0'+e.topic+'\0'+e.dir; }
+function initMqttHideUI(){
+  if(mqttHideUIInitialized) return;
+  mqttHideUIInitialized=true;
+  const cb=document.getElementById('mqtt-hide-ui');
+  if(!cb) return;
+  cb.checked=localStorage.getItem('mqtt-hide-ui')==='1';
+}
+function onMqttHideUIChange(){
+  const cb=document.getElementById('mqtt-hide-ui');
+  if(cb) localStorage.setItem('mqtt-hide-ui',cb.checked?'1':'0');
+  for(const id of ['mqtt-local','mqtt-upstream']){
+    const el=document.getElementById(id);
+    if(el) delete el.dataset.mqttSig;
+  }
+  loadMQTTLogs();
+}
+function mqttEntryImportant(e){
+  const a=e.action||'';
+  if(a==='play'||a==='play_ack'||a.startsWith('bridge.cmd')) return true;
+  if(a==='bridge.event'||a==='send.complete'||a.startsWith('send.complete')) return true;
+  const body=e.body||'';
+  if(body.indexOf('"cmd":"send.image"')>=0||body.indexOf('"action":"play"')>=0) return true;
+  return false;
+}
+function mqttEntryHidden(e){
+  if(mqttEntryImportant(e)) return false;
+  if(!e.action) return false;
+  if(e.action.startsWith('ui.')) return true;
+  return e.action==='devices.sync'||e.action==='bridge.hello'||e.action==='ui.state';
+}
+function filterMQTTEntries(entries){
+  const cb=document.getElementById('mqtt-hide-ui');
+  if(!cb||!cb.checked) return entries;
+  return (entries||[]).filter(e=>!mqttEntryHidden(e));
+}
 function startMQTTLogPoll(){
   if(mqttLogTimer) return;
+  initMqttHideUI();
   loadMQTTLogs();
   mqttLogTimer=setInterval(loadMQTTLogs, 1000);
 }
@@ -1227,43 +1150,138 @@ function esc(s){
 function mqttBodyLong(body){
   return body && (body.length>180 || body.split('\n').length>6);
 }
-function renderMQTTEntries(entries){
-  if(!entries||!entries.length) return '<p class="mqtt-empty">No messages yet.</p>';
-  const list=entries.slice().reverse();
-  return list.map(e=>{
-    const note=e.note?'<span class="note">'+esc(e.note)+'</span>':'';
-    const action=e.action?'<span class="action">'+esc(e.action)+'</span>':'';
-    const longBody=mqttBodyLong(e.body);
-    const key=mqttEntryKey(e);
-    const expanded=mqttExpanded.has(key);
-    const cls='mqtt-entry'+(longBody?' clampable':'')+(expanded?' expanded':'');
-    const body=e.body?'<pre>'+esc(e.body)+'</pre>':'';
-    const hint=longBody&&!expanded?'<div class="mqtt-expand-hint">Click to expand</div>':'';
-    const dataKey=longBody?' data-key="'+encodeURIComponent(key)+'" onclick="toggleMQTTEntry(this)"':'';
-    return '<div class="'+cls+'"'+dataKey+'><div class="meta"><span class="time">'+esc(e.time)+'</span><span class="dir">'+esc(e.dir)+'</span>'+action+note+'</div><div class="topic">'+esc(e.topic)+'</div>'+body+hint+'</div>';
-  }).join('');
+function mqttSelectionIn(el){
+  const sel=window.getSelection();
+  if(!sel||sel.isCollapsed||!sel.rangeCount) return false;
+  let node=sel.anchorNode;
+  if(!node) return false;
+  if(node.nodeType===Node.TEXT_NODE) node=node.parentElement;
+  return node&&el.contains(node);
 }
-function toggleMQTTEntry(el){
-  const key=decodeURIComponent(el.dataset.key);
+function mqttEntryHTML(e){
+  const note=e.note?'<span class="note">'+esc(e.note)+'</span>':'';
+  const action=e.action?'<span class="action">'+esc(e.action)+'</span>':'';
+  const longBody=mqttBodyLong(e.body);
+  const key=mqttEntryKey(e);
+  const expanded=mqttExpanded.has(key);
+  const cls='mqtt-entry'+(longBody?' clampable':'')+(expanded?' expanded':'');
+  const body=e.body?'<pre>'+esc(e.body)+'</pre>':'';
+  const copyBtn=e.body?'<button type="button" class="mqtt-copy" onclick="event.stopPropagation();copyMQTTPayload(this)" title="Copy payload">Copy</button>':'';
+  const hint=longBody&&!expanded?'<div class="mqtt-expand-hint">Click row to expand</div>':'';
+  const expandAttr=longBody?' onclick="toggleMQTTEntry(this,event)"':'';
+  const keyAttr=' data-mqtt-key="'+encodeURIComponent(key)+'"';
+  return '<div class="'+cls+'"'+keyAttr+expandAttr+'><div class="meta"><span class="time">'+esc(e.time)+'</span><span class="dir">'+esc(e.dir)+'</span>'+action+note+copyBtn+'</div><div class="topic">'+esc(e.topic)+'</div>'+body+hint+'</div>';
+}
+function toggleMQTTEntry(el,ev){
+  if(ev&&(ev.target.closest('pre')||ev.target.closest('.mqtt-copy'))) return;
+  const key=decodeURIComponent(el.dataset.mqttKey);
   if(mqttExpanded.has(key)) mqttExpanded.delete(key);
   else mqttExpanded.add(key);
   el.classList.toggle('expanded');
   const hint=el.querySelector('.mqtt-expand-hint');
-  if(hint) hint.textContent=el.classList.contains('expanded')?'Click to collapse':'Click to expand';
+  if(hint) hint.textContent=el.classList.contains('expanded')?'Click to collapse':'Click row to expand';
 }
-function setMQTTColumn(id,html){
-  const el=document.getElementById(id);
+async function copyMQTTPayload(btn){
+  const pre=btn.closest('.mqtt-entry')?.querySelector('pre');
+  if(!pre) return;
+  const text=pre.textContent;
+  try{
+    await navigator.clipboard.writeText(text);
+  }catch(_){
+    const r=document.createRange();
+    r.selectNodeContents(pre);
+    const sel=window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+    document.execCommand('copy');
+    sel.removeAllRanges();
+  }
+  const prev=btn.textContent;
+  btn.textContent='Copied';
+  setTimeout(()=>{ btn.textContent=prev; },1500);
+}
+function applyMQTTColumn(el,list,sig){
+  if(!list.length){
+    el.innerHTML='<p class="mqtt-empty">No messages yet.</p>';
+    el.dataset.mqttSig='';
+    return;
+  }
+  const keys=list.map(mqttEntryKey);
+  const children=[...el.querySelectorAll('.mqtt-entry[data-mqtt-key]')];
+  const childKeys=children.map(c=>decodeURIComponent(c.dataset.mqttKey));
+  if(children.length){
+    const offset=keys.length-childKeys.length;
+    if(offset>=0&&offset<=5){
+      let suffixMatch=true;
+      for(let i=0;i<childKeys.length;i++){
+        if(keys[i+offset]!==childKeys[i]){ suffixMatch=false; break; }
+      }
+      if(suffixMatch){
+        if(offset===0){
+          el.dataset.mqttSig=sig;
+          return;
+        }
+        const y=el.scrollTop;
+        const empty=el.querySelector('.mqtt-empty');
+        if(empty) empty.remove();
+        const frag=document.createDocumentFragment();
+        for(let i=0;i<offset;i++){
+          const tmp=document.createElement('div');
+          tmp.innerHTML=mqttEntryHTML(list[i]);
+          frag.appendChild(tmp.firstElementChild);
+        }
+        el.insertBefore(frag,el.firstChild);
+        while(el.querySelectorAll('.mqtt-entry').length>list.length){
+          el.querySelector('.mqtt-entry:last-child')?.remove();
+        }
+        el.dataset.mqttSig=sig;
+        el.scrollTop=y;
+        return;
+      }
+    }
+  }
   const y=el.scrollTop;
-  el.innerHTML=html;
+  el.innerHTML=list.map(mqttEntryHTML).join('');
   el.scrollTop=y;
+  el.dataset.mqttSig=sig;
 }
+function updateMQTTColumn(id,entries){
+  const el=document.getElementById(id);
+  if(!el) return;
+  const list=(entries||[]).slice().reverse();
+  const sig=list.map(mqttEntryKey).join('\0');
+  if(el.dataset.mqttSig===sig) return;
+  if(mqttSelectionIn(el)){
+    el.dataset.mqttPending='1';
+    return;
+  }
+  delete el.dataset.mqttPending;
+  applyMQTTColumn(el,list,sig);
+}
+let mqttSelectionFlushTimer=null;
+document.addEventListener('selectionchange',()=>{
+  const tab=document.getElementById('tab-mqtt');
+  if(!tab||tab.style.display==='none') return;
+  let needsFlush=false;
+  for(const id of ['mqtt-local','mqtt-upstream']){
+    const el=document.getElementById(id);
+    if(!el||!el.dataset.mqttPending) continue;
+    if(mqttSelectionIn(el)) return;
+    delete el.dataset.mqttPending;
+    needsFlush=true;
+  }
+  if(needsFlush){
+    clearTimeout(mqttSelectionFlushTimer);
+    mqttSelectionFlushTimer=setTimeout(loadMQTTLogs,150);
+  }
+});
 async function loadMQTTLogs(){
   try{
     const r=await fetch('/api/mqtt/logs');
     if(!r.ok) return;
     const data=await r.json();
-    setMQTTColumn('mqtt-local',renderMQTTEntries(data.local));
-    setMQTTColumn('mqtt-upstream',renderMQTTEntries(data.upstream));
+    updateMQTTColumn('mqtt-local',filterMQTTEntries(data.local));
+    updateMQTTColumn('mqtt-upstream',filterMQTTEntries(data.upstream));
   }catch(_){}
 }
 
@@ -1296,11 +1314,6 @@ document.addEventListener('visibilitychange',()=>{
 
 async function refreshDevicesTab(){
   await loadDevicesInner();
-}
-
-async function refreshInkjoyTab(){
-  await loadDevicesInner();
-  loadIJFrames();
 }
 
 async function refreshSamsungTab(){
@@ -1341,8 +1354,7 @@ async function ensureDevicesForSend(){
 
 async function loadDevices(){
   await loadDevicesInner();
-  if(activeTab==='inkjoy') loadIJFrames();
-  else if(activeTab==='samsung') await loadSamsungFrames();
+  if(activeTab==='samsung') await loadSamsungFrames();
 }
 
 async function discoverFrames(){
@@ -2323,7 +2335,7 @@ function sendImageToFrame(evt, imageId){
   if(evt) evt.stopPropagation();
   const btn=document.getElementById('send-btn-'+imageId);
   ensureDevicesForSend().then(()=>{
-    const frameDevices=devices.filter(d=>d.type==='inkjoy'||d.type==='samsung');
+    const frameDevices=devices.filter(d=>d.type==='inkjoy'||d.type==='samsung'||d.type==='nixplay');
     if(!frameDevices.length){alert('No frames registered — check Devices tab or Discover.');return;}
     if(frameDevices.length===1){doSend(imageId,frameDevices[0].id,btn);return;}
     if(sendPickerImageId===imageId){closePickers();return;}
@@ -2504,7 +2516,7 @@ async function startBLEScan(){
   const res=document.getElementById('ble-scan-results');
   btn.disabled=true; st.textContent='Scanning for 8 seconds…'; res.innerHTML='';
   try{
-    const r=await fetch('/api/inkjoy/ble/scan',{method:'POST'});
+    const r=await fetch('/inkjoy/api/ble/scan',{method:'POST'});
     if(!r.ok) throw new Error(await r.text());
     const frames=await r.json();
     if(!frames||!frames.length){st.textContent='No InkJoy frames found nearby.';return;}
@@ -2548,7 +2560,7 @@ async function submitAdopt(){
   const btn=document.getElementById('adopt-submit-btn');
   st.textContent='Connecting via Bluetooth…'; btn.disabled=true;
   try{
-    const r=await fetch('/api/inkjoy/ble/adopt',{
+    const r=await fetch('/inkjoy/api/ble/adopt',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({address:adoptTarget.address,ssid,wifi_pwd:pwd})
     });
@@ -2676,7 +2688,7 @@ function updateIJEditorStatus(d){
   dot.className='dot '+(d.connected?'online':'offline');
   const badge=document.getElementById('ij-status-badge');
   badge.className='badge '+(d.connected?'online':'offline');
-  badge.textContent=d.connected?'online':'offline';
+  badge.textContent=d.connected?'online':inkjoyOfflineLabel(d);
   const ago=d.last_seen?timeAgo(d.last_seen):'never';
   document.getElementById('ij-info').innerHTML=
     '<span class="label">MAC</span><span style="font-family:monospace">'+d.mac+'</span>'+
@@ -2779,7 +2791,7 @@ async function loadDevicesInner(){
     const type=d.type||'inkjoy';
     const status=type==='samsung'
       ? (d.connected?'<span class="badge online">active</span>':'<span class="badge offline">'+samsungOfflineLabel(d)+'</span>')
-      : (d.connected?'<span class="badge online">online</span>':'<span class="badge offline">offline</span>');
+      : (d.connected?'<span class="badge online">online</span>':'<span class="badge offline">'+inkjoyOfflineLabel(d)+'</span>');
     const meta=type==='inkjoy'
       ? ((d.firmware?'fw '+d.firmware+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.rssi?'📶'+d.rssi+'dBm ':''))
       : (d.ip?d.ip+' ':'')+(d.battery?'🔋'+d.battery+'% ':'')+(d.power_source?('<span style="color:#666">'+d.power_source+' </span>'):'')+(d.display_crop_format?('<span style="color:#666">'+d.display_crop_format+(d.display_width?(' · '+d.display_width+'×'+d.display_height):'')+'</span> '):'')+(d.usn?'<span style="color:#888;font-size:.8rem">'+d.usn.split('::')[0]+'</span>':'');
@@ -3289,6 +3301,16 @@ let samsungFrames=[], samsungCurrentId=null, samsungStatusCache=null, samsungPre
 
 function samsungOfflineLabel(d,rec,s){
   return samsungDeepSleep(d,rec,s)?'deep sleep':'asleep';
+}
+
+// InkJoy/Seeed shutdown fully ignores the network (radio off, RTC-timer
+// wake) — the same "deep sleep" meaning used on the Samsung side (as
+// opposed to "asleep" there, which means reachable network standby). It
+// self-wakes on its own schedule with no remote/button nudge needed, so
+// this is a label only — no restore push like Samsung's morning routine.
+function inkjoyOfflineLabel(d){
+  if(d.last_action==='shutdown' && d.sleep_end_time) return 'deep sleep · back '+d.sleep_end_time;
+  return 'offline';
 }
 
 function samsungFrameRecord(frameId){

@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"joyous-hub/inkjoybridge"
 )
 
 // TestRegisterDevice: new device appears in list after registration.
@@ -31,7 +33,7 @@ func TestRegisterDevice(t *testing.T) {
 func TestUpdateDeviceHeart(t *testing.T) {
 	reg := NewDeviceRegistry(t.TempDir())
 	reg.MarkConnected("AABBCCDDEEFF")
-	reg.UpdateHeart("AABBCCDDEEFF", HeartInfo{Battery: 72, RSSI: -55, Firmware: "0.5.6"})
+	reg.UpdateHeart("AABBCCDDEEFF", inkjoybridge.HeartInfo{Battery: 72, RSSI: -55, Firmware: "0.5.6"})
 
 	devs := reg.List()
 	d := devs[0]
@@ -57,6 +59,56 @@ func TestMarkDisconnected(t *testing.T) {
 	}
 }
 
+// TestMarkShutdown: an explicit shutdown clears Connected, records the
+// reason, and picks up the reported battery level — distinguishing it from
+// a device that just stopped responding.
+func TestMarkShutdown(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.MarkConnected("AABBCCDDEEFF")
+	reg.MarkShutdown("AABBCCDDEEFF", inkjoybridge.SleepInfo{Battery: 47, Reason: 2})
+	devs := reg.List()
+	if devs[0].Connected {
+		t.Error("device should be disconnected after shutdown")
+	}
+	if devs[0].LastAction != "shutdown" {
+		t.Errorf("LastAction: got %q want %q", devs[0].LastAction, "shutdown")
+	}
+	if devs[0].Battery != 47 {
+		t.Errorf("Battery: got %d want 47", devs[0].Battery)
+	}
+}
+
+// TestImportInkJoyFrom copies hub InkJoy devices into an empty bridge registry.
+func TestImportInkJoyFrom(t *testing.T) {
+	hubDir := t.TempDir()
+	bridgeDir := t.TempDir()
+
+	hub := NewDeviceRegistry(hubDir)
+	hub.MarkConnected("AABBCCDDEEFF")
+	hub.SetName("AABBCCDDEEFF", "10in frame")
+	if err := hub.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	bridge := NewDeviceRegistry(bridgeDir)
+	n, err := bridge.ImportInkJoyFrom(hubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("imported %d want 1", n)
+	}
+	devs := bridge.List()
+	if len(devs) != 1 || devs[0].ID != "AABBCCDDEEFF" || devs[0].Name != "10in frame" {
+		t.Fatalf("bridge devices: %+v", devs)
+	}
+
+	n, err = bridge.ImportInkJoyFrom(hubDir)
+	if err != nil || n != 0 {
+		t.Fatalf("second import: n=%d err=%v", n, err)
+	}
+}
+
 // TestLastSeenUpdated: MarkConnected and UpdateHeart update LastSeen.
 func TestLastSeenUpdated(t *testing.T) {
 	reg := NewDeviceRegistry(t.TempDir())
@@ -73,7 +125,7 @@ func TestPersistAndReload(t *testing.T) {
 	dir := t.TempDir()
 	reg := NewDeviceRegistry(dir)
 	reg.MarkConnected("AABBCCDDEEFF")
-	reg.UpdateHeart("AABBCCDDEEFF", HeartInfo{Battery: 88, Firmware: "0.5.6"})
+	reg.UpdateHeart("AABBCCDDEEFF", inkjoybridge.HeartInfo{Battery: 88, Firmware: "0.5.6"})
 	if err := reg.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -100,8 +152,8 @@ func TestMultipleDevices(t *testing.T) {
 	reg := NewDeviceRegistry(t.TempDir())
 	reg.MarkConnected("AABBCCDDEEFF")
 	reg.MarkConnected("30EDA0E3FBE8")
-	reg.UpdateHeart("AABBCCDDEEFF", HeartInfo{Battery: 50})
-	reg.UpdateHeart("30EDA0E3FBE8", HeartInfo{Battery: 90})
+	reg.UpdateHeart("AABBCCDDEEFF", inkjoybridge.HeartInfo{Battery: 50})
+	reg.UpdateHeart("30EDA0E3FBE8", inkjoybridge.HeartInfo{Battery: 90})
 
 	devs := reg.List()
 	if len(devs) != 2 {

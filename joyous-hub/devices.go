@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"joyous-hub/inkjoybridge"
 )
 
 // DeviceType identifies how to reach a photo frame.
@@ -16,6 +18,7 @@ type DeviceType string
 const (
 	DeviceTypeInkJoy  DeviceType = "inkjoy"
 	DeviceTypeSamsung DeviceType = "samsung"
+	DeviceTypeNixplay DeviceType = "nixplay"
 )
 
 // SamsungRecentWindow is how long after hub contact a Samsung frame counts as active.
@@ -58,6 +61,7 @@ type Device struct {
 	Portrait       bool   `json:"portrait,omitempty"` // user-set: frame is in portrait orientation
 	Orientation    int    `json:"orientation"`        // raw accelerometer value from heart (unreliable)
 	DeepSleepActive bool  `json:"deep_sleep_active,omitempty"` // samsung: overnight deep sleep (button wake)
+	bridgeID        string `json:"-"` // owning bridge when synced via joyous protocol
 }
 
 // DeviceRegistry tracks known frames in memory and persists them to disk.
@@ -192,8 +196,27 @@ func (r *DeviceRegistry) MarkDisconnected(id string) {
 	}
 }
 
+// MarkShutdown records that an InkJoy frame explicitly reported going to
+// sleep (nightly wifi_sleep window, low battery, power key, etc.) before
+// going dark — distinct from just timing out, so status views can show
+// "asleep" rather than "unreachable". LastAction is normalized to
+// "shutdown" internally regardless of which wire action name (real frames
+// send "sleep"; see broker.go SleepInfo) triggered it, so hub-internal
+// state and UI checks don't have to track the wire vocabulary.
+func (r *DeviceRegistry) MarkShutdown(mac string, info inkjoybridge.SleepInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d := r.getOrCreateInkJoy(mac)
+	d.Connected = false
+	d.LastSeen = time.Now()
+	d.LastAction = "shutdown"
+	if info.Battery > 0 {
+		d.Battery = info.Battery
+	}
+}
+
 // UpdateHeart applies telemetry from a heart message.
-func (r *DeviceRegistry) UpdateHeart(mac string, info HeartInfo) {
+func (r *DeviceRegistry) UpdateHeart(mac string, info inkjoybridge.HeartInfo) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := r.getOrCreateInkJoy(mac)
@@ -208,7 +231,7 @@ func (r *DeviceRegistry) UpdateHeart(mac string, info HeartInfo) {
 }
 
 // UpdateLogin applies login info.
-func (r *DeviceRegistry) UpdateLogin(mac string, info LoginInfo) {
+func (r *DeviceRegistry) UpdateLogin(mac string, info inkjoybridge.LoginInfo) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := r.getOrCreateInkJoy(mac)
@@ -621,6 +644,45 @@ func (r *DeviceRegistry) Load() error {
 		r.m[d.ID] = d
 	}
 	return nil
+}
+
+// ImportInkJoyFrom copies InkJoy devices from another registry directory (typically
+// the hub data_dir) into this one. Existing IDs are left unchanged. Returns the
+// number of devices imported.
+func (r *DeviceRegistry) ImportInkJoyFrom(hubDir string) (int, error) {
+	return r.importDevicesFrom(hubDir, DeviceTypeInkJoy)
+}
+
+// ImportSamsungFrom copies Samsung devices from another registry directory.
+func (r *DeviceRegistry) ImportSamsungFrom(hubDir string) (int, error) {
+	return r.importDevicesFrom(hubDir, DeviceTypeSamsung)
+}
+
+func (r *DeviceRegistry) importDevicesFrom(hubDir string, kind DeviceType) (int, error) {
+	if strings.TrimSpace(hubDir) == "" {
+		return 0, nil
+	}
+	other := NewDeviceRegistry(hubDir)
+	if err := other.Load(); err != nil {
+		return 0, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, d := range other.List() {
+		if d.Type != kind {
+			continue
+		}
+		if _, ok := r.m[d.ID]; ok {
+			continue
+		}
+		cp := d
+		cp.Connected = false
+		cp.bridgeID = ""
+		r.m[d.ID] = &cp
+		n++
+	}
+	return n, nil
 }
 
 func migrateDevice(d *Device) {
