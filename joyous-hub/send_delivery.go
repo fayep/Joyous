@@ -35,6 +35,7 @@ type sendDelivery struct {
 	DeliveredAt    time.Time
 	RetryAttempts  int    // bumped by IncrementRetry; any bridge can report progress this way
 	LastError      string // most recent retry/failure detail (SendCompletePayload.Detail)
+	SessionID      string // owning browser session (event_bus.go); BroadcastSessionID if none
 	done           chan struct{}
 	inkjoyMsgID    string
 	samsungFrameID string
@@ -71,14 +72,25 @@ func (t *SendDeliveryTracker) register(d *sendDelivery) *sendDelivery {
 	return d
 }
 
+// Register starts tracking a send with no owning session (BroadcastSessionID) — used by
+// system-triggered sends (scheduled sends) and anywhere a caller doesn't have a browser session
+// to attribute the send to. Its "send" events go to every connected session rather than just
+// one, which is exactly the behavior wanted for a send nobody in particular asked for.
 func (t *SendDeliveryTracker) Register(deviceID, imageID string) *sendDelivery {
+	return t.RegisterWithSession(deviceID, imageID, BroadcastSessionID)
+}
+
+// RegisterWithSession is Register, attributing the send to sessionID so its "send" events are
+// unicast to just that browser session instead of broadcast to everyone.
+func (t *SendDeliveryTracker) RegisterWithSession(deviceID, imageID, sessionID string) *sendDelivery {
 	d := &sendDelivery{
-		ID:       newSendID(),
-		DeviceID: deviceID,
-		ImageID:  imageID,
-		Status:   sendStatusPending,
-		Created:  time.Now(),
-		done:     make(chan struct{}),
+		ID:        newSendID(),
+		DeviceID:  deviceID,
+		ImageID:   imageID,
+		Status:    sendStatusPending,
+		Created:   time.Now(),
+		SessionID: sessionID,
+		done:      make(chan struct{}),
 	}
 	return t.register(d)
 }
@@ -336,6 +348,26 @@ func (t *SendDeliveryTracker) remove(sendID string) {
 	delete(t.byID, sendID)
 }
 
+// ActiveSendsFor returns full status payloads (see sendStatusPayload) for every in-flight send
+// visible to sessionID — its own unicast sends plus any broadcast-owned (system-triggered, e.g.
+// scheduled send) ones — so a browser tab that just (re)connected to the event stream is caught
+// up on anything already in progress, not just events that happen to fire after it subscribes.
+func (t *SendDeliveryTracker) ActiveSendsFor(sessionID string) []map[string]any {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []map[string]any
+	for _, d := range t.byID {
+		if d.Status != sendStatusPending && d.Status != sendStatusDownloading {
+			continue
+		}
+		if d.SessionID != sessionID && d.SessionID != BroadcastSessionID {
+			continue
+		}
+		out = append(out, sendStatusPayload(d))
+	}
+	return out
+}
+
 // ActiveSendInfo is a minimal, JSON-safe view of an in-flight send.
 type ActiveSendInfo struct {
 	SendID   string `json:"send_id"`
@@ -419,6 +451,14 @@ func (h *Hub) handleSendStatus(w http.ResponseWriter, r *http.Request, sendID st
 			return
 		}
 	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(sendStatusPayload(d))
+}
+
+// sendStatusPayload builds the JSON-safe status snapshot for a send — shared by
+// handleSendStatus (GET /api/send/{sendId}) and the event bus, so a live "send" SSE event has
+// exactly the same shape a client would get from polling.
+func sendStatusPayload(d *sendDelivery) map[string]any {
 	status := d.Status
 	if d.RetryAttempts > 0 && (status == sendStatusPending || status == sendStatusDownloading) {
 		status = sendStatusRetrying
@@ -440,6 +480,5 @@ func (h *Hub) handleSendStatus(w http.ResponseWriter, r *http.Request, sendID st
 	if d.Status == sendStatusFailed && d.LastError != "" {
 		out["error"] = d.LastError
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(out)
+	return out
 }

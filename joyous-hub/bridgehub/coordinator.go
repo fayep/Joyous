@@ -30,6 +30,11 @@ type DeviceStore interface {
 type bridgeRecord struct {
 	hello    protocol.HelloPayload
 	lastSeen time.Time
+	// reportedOffline tracks whether checkStaleBridges has already fired onBridgesChanged for
+	// this bridge going silent, so a sweep tick doesn't re-fire every cycle while it stays
+	// offline. Reset implicitly: a fresh Hello replaces the whole bridgeRecord (see
+	// handleBridgeTopic's "presence" case), defaulting this back to false.
+	reportedOffline bool
 }
 
 // BridgeStatus is the hub-facing view of a connected bridge.
@@ -50,9 +55,11 @@ type Coordinator struct {
 	mu       sync.RWMutex
 	bridges  map[string]bridgeRecord
 	uiState  map[string]protocol.UIStatePayload
-	pending        map[string]chan protocol.UIHTTPResponsePayload
-	onCmd          func(bridgeID string, cmd protocol.CmdPayload)
-	onSendComplete func(body protocol.SendCompletePayload)
+	pending          map[string]chan protocol.UIHTTPResponsePayload
+	onCmd            func(bridgeID string, cmd protocol.CmdPayload)
+	onSendComplete   func(body protocol.SendCompletePayload)
+	onBridgesChanged func()
+	onDevicesChanged func()
 }
 
 // NewCoordinator attaches bridge protocol hooks to the hub MQTT broker.
@@ -75,6 +82,59 @@ func (c *Coordinator) SetCommandHandler(fn func(bridgeID string, cmd protocol.Cm
 // SetSendCompleteHandler receives bridge send delivery reports.
 func (c *Coordinator) SetSendCompleteHandler(fn func(body protocol.SendCompletePayload)) {
 	c.onSendComplete = fn
+}
+
+// SetBridgesChangedHandler is called after a bridge's presence/capabilities change (a Hello
+// that's a genuine online transition — see the wasOnline check in handleBridgeTopic, not every
+// 15s heartbeat). Lets the hub push a fresh ListBridgeStatus() snapshot to connected sessions
+// instead of them polling for it.
+func (c *Coordinator) SetBridgesChangedHandler(fn func()) {
+	c.onBridgesChanged = fn
+}
+
+// SetDevicesChangedHandler is called after a bridge reports a device sync or delta (the
+// "devices"/"device" topics — the single funnel every bridge's device state flows through).
+// Lets the hub push a fresh device list to connected sessions instead of them polling for it.
+func (c *Coordinator) SetDevicesChangedHandler(fn func()) {
+	c.onDevicesChanged = fn
+}
+
+// StartStalenessSweep periodically checks for bridges that have gone silent past
+// bridgePresenceTTL and fires onBridgesChanged for that transition. A bridge going *online* is
+// announced immediately by its own Hello (see handleBridgeTopic), but nothing else observes it
+// going *offline* — "online" is otherwise only computed lazily, whenever something happens to
+// call ListBridgeStatus/BridgeOnline — so without this sweep, a silently-disconnected bridge
+// would never get reported to already-connected sessions at all.
+func (c *Coordinator) StartStalenessSweep(ctx context.Context) {
+	ticker := time.NewTicker(bridgePresenceTTL / 3)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.checkStaleBridges()
+			}
+		}
+	}()
+}
+
+func (c *Coordinator) checkStaleBridges() {
+	c.mu.Lock()
+	wentStale := false
+	for id, rec := range c.bridges {
+		if bridgeOnlineLocked(rec) || rec.reportedOffline {
+			continue
+		}
+		rec.reportedOffline = true
+		c.bridges[id] = rec
+		wentStale = true
+	}
+	c.mu.Unlock()
+	if wentStale && c.onBridgesChanged != nil {
+		c.onBridgesChanged()
+	}
 }
 
 // AttachClient subscribes a Paho client to bridge topics (for tests or external broker).
@@ -115,21 +175,31 @@ func (c *Coordinator) handleBridgeTopic(topic string, payload []byte) {
 			c.bridges[bridgeID] = bridgeRecord{hello: hello, lastSeen: time.Now()}
 			c.mu.Unlock()
 			// publishHello also runs as a 15s keepalive heartbeat (see Client.heartbeat),
-			// not just on connect — only log when the bridge actually transitions from
-			// unknown/offline to online, or every heartbeat tick spams the log forever.
+			// not just on connect — only log/broadcast when the bridge actually transitions
+			// from unknown/offline to online, or every heartbeat tick spams the log (and,
+			// now, every connected session) forever for no actual change.
 			if !wasOnline {
 				log.Printf("bridgehub: bridge %q online kind=%s caps=%v", bridgeID, hello.Kind, hello.Capabilities)
+				if c.onBridgesChanged != nil {
+					c.onBridgesChanged()
+				}
 			}
 		}
 	case "devices":
 		if env.Type == protocol.TypeDevices && c.store != nil {
 			body, _ := protocol.DecodePayload[protocol.DevicesPayload](env)
 			c.store.SyncBridgeDevices(bridgeID, body.Devices)
+			if c.onDevicesChanged != nil {
+				c.onDevicesChanged()
+			}
 		}
 	case "device":
 		if env.Type == protocol.TypeDevice && c.store != nil {
 			body, _ := protocol.DecodePayload[protocol.DevicePayload](env)
 			c.store.ApplyBridgeDevice(bridgeID, body.Device)
+			if c.onDevicesChanged != nil {
+				c.onDevicesChanged()
+			}
 		}
 	case "ui":
 		switch env.Type {

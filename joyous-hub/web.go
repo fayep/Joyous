@@ -32,6 +32,7 @@ type Hub struct {
 	overlay        *OverlayStore
 	color          *ColorStore
 	scheduledSends *ScheduledSendStore
+	events         *EventBus
 	weather        weatherClient
 	bridgeCoord    *bridgehub.Coordinator
 	hubIP          string
@@ -210,13 +211,6 @@ func (h *Hub) handleImages(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(imgs)
 }
 
-// handleImagesRevision serves GET /api/images/revision — cheap poll for album changes.
-func (h *Hub) handleImagesRevision(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-cache")
-	json.NewEncoder(w).Encode(map[string]string{"revision": h.images.AlbumRevision()})
-}
-
 // handleImageUpload serves POST /api/images.
 func (h *Hub) handleImageUpload(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
@@ -236,6 +230,9 @@ func (h *Hub) handleImageUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if meta, err := h.images.GetMeta(id); err == nil {
+		h.publishImagesUpdated(meta)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"id": id, "name": name})
 }
@@ -243,6 +240,7 @@ func (h *Hub) handleImageUpload(w http.ResponseWriter, r *http.Request) {
 // handleImageDelete serves DELETE /api/images/{id}.
 func (h *Hub) handleImageDelete(w http.ResponseWriter, r *http.Request, id string) {
 	h.images.DeleteImage(id)
+	h.publishImagesRemoved(id)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -296,6 +294,7 @@ func (h *Hub) handleImagePatch(w http.ResponseWriter, r *http.Request, id string
 		http.Error(w, err.Error(), code)
 		return
 	}
+	h.publishImagesUpdated(meta)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(meta)
 }
@@ -309,7 +308,7 @@ func (h *Hub) handleDisplay(w http.ResponseWriter, r *http.Request, deviceID str
 		http.Error(w, "image_id required", http.StatusBadRequest)
 		return
 	}
-	sendID, err := h.sendImageToDeviceAuto(deviceID, body.ImageID)
+	sendID, err := h.sendImageToDeviceAutoSession(deviceID, body.ImageID, requestSessionID(r))
 	if err != nil {
 		code := http.StatusBadRequest
 		if strings.Contains(err.Error(), "frame did not wake") {
@@ -362,6 +361,9 @@ func (h *Hub) handleSaveCrop(w http.ResponseWriter, r *http.Request, id string) 
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	if meta, err := h.images.GetMeta(id); err == nil {
+		h.publishImagesUpdated(meta)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -376,6 +378,9 @@ func (h *Hub) handleDeleteCrop(w http.ResponseWriter, r *http.Request, id string
 	if err := h.images.DeleteCrop(id, format); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
+	}
+	if meta, err := h.images.GetMeta(id); err == nil {
+		h.publishImagesUpdated(meta)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
@@ -1053,27 +1058,34 @@ function joyousUIBusy(){
   return !!(m&&m.classList.contains('open'));
 }
 
-async function checkJoyousUIRevision(){
+// applyRevisionEvent handles the "revision" event the hub sends as part of every event-stream
+// handshake (see event_bus.go's handleEvents) — on first connect AND on every automatic
+// EventSource reconnect. A hub restart (new build deployed) drops the connection, so the very
+// reconnect that follows carries the new revision — no separate polling interval needed to
+// catch it, unlike the old 60s /api/ui/revision poll this replaces.
+function applyRevisionEvent(data){
   if(joyousUIBusy()) return;
-  try{
-    const r=await fetch('/api/ui/revision',{cache:'no-store'});
-    if(!r.ok) return;
-    const j=await r.json();
-    if(j.revision&&joyousUIRevision&&j.revision!==joyousUIRevision){
-      location.reload();
-      return;
-    }
-    if(j.revision) joyousUIRevision=j.revision;
-  }catch(e){}
+  if(data&&data.revision&&joyousUIRevision&&data.revision!==joyousUIRevision){
+    location.reload();
+    return;
+  }
+  if(data&&data.revision) joyousUIRevision=data.revision;
 }
-
-setInterval(checkJoyousUIRevision,60000);
-document.addEventListener('visibilitychange',()=>{
-  if(document.visibilityState==='visible') checkJoyousUIRevision();
-});
 
 let devices=[], images=[], activeTab='album', inkjoyBridgeOnline=false, nixplayBridgeOnline=false;
 let schedState={}; // deviceId -> {albumId, times:[...], enabled} — in-progress schedule editor state
+
+// joyousSessionId identifies this tab to the hub's event stream (see event_bus.go) — a send
+// this tab triggers is unicast back to just this id; one triggered elsewhere (e.g. a scheduled
+// send) is broadcast to every session instead. New id per page load; nothing is persisted.
+const joyousSessionId=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():('sess-'+Date.now()+'-'+Math.random().toString(36).slice(2));
+
+// sessionHeaders merges the X-Session-Id header (see requestSessionID in event_bus.go) into a
+// fetch() headers object, for the send-triggering requests whose progress this tab wants
+// unicast back to itself rather than broadcast to every open tab.
+function sessionHeaders(extra){
+  return Object.assign({'X-Session-Id':joyousSessionId}, extra||{});
+}
 
 // ── Toasts (top-right) ───────────────────────────────────────────────────────
 const toastStack=document.getElementById('toast-stack');
@@ -1110,44 +1122,42 @@ function dismissToast(id){
   setTimeout(()=>{el.remove();delete toastEls[id];},200);
 }
 
-async function refreshBridgeNav(){
-  try{
-    const r=await fetch('/api/bridges',{cache:'no-store'});
-    if(!r.ok) return;
-    const data=await r.json();
-    const bridges=data.bridges||[];
-    const inkjoy=bridges.find(b=>b.id==='inkjoy'&&b.online&&b.has_config_ui);
-    const wasOnline=inkjoyBridgeOnline;
-    inkjoyBridgeOnline=!!inkjoy;
-    const navIJ=document.getElementById('nav-inkjoy');
-    const navMQ=document.getElementById('nav-mqtt');
-    if(navIJ) navIJ.style.display=inkjoyBridgeOnline?'':'none';
-    if(navMQ) navMQ.style.display='';
-    if(!inkjoyBridgeOnline){
-      const frame=document.getElementById('inkjoy-bridge-frame');
-      if(frame){ frame.dataset.loaded=''; frame.removeAttribute('src'); }
-    }
-    if(!inkjoyBridgeOnline&&activeTab==='inkjoy'){
-      showTab('devices',document.querySelector('nav button'));
-    }
-    if(inkjoyBridgeOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
-    if(inkjoyBridgeOnline&&!wasOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
+// applyBridgeStatus renders bridge nav badges from a "bridges" event pushed over the event
+// stream (see connectJoyousEvents below) — the handshake snapshot on connect covers the
+// initial paint, so there's no separate REST fetch for this anymore.
+function applyBridgeStatus(bridges){
+  bridges=bridges||[];
+  const inkjoy=bridges.find(b=>b.id==='inkjoy'&&b.online&&b.has_config_ui);
+  const wasOnline=inkjoyBridgeOnline;
+  inkjoyBridgeOnline=!!inkjoy;
+  const navIJ=document.getElementById('nav-inkjoy');
+  const navMQ=document.getElementById('nav-mqtt');
+  if(navIJ) navIJ.style.display=inkjoyBridgeOnline?'':'none';
+  if(navMQ) navMQ.style.display='';
+  if(!inkjoyBridgeOnline){
+    const frame=document.getElementById('inkjoy-bridge-frame');
+    if(frame){ frame.dataset.loaded=''; frame.removeAttribute('src'); }
+  }
+  if(!inkjoyBridgeOnline&&activeTab==='inkjoy'){
+    showTab('devices',document.querySelector('nav button'));
+  }
+  if(inkjoyBridgeOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
+  if(inkjoyBridgeOnline&&!wasOnline&&activeTab==='inkjoy') loadInkjoyBridgeFrame();
 
-    const nixplay=bridges.find(b=>b.id==='nixplay'&&b.online&&b.has_config_ui);
-    const nixplayWasOnline=nixplayBridgeOnline;
-    nixplayBridgeOnline=!!nixplay;
-    const navNX=document.getElementById('nav-nixplay');
-    if(navNX) navNX.style.display=nixplayBridgeOnline?'':'none';
-    if(!nixplayBridgeOnline){
-      const frame=document.getElementById('nixplay-bridge-frame');
-      if(frame){ frame.dataset.loaded=''; frame.removeAttribute('src'); }
-    }
-    if(!nixplayBridgeOnline&&activeTab==='nixplay'){
-      showTab('devices',document.querySelector('nav button'));
-    }
-    if(nixplayBridgeOnline&&activeTab==='nixplay') loadNixplayBridgeFrame();
-    if(nixplayBridgeOnline&&!nixplayWasOnline&&activeTab==='nixplay') loadNixplayBridgeFrame();
-  }catch(_){}
+  const nixplay=bridges.find(b=>b.id==='nixplay'&&b.online&&b.has_config_ui);
+  const nixplayWasOnline=nixplayBridgeOnline;
+  nixplayBridgeOnline=!!nixplay;
+  const navNX=document.getElementById('nav-nixplay');
+  if(navNX) navNX.style.display=nixplayBridgeOnline?'':'none';
+  if(!nixplayBridgeOnline){
+    const frame=document.getElementById('nixplay-bridge-frame');
+    if(frame){ frame.dataset.loaded=''; frame.removeAttribute('src'); }
+  }
+  if(!nixplayBridgeOnline&&activeTab==='nixplay'){
+    showTab('devices',document.querySelector('nav button'));
+  }
+  if(nixplayBridgeOnline&&activeTab==='nixplay') loadNixplayBridgeFrame();
+  if(nixplayBridgeOnline&&!nixplayWasOnline&&activeTab==='nixplay') loadNixplayBridgeFrame();
 }
 
 function loadInkjoyBridgeFrame(){
@@ -1164,9 +1174,6 @@ function loadNixplayBridgeFrame(){
   frame.dataset.loaded='1';
 }
 
-refreshBridgeNav();
-setInterval(refreshBridgeNav,5000);
-
 function showTab(name,btn){
   activeTab=name;
   document.querySelectorAll('[id^=tab-]').forEach(e=>e.style.display='none');
@@ -1174,11 +1181,10 @@ function showTab(name,btn){
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   if(btn) btn.classList.add('active');
   stopTabRefresh();
-  if(name==='devices') startTabRefresh(5000, refreshDevicesTab);
-  else if(name==='inkjoy'){ loadInkjoyBridgeFrame(); }
+  if(name==='inkjoy'){ loadInkjoyBridgeFrame(); }
   else if(name==='nixplay'){ loadNixplayBridgeFrame(); }
   else if(name==='samsung') startTabRefresh(60000, refreshSamsungTab);
-  else if(name==='album') startTabRefresh(5000, refreshAlbumTab);
+  else if(name==='album') loadImages();
   else if(name==='overlays') loadOverlaysTab();
   else if(name==='color') loadColorTab();
   if(name==='mqtt') startMQTTLogPoll();
@@ -1401,41 +1407,10 @@ document.addEventListener('visibilitychange',()=>{
   }
 });
 
-async function refreshDevicesTab(){
-  await loadDevicesInner();
-}
-
 async function refreshSamsungTab(){
   await loadSamsungFrames();
 }
 
-let albumRevision=null;
-async function refreshAlbumTab(){
-  if(albumCaptionEditingId) return;
-  if(albumZoomId) return;
-  if(albumReorderBusy) return;
-  const m=document.getElementById('crop-modal');
-  if(m&&m.classList.contains('open')) return;
-  try{
-    const r=await fetch('/api/images/revision',{cache:'no-store'});
-    if(!r.ok) return;
-    const j=await r.json();
-    if(!j.revision) return;
-    if(!albumRevision||j.revision!==albumRevision){
-      albumRevision=j.revision;
-      await loadImages();
-    }
-  }catch(e){}
-}
-
-async function syncAlbumRevision(){
-  try{
-    const r=await fetch('/api/images/revision',{cache:'no-store'});
-    if(!r.ok) return;
-    const j=await r.json();
-    if(j.revision) albumRevision=j.revision;
-  }catch(e){}
-}
 
 async function ensureDevicesForSend(){
   await loadDevicesInner();
@@ -2186,7 +2161,6 @@ async function saveAlbumMove(draggedId, targetId){
       body:JSON.stringify({move:{id:draggedId,target:targetId}})
     });
     if(!r.ok) throw new Error(await r.text());
-    await syncAlbumRevision();
   }catch(e){
     images=prev;
     renderAlbumGrid();
@@ -2276,7 +2250,6 @@ async function loadImages(){
   images.forEach(img=>{ imageCropsCache[img.id]=img.crops||{}; });
   renderAlbumGrid();
   renderAlbumToolbar();
-  await syncAlbumRevision();
 }
 
 const sendPicker=document.getElementById('send-picker');
@@ -2337,7 +2310,7 @@ function samsungDeepSleepWakeHint(d,rec,s){
 
 async function postDisplay(deviceId,imageId){
   const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/display',{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:sessionHeaders({'Content-Type':'application/json'}),
     body:JSON.stringify({image_id:imageId})
   });
   if(!r.ok) throw new Error(await r.text());
@@ -2420,23 +2393,61 @@ function watchSendProgress(sendId,dev){
   return p;
 }
 
-// pollActiveSends discovers sends this tab didn't itself trigger — a scheduled send firing in
-// the background is the main case — and starts watching them the same way as a manual send
-// (progress toast, retrying/press-power-button hint included), in any open tab. Runs
-// independently of which tab is active, since a scheduled send can happen while the user is
-// looking at Album or anywhere else.
-async function pollActiveSends(){
-  try{
-    const r=await fetch('/api/sends/active');
-    if(!r.ok) return;
-    const active=await r.json()||[];
-    for(const a of active){
-      if(!a.send_id||sendWatches[a.send_id]) continue;
-      watchSendProgress(a.send_id,{type:a.device_type});
-    }
-  }catch(_){}
+// onSendDiscoveryEvent handles a "send" event from the event stream for a sendId this tab
+// isn't already watching — a scheduled send firing in the background is the main case. Starts
+// watching it the same way as a manual send (progress toast, retrying/press-power-button hint
+// included). A terminal event (delivered/failed) for a send we never saw the start of is
+// skipped rather than popping a toast for something already finished — consistent with the
+// event bus's "if you weren't listening you don't care" design (see event_bus.go).
+function onSendDiscoveryEvent(data){
+  if(!data||!data.send_id||sendWatches[data.send_id]) return;
+  if(data.status==='delivered'||data.status==='failed') return;
+  watchSendProgress(data.send_id,{type:data.device_type});
 }
-setInterval(pollActiveSends,5000);
+
+function applyErrorEvent(data){
+  if(!data) return;
+  showToast('error-'+Date.now()+'-'+Math.random().toString(36).slice(2), data.message||'Something went wrong', {type:'error',closable:true,autoHideMs:10000});
+}
+
+// applyImagesEvent reacts to a created/edited/deleted image or a reordered album (see
+// imagesEventPayload in event_bus.go) by re-fetching the currently-viewed album — replacing
+// the old fixed-interval Album tab poll and its /api/images/revision hash-compare entirely.
+// A live re-fetch (via the same buildImagesURL()/loadImages() the tab already uses) is simpler
+// and provably correct compared to re-implementing the server's tag/format/orientation smart-
+// album filter matching in JS just to patch the DOM surgically, and on this app's LAN-local
+// single-hub setup the extra round trip is cheap. Only fires while the Album tab is the one
+// actually visible, and never while joyousUIBusy() (mid-edit — see its own doc comment).
+function applyImagesEvent(data){
+  if(!data||activeTab!=='album'||joyousUIBusy()) return;
+  const removedVisible=data.removed&&data.removed.some(id=>images.some(img=>img.id===id));
+  const updatedAny=data.updated&&data.updated.length>0;
+  const reorderedCurrent=data.reordered_albums&&data.reordered_albums.includes(currentAlbumId);
+  if(updatedAny||removedVisible||reorderedCurrent) loadImages();
+}
+
+// connectJoyousEvents opens the single event stream (see event_bus.go) that replaces what used
+// to be five independently-polled endpoints: devices, bridge nav status, active sends, UI
+// revision, and the Album tab's image-catalog poll. EventSource reconnects automatically on
+// any drop — each (re)connection gets a fresh handshake snapshot of everything (see
+// handleEvents), so a missed event during a brief disconnect is corrected by the next snapshot
+// rather than needing replay.
+function connectJoyousEvents(){
+  const es=new EventSource('/api/events?session='+encodeURIComponent(joyousSessionId));
+  es.onmessage=(evt)=>{
+    let msg;
+    try{ msg=JSON.parse(evt.data); }catch(e){ return; }
+    switch(msg.type){
+      case 'devices': applyDevicesSnapshot(msg.data); break;
+      case 'bridges': applyBridgeStatus(msg.data); break;
+      case 'send': onSendDiscoveryEvent(msg.data); break;
+      case 'error': applyErrorEvent(msg.data); break;
+      case 'revision': applyRevisionEvent(msg.data); break;
+      case 'images': applyImagesEvent(msg.data); break;
+    }
+  };
+}
+connectJoyousEvents();
 
 async function doSend(imageId, deviceId, feedbackBtn){
   closePickers();
@@ -2576,7 +2587,7 @@ async function sendCalibrationChart(){
     try{
       const j=await readJSONResponse(await fetch('/api/calibration/inkjoy/send',{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:sessionHeaders({'Content-Type':'application/json'}),
         body:JSON.stringify({device_id:ijCurrentId})
       }));
       const delivered=j.send_id?await waitSendDelivered(j.send_id):false;
@@ -2598,7 +2609,7 @@ async function sendCalibrationChart(){
       if(st) st.textContent='Push 1/2: black prime…';
       const j1=await readJSONResponse(await fetch('/api/calibration/inkjoy-black-248/send',{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:sessionHeaders({'Content-Type':'application/json'}),
         body:JSON.stringify({device_id:ijCurrentId})
       }));
       if(st) st.textContent='Push 1/2: waiting for download…';
@@ -2608,7 +2619,7 @@ async function sendCalibrationChart(){
       if(st) st.textContent='Push 2/2: lo ladder…';
       const j2=await readJSONResponse(await fetch('/api/calibration/inkjoy-lo-ladder/send',{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:sessionHeaders({'Content-Type':'application/json'}),
         body:JSON.stringify({device_id:ijCurrentId})
       }));
       if(st) st.textContent='Push 2/2: waiting for download…';
@@ -2628,7 +2639,7 @@ async function sendCalibrationChart(){
   if(st) st.textContent='Pushing…';
   if(btn) btn.disabled=true;
   try{
-    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/calibration',{method:'POST'});
+    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/calibration',{method:'POST',headers:sessionHeaders()});
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
     let delivered=false;
@@ -2964,10 +2975,13 @@ function deviceCardHTML(d){
 // devices is already server-sorted, so re-appending each card in that order (appendChild moves
 // an existing node rather than recreating it) keeps on-screen order in sync as devices are
 // added/renamed, without disturbing any card's contents or open editor.
-async function loadDevicesInner(){
-  const r=await fetch('/api/devices'); devices=await r.json();
+// applyDevicesSnapshot renders a full device list, from either a direct fetch
+// (loadDevicesInner) or a live "devices" event pushed over the event stream (see
+// joyousEvents below) — same incremental-patch logic either way.
+function applyDevicesSnapshot(newDevices){
+  devices=newDevices||[];
   const el=document.getElementById('device-list');
-  if(!devices||!devices.length){el.innerHTML='<p>No frames yet. Connect an InkJoy frame via MQTT, or click Discover for Samsung displays.</p>';return;}
+  if(!devices.length){el.innerHTML='<p>No frames yet. Connect an InkJoy frame via MQTT, or click Discover for Samsung displays.</p>';return;}
   if(!el.querySelector('.card')) el.innerHTML=''; // coming from the empty-state message or first load
   const seen=new Set();
   devices.forEach(d=>{
@@ -2989,6 +3003,11 @@ async function loadDevicesInner(){
   el.querySelectorAll('.card[data-device-id]').forEach(card=>{
     if(!seen.has(card.dataset.deviceId)) card.remove();
   });
+}
+
+async function loadDevicesInner(){
+  const r=await fetch('/api/devices');
+  applyDevicesSnapshot(await r.json());
 }
 
 // ── Scheduled sends (Devices tab) ────────────────────────────────────────────
@@ -3254,7 +3273,7 @@ async function overlaySend(deviceId){
   try{
     const r=await fetch('/api/overlay/send',{
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers:sessionHeaders({'Content-Type':'application/json'}),
       body:JSON.stringify({device_id:deviceId,use_current:true})
     });
     if(!r.ok) throw new Error(await r.text());
@@ -3974,7 +3993,7 @@ async function samsungPushCurrent(){
   const deepHint=samsungDeepSleepWakeHint(dev,rec,samsungStatusCache);
   if(st) st.textContent=deepHint||'Pushing…';
   try{
-    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/push',{method:'POST'});
+    const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/push',{method:'POST',headers:sessionHeaders()});
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
     let delivered=false;

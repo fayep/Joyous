@@ -7,6 +7,26 @@ import (
 	"time"
 )
 
+func TestRegisterDefaultsToBroadcastSession(t *testing.T) {
+	tr := NewSendDeliveryTracker()
+	d := tr.Register("dev", "img")
+	if d.SessionID != BroadcastSessionID {
+		t.Fatalf("got SessionID %q, want BroadcastSessionID", d.SessionID)
+	}
+}
+
+func TestRegisterWithSessionAttributesOwningSession(t *testing.T) {
+	tr := NewSendDeliveryTracker()
+	d := tr.RegisterWithSession("dev", "img", "session-abc")
+	if d.SessionID != "session-abc" {
+		t.Fatalf("got SessionID %q, want session-abc", d.SessionID)
+	}
+	got := tr.Get(d.ID)
+	if got == nil || got.SessionID != "session-abc" {
+		t.Fatalf("Get() lost SessionID: %+v", got)
+	}
+}
+
 func TestSendDeliveryWait(t *testing.T) {
 	tr := NewSendDeliveryTracker()
 	send := tr.Register("dev", "img")

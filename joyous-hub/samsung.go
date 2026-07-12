@@ -953,14 +953,16 @@ func (h *Hub) handleSamsungPush(w http.ResponseWriter, r *http.Request, frameID 
 	var sendID string
 	if h.sendDelivery != nil {
 		if etag, _, ok := h.samsung.PNGInfo(frameID); ok {
-			send := h.sendDelivery.Register(dev.ID, "")
+			send := h.sendDelivery.RegisterWithSession(dev.ID, "", requestSessionID(r))
 			h.sendDelivery.BindSamsung(send.ID, frameID, etag)
 			sendID = send.ID
+			h.publishSendEvent(sendID)
 		}
 	}
 	if err := h.pushSamsungFrame(frameID, dev); err != nil {
 		if sendID != "" {
 			h.sendDelivery.Fail(sendID)
+			h.publishSendEvent(sendID)
 		}
 		code := http.StatusBadGateway
 		if strings.Contains(err.Error(), "no image for frame") {

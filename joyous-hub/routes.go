@@ -49,7 +49,6 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 		hub.handleAlbumOrder(w, r, r.PathValue("id"))
 	})
 	mux.HandleFunc("GET /api/images", hub.handleImages)
-	mux.HandleFunc("GET /api/images/revision", hub.handleImagesRevision)
 	mux.HandleFunc("POST /api/images", hub.handleImageUpload)
 	mux.HandleFunc("DELETE /api/images/{id}", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleImageDelete(w, r, r.PathValue("id"))
@@ -107,6 +106,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 		hub.handleSendStatus(w, r, r.PathValue("sendId"))
 	})
 	mux.HandleFunc("GET /api/sends/active", hub.handleActiveSends)
+	mux.HandleFunc("GET /api/events", hub.handleEvents)
 	mux.HandleFunc("POST /api/devices/{id}/refresh", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleRefresh(w, r, r.PathValue("id"))
 	})

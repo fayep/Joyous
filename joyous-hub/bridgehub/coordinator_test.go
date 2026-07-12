@@ -63,6 +63,111 @@ func TestPresenceHeartbeatDoesNotReLogOnline(t *testing.T) {
 	}
 }
 
+// fakeDeviceStore is a minimal DeviceStore for tests that need handleBridgeTopic's
+// "devices"/"device" cases to actually reach c.store (and thus trigger onDevicesChanged).
+type fakeDeviceStore struct{}
+
+func (fakeDeviceStore) SyncBridgeDevices(string, []protocol.BridgeDevice) {}
+func (fakeDeviceStore) ApplyBridgeDevice(string, protocol.BridgeDevice)   {}
+func (fakeDeviceStore) RemoveBridgeDevice(string, string)                {}
+
+// TestBridgesChangedHandlerFiresOnlyOnRealTransition covers the same "not every 15s
+// heartbeat" rule as TestPresenceHeartbeatDoesNotReLogOnline, this time for the new
+// SetBridgesChangedHandler hook that lets the hub push a live "bridges" event instead of
+// polling for it.
+func TestBridgesChangedHandlerFiresOnlyOnRealTransition(t *testing.T) {
+	c := NewCoordinator(nil, nil)
+	var fired int
+	c.SetBridgesChangedHandler(func() { fired++ })
+
+	sendHello := func() {
+		payload, err := protocol.NewEnvelope(protocol.TypeHello, "testbridge", protocol.HelloPayload{Kind: "inkjoy"})
+		if err != nil {
+			t.Fatalf("NewEnvelope: %v", err)
+		}
+		c.HandleMessage(protocol.BridgeTopic("testbridge", "presence"), payload)
+	}
+
+	sendHello() // initial connect: real transition
+	sendHello() // heartbeat within TTL: not a transition
+
+	if fired != 1 {
+		t.Fatalf("got %d calls, want 1 (only the real online transition)", fired)
+	}
+}
+
+func TestDevicesChangedHandlerFiresOnSyncAndDelta(t *testing.T) {
+	c := NewCoordinator(nil, fakeDeviceStore{})
+	var fired int
+	c.SetDevicesChangedHandler(func() { fired++ })
+
+	syncPayload, err := protocol.NewEnvelope(protocol.TypeDevices, "testbridge", protocol.DevicesPayload{})
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	c.HandleMessage(protocol.BridgeTopic("testbridge", "devices"), syncPayload)
+
+	deltaPayload, err := protocol.NewEnvelope(protocol.TypeDevice, "testbridge", protocol.DevicePayload{})
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	c.HandleMessage(protocol.BridgeTopic("testbridge", "device"), deltaPayload)
+
+	if fired != 2 {
+		t.Fatalf("got %d calls, want 2 (one per devices sync, one per device delta)", fired)
+	}
+}
+
+func TestDevicesChangedHandlerNotCalledWithoutHandler(t *testing.T) {
+	// Must not panic when no handler is registered (the common case — most Coordinators
+	// never call SetDevicesChangedHandler).
+	c := NewCoordinator(nil, fakeDeviceStore{})
+	payload, err := protocol.NewEnvelope(protocol.TypeDevices, "testbridge", protocol.DevicesPayload{})
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	c.HandleMessage(protocol.BridgeTopic("testbridge", "devices"), payload)
+}
+
+// TestCheckStaleBridgesFiresOnceOnOfflineTransition covers a bridge going silent past the TTL:
+// nothing else observes that transition (online status is otherwise only computed lazily), so
+// without this sweep an already-connected session would never learn a bridge went offline.
+func TestCheckStaleBridgesFiresOnceOnOfflineTransition(t *testing.T) {
+	c := NewCoordinator(nil, nil)
+	var fired int
+	c.SetBridgesChangedHandler(func() { fired++ })
+
+	c.mu.Lock()
+	c.bridges["testbridge"] = bridgeRecord{
+		hello:    protocol.HelloPayload{Kind: "inkjoy"},
+		lastSeen: time.Now().Add(-bridgePresenceTTL - time.Second),
+	}
+	c.mu.Unlock()
+
+	c.checkStaleBridges()
+	c.checkStaleBridges() // a second sweep tick while still offline must not re-fire
+
+	if fired != 1 {
+		t.Fatalf("got %d calls, want exactly 1", fired)
+	}
+}
+
+func TestCheckStaleBridgesIgnoresOnlineBridges(t *testing.T) {
+	c := NewCoordinator(nil, nil)
+	var fired int
+	c.SetBridgesChangedHandler(func() { fired++ })
+
+	c.mu.Lock()
+	c.bridges["testbridge"] = bridgeRecord{hello: protocol.HelloPayload{Kind: "inkjoy"}, lastSeen: time.Now()}
+	c.mu.Unlock()
+
+	c.checkStaleBridges()
+
+	if fired != 0 {
+		t.Fatalf("got %d calls, want 0 for a still-online bridge", fired)
+	}
+}
+
 // TestBridgeForPath covers the hub's catch-all HTTP route (see Hub.handleStatic in web.go)
 // resolving which bridge owns an extra vendor-protocol path it declared via
 // HelloPayload.HTTPPaths, instead of falling through to serving the SPA.

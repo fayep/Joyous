@@ -345,3 +345,25 @@ func TestDeviceDeleteRemovesScheduledSendConfig(t *testing.T) {
 		t.Fatalf("expected scheduled send config to be removed after device delete, got %+v", cfg)
 	}
 }
+
+// TestRunScheduledSendPublishesErrorOnEmptyAlbum covers a failure mode that previously had no
+// user-facing surface at all: a scheduled send whose album is empty just logged server-side and
+// returned. It must now also broadcast an "error" event so anyone watching finds out.
+func TestRunScheduledSendPublishesErrorOnEmptyAlbum(t *testing.T) {
+	h := buildTestHub(t)
+	h.devices.MarkConnected("AABBCCDDEEFF")
+	sub, cancel := h.events.Subscribe("watcher")
+	defer cancel()
+
+	h.runScheduledSend(ScheduledSendConfig{DeviceID: "AABBCCDDEEFF", AlbumID: "empty-album"}, "09:00", time.Now(), nil)
+
+	select {
+	case payload := <-sub:
+		body := string(payload)
+		if !strings.Contains(body, `"type":"error"`) || !strings.Contains(body, "empty-album") {
+			t.Fatalf("got unexpected event: %s", body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected a broadcast error event for the empty album")
+	}
+}

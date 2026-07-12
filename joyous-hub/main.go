@@ -112,34 +112,6 @@ func main() {
 	_ = broker.AddHook(&bridgeHook{coord: bridgeCoord, log: joyousMQTTLog}, nil)
 
 	sendDelivery := NewSendDeliveryTracker()
-	bridgeCoord.SetSendCompleteHandler(func(body protocol.SendCompletePayload) {
-		if sendDelivery == nil || body.SendID == "" {
-			return
-		}
-		switch body.Phase {
-		case "bound", "prepared":
-			if body.FrameID != "" {
-				sendDelivery.BindSamsung(body.SendID, body.FrameID, body.ETag)
-				log.Printf("send bound send_id=%s device=%s frame=%s", body.SendID, body.DeviceID, body.FrameID)
-			}
-		case "downloading":
-			sendDelivery.MarkInkJoyDownloading(body.SendID)
-			log.Printf("send downloading send_id=%s device=%s", body.SendID, body.DeviceID)
-		case "retrying":
-			// Not terminal — a bridge is still trying (e.g. a Samsung frame asleep and
-			// waiting on a physical wake, or an InkJoy play republish). Must not fall to
-			// default, which would treat this as a final completion.
-			sendDelivery.IncrementRetry(body.SendID, body.Detail)
-			log.Printf("send retrying send_id=%s device=%s: %s", body.SendID, body.DeviceID, body.Detail)
-		default:
-			sendDelivery.CompleteSendDetailed(body.SendID, body.Success, body.Detail)
-			if body.Success {
-				log.Printf("send delivered send_id=%s device=%s", body.SendID, body.DeviceID)
-			} else if body.Detail != "" {
-				log.Printf("send failed send_id=%s device=%s: %s", body.SendID, body.DeviceID, body.Detail)
-			}
-		}
-	})
 	addr := *serverAddr
 	if addr == "" {
 		addr = localAddr(*httpAddr)
@@ -157,6 +129,7 @@ func main() {
 		overlay:        NewOverlayStore(*dataDir),
 		color:          colorStore,
 		scheduledSends: NewScheduledSendStore(*dataDir),
+		events:         NewEventBus(),
 		publisher:      &bridgeCoordinatorPublisher{coord: bridgeCoord},
 		bridgeCoord:    bridgeCoord,
 		joyousMQTTLog:  joyousMQTTLog,
@@ -164,6 +137,42 @@ func main() {
 		hubIP:          hubIP,
 	}
 	hub.migrateSamsungFramesOnStartup()
+
+	bridgeCoord.SetSendCompleteHandler(func(body protocol.SendCompletePayload) {
+		if hub.sendDelivery == nil || body.SendID == "" {
+			return
+		}
+		switch body.Phase {
+		case "bound", "prepared":
+			if body.FrameID != "" {
+				hub.sendDelivery.BindSamsung(body.SendID, body.FrameID, body.ETag)
+				log.Printf("send bound send_id=%s device=%s frame=%s", body.SendID, body.DeviceID, body.FrameID)
+			}
+		case "downloading":
+			hub.sendDelivery.MarkInkJoyDownloading(body.SendID)
+			log.Printf("send downloading send_id=%s device=%s", body.SendID, body.DeviceID)
+		case "retrying":
+			// Not terminal — a bridge is still trying (e.g. a Samsung frame asleep and
+			// waiting on a physical wake, or an InkJoy play republish). Must not fall to
+			// default, which would treat this as a final completion.
+			hub.sendDelivery.IncrementRetry(body.SendID, body.Detail)
+			log.Printf("send retrying send_id=%s device=%s: %s", body.SendID, body.DeviceID, body.Detail)
+		default:
+			hub.sendDelivery.CompleteSendDetailed(body.SendID, body.Success, body.Detail)
+			if body.Success {
+				log.Printf("send delivered send_id=%s device=%s", body.SendID, body.DeviceID)
+			} else if body.Detail != "" {
+				log.Printf("send failed send_id=%s device=%s: %s", body.SendID, body.DeviceID, body.Detail)
+			}
+		}
+		hub.publishSendEvent(body.SendID)
+	})
+	bridgeCoord.SetBridgesChangedHandler(func() {
+		hub.events.Publish(BroadcastSessionID, "bridges", bridgeCoord.ListBridgeStatus())
+	})
+	bridgeCoord.SetDevicesChangedHandler(func() {
+		hub.events.Publish(BroadcastSessionID, "devices", hub.devices.List())
+	})
 
 	mux := http.NewServeMux()
 	registerRoutes(mux, hub)
@@ -184,6 +193,7 @@ func main() {
 	log.Printf("Joyous MQTT broker listening on %s (bridges connect here)", *mqttAddr)
 
 	startScheduledSendScheduler(ctx, hub)
+	bridgeCoord.StartStalenessSweep(ctx)
 
 	go func() {
 		log.Printf("HTTP server listening on %s (images at http://%s)", *httpAddr, addr)

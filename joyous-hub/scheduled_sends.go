@@ -227,6 +227,9 @@ func (h *Hub) checkScheduledSends() {
 			images, err := h.images.ListAlbumImages(cfg.AlbumID)
 			if err != nil {
 				log.Printf("scheduled send %s: album %s unavailable: %v", cfg.DeviceID, cfg.AlbumID, err)
+				h.publishError("scheduled send: album unavailable", map[string]any{
+					"device_id": cfg.DeviceID, "album_id": cfg.AlbumID,
+				})
 				albumImageIDs[cfg.AlbumID] = nil
 				continue
 			}
@@ -246,6 +249,9 @@ func (h *Hub) runScheduledSend(cfg ScheduledSendConfig, firedTime string, now ti
 	}
 	if len(albumImageIDs) == 0 {
 		log.Printf("scheduled send %s: album %s empty or unavailable", cfg.DeviceID, cfg.AlbumID)
+		h.publishError("scheduled send: album empty", map[string]any{
+			"device_id": cfg.DeviceID, "album_id": cfg.AlbumID,
+		})
 		return
 	}
 	imageID, queue, ok := nextScheduledImage(cfg.Queue, albumImageIDs, scheduledSendRand)
@@ -254,6 +260,9 @@ func (h *Hub) runScheduledSend(cfg ScheduledSendConfig, firedTime string, now ti
 	}
 	if _, err := h.sendImageToDeviceAuto(cfg.DeviceID, imageID); err != nil {
 		log.Printf("scheduled send %s: %v", cfg.DeviceID, err)
+		h.publishError("scheduled send failed", map[string]any{
+			"device_id": cfg.DeviceID, "album_id": cfg.AlbumID, "detail": err.Error(),
+		})
 		return
 	}
 	cfg.Queue = queue

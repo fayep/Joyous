@@ -304,53 +304,6 @@ func (s *ImageStore) listImagesLegacy() ([]ImageMeta, error) {
 	return out, nil
 }
 
-// AlbumRevision returns a short hash that changes when images are added, removed, or renamed.
-func (s *ImageStore) AlbumRevision() string {
-	imgs, err := s.ListImages()
-	if err != nil {
-		return ""
-	}
-	if len(imgs) == 0 {
-		return "empty"
-	}
-	h := sha256.New()
-	for _, m := range imgs {
-		chroma := "g"
-		if m.ChromaBoost != nil {
-			if *m.ChromaBoost {
-				chroma = "1"
-			} else {
-				chroma = "0"
-			}
-		}
-		fmt.Fprintf(h, "%s|%s|%d|%s|%t|", m.ID, m.Name, m.Size, chroma, m.PeopleLikely)
-		if len(m.Crops) > 0 {
-			keys := make([]string, 0, len(m.Crops))
-			for k := range m.Crops {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				c := m.Crops[k]
-				fmt.Fprintf(h, "%s:%g,%g,%g,%g;", k, c.X, c.Y, c.W, c.H)
-			}
-		}
-		h.Write([]byte{'\n'})
-	}
-	if s.cat != nil {
-		if orderRev, err := s.cat.AlbumOrderRevision(catalog.AlbumAll); err == nil && orderRev != "" {
-			h.Write([]byte(orderRev))
-		}
-		if tagRev, err := s.cat.TagsRevision(); err == nil && tagRev != "" {
-			h.Write([]byte(tagRev))
-		}
-		if albRev, err := s.cat.AlbumsRevision(); err == nil && albRev != "" {
-			h.Write([]byte(albRev))
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil))[:12]
-}
-
 // SetCrop stores a crop rect for the given aspect ratio key (e.g. "4:3") and
 // invalidates the thumbnail so it regenerates with the new crop applied.
 func (s *ImageStore) SetCrop(id, format string, rect CropRect) error {
