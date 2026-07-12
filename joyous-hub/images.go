@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gen2brain/avif"
+
 	"joyous-hub/catalog"
 )
 
@@ -1238,11 +1240,33 @@ func (s *ImageStore) evictCache() {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func decodeAnyImage(data []byte) (image.Image, error) {
+	// AVIF and HEIC are both ISOBMFF/"ftyp"-boxed containers, and goheif (see heic_cgo.go)
+	// registers itself with image.Decode using a blanket "????ftyp" magic that matches any of
+	// them — it has no way to tell an AVIF (AV1) file from an HEIC (HEVC) one by magic bytes
+	// alone, so it wins the match and fails to decode. Dispatch AVIF explicitly by major brand
+	// before falling through to the stdlib registry.
+	if isAVIF(data) {
+		img, err := avif.Decode(bytesReader(data))
+		if err != nil {
+			return nil, errors.New("unsupported image format (accept .bin, PNG, JPEG, HEIC, or AVIF)")
+		}
+		return applyExifOrientation(img, readExifOrientation(data)), nil
+	}
 	img, _, err := image.Decode(bytesReader(data))
 	if err != nil {
-		return nil, errors.New("unsupported image format (accept .bin, PNG, JPEG, or HEIC)")
+		return nil, errors.New("unsupported image format (accept .bin, PNG, JPEG, HEIC, or AVIF)")
 	}
 	return applyExifOrientation(img, readExifOrientation(data)), nil
+}
+
+// isAVIF reports whether data starts with an ISOBMFF "ftyp" box whose major brand is avif/avis
+// (a still image or an avif sequence) — see decodeAnyImage.
+func isAVIF(data []byte) bool {
+	if len(data) < 12 || string(data[4:8]) != "ftyp" {
+		return false
+	}
+	brand := string(data[8:12])
+	return brand == "avif" || brand == "avis"
 }
 
 func imageDisplaySize(raw []byte, name string) (int, int, error) {

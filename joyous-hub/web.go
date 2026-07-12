@@ -755,12 +755,12 @@ const indexHTML = `<!DOCTYPE html>
         <div class="album-toolbar" id="album-toolbar"></div>
         <div class="album-upload-wrap">
           <div id="upload-zone" class="album-upload" onclick="document.getElementById('file-input').click()">
-            Drop images here or click to upload <span class="album-upload-mono">(.bin, .png, .jpg)</span>
+            Drop images here or click to upload <span class="album-upload-mono">(.bin, .png, .jpg, .avif)</span>
           </div>
         </div>
         <p class="album-reorder-hint" id="album-reorder-hint" hidden>Drag a photo onto the left edge of another to reorder</p>
         <div id="image-grid" class="album-grid"></div>
-        <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg" multiple>
+        <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg,.avif" multiple>
       </div>
     </div>
   </div>

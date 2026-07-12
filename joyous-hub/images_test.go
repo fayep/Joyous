@@ -37,6 +37,47 @@ func TestStoreRawPreservesBytes(t *testing.T) {
 	}
 }
 
+// TestDecodeAnyImageAVIF covers AVIF support (avif_format.go registers a CGo-free WASM decoder
+// via github.com/gen2brain/avif) — the album upload page's accept list previously excluded
+// .avif because decodeAnyImage genuinely couldn't decode it, not just as a UI oversight.
+func TestDecodeAnyImageAVIF(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "sample.avif"))
+	if err != nil {
+		t.Fatalf("read testdata: %v", err)
+	}
+	img, err := decodeAnyImage(data)
+	if err != nil {
+		t.Fatalf("decodeAnyImage: %v", err)
+	}
+	b := img.Bounds()
+	if b.Dx() == 0 || b.Dy() == 0 {
+		t.Fatalf("decoded image has zero bounds: %v", b)
+	}
+}
+
+// TestStoreAVIFComputesDisplaySize covers the full Store() path (used by upload) recognizing an
+// AVIF file well enough to compute its display dimensions, not just decodeAnyImage in isolation.
+func TestStoreAVIFComputesDisplaySize(t *testing.T) {
+	dir := t.TempDir()
+	store := NewImageStore(dir)
+
+	data, err := os.ReadFile(filepath.Join("testdata", "sample.avif"))
+	if err != nil {
+		t.Fatalf("read testdata: %v", err)
+	}
+	id, err := store.Store(bytes.NewReader(data), "photo.avif")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	meta, err := store.GetMeta(id)
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if meta.Width == 0 || meta.Height == 0 {
+		t.Fatalf("expected non-zero display size for AVIF upload, got %dx%d", meta.Width, meta.Height)
+	}
+}
+
 // TestServeBinFromBin: Store a valid full-frame .bin → ServeBin returns the original bytes.
 func TestServeBinFromBin(t *testing.T) {
 	dir := t.TempDir()
