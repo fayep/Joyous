@@ -134,15 +134,24 @@ type SamsungPushOptions struct {
 	RestoreStandby bool
 }
 
+// wakePhaseRemote is the automatic WoL/MDC-magic-packet wake attempt (see WakeSamsungDisplayWithProgress);
+// wakePhaseManual is the fallback poll waiting for a human to hold the power button (see waitForMDCAwakeManual).
+// Callers use the phase to decide whether a "press the power button" hint is accurate yet.
+const (
+	wakePhaseRemote = "remote"
+	wakePhaseManual = "manual"
+)
+
 // PushSamsungContent wakes if needed, pushes content, and optionally sleeps after a delay.
-// onWakeAttempt, if non-nil, is called on every poll while waiting for a manual power-button
-// wake (see waitForMDCAwakeManual) — the only way to surface that multi-minute wait as
-// progress to a caller, since this function is otherwise a single blocking call.
-func PushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc, opts SamsungPushOptions, onWakeAttempt func(attempt int)) error {
+// onWakeAttempt, if non-nil, is called on every wake poll (both the automatic remote-wake phase
+// and the manual power-button-wait fallback) — the only way to surface a wait that can span from
+// a few seconds up to several minutes as progress to a caller, since this function is otherwise a
+// single blocking call.
+func PushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc, opts SamsungPushOptions, onWakeAttempt func(phase string, attempt int)) error {
 	return pushSamsungContent(ip, contentJSONURL, pin, wifiMAC, autoSleep, sleepAfterSec, sleepFn, opts, onWakeAttempt)
 }
 
-func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc, opts SamsungPushOptions, onWakeAttempt func(attempt int)) error {
+func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool, sleepAfterSec int, sleepFn SamsungSleepFunc, opts SamsungPushOptions, onWakeAttempt func(phase string, attempt int)) error {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
@@ -189,7 +198,7 @@ func pushSamsungContent(ip, contentJSONURL, pin, wifiMAC string, autoSleep bool,
 
 // ensureMDCAwakeForPush tries remote wake when needed, then polls MDC until the frame
 // responds (e.g. after the user presses the power button on the display).
-func ensureMDCAwakeForPush(ip, pin, wifiMAC string, deepSleepActive bool, onWakeAttempt func(attempt int)) error {
+func ensureMDCAwakeForPush(ip, pin, wifiMAC string, deepSleepActive bool, onWakeAttempt func(phase string, attempt int)) error {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
@@ -201,7 +210,7 @@ func ensureMDCAwakeForPush(ip, pin, wifiMAC string, deepSleepActive bool, onWake
 		return waitForMDCAwakeManual(ip, pin, mdcManualWakeTimeout, mdcManualWakePoll, onWakeAttempt)
 	}
 	if wifiMAC != "" {
-		if err := WakeSamsungDisplay(ip, pin, wifiMAC); err == nil {
+		if err := WakeSamsungDisplayWithProgress(ip, pin, wifiMAC, onWakeAttempt); err == nil {
 			return nil
 		}
 		logOutbound("mdc push remote wake timed out ip=%s — waiting for power button", ip)
@@ -215,7 +224,7 @@ func ensureMDCAwakeForPush(ip, pin, wifiMAC string, deepSleepActive bool, onWake
 // call in the whole push path that can legitimately take minutes (waiting on a human to hold
 // the power button), so onWakeAttempt — called every poll, before the log throttle below —
 // is the only way a caller finds out it's still in progress rather than stuck.
-func waitForMDCAwakeManual(ip, pin string, timeout, interval time.Duration, onWakeAttempt func(attempt int)) error {
+func waitForMDCAwakeManual(ip, pin string, timeout, interval time.Duration, onWakeAttempt func(phase string, attempt int)) error {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
@@ -227,7 +236,7 @@ func waitForMDCAwakeManual(ip, pin string, timeout, interval time.Duration, onWa
 	for time.Now().Before(deadline) {
 		attempt++
 		if onWakeAttempt != nil {
-			onWakeAttempt(attempt)
+			onWakeAttempt(wakePhaseManual, attempt)
 		}
 		if attempt == 1 || attempt%6 == 0 {
 			logOutbound("mdc push waiting ip=%s attempt=%d — press power button on display", ip, attempt)
@@ -338,6 +347,14 @@ func readMDCBatteryOnSession(s *mdcSession, ip string) (int, string, error) {
 
 // WakeSamsungDisplay uses standard WoL plus Samsung's magic UDP wake (SHA256 MAC + ":E-Paper" → port 10194).
 func WakeSamsungDisplay(ip, pin, wifiMAC string) error {
+	return WakeSamsungDisplayWithProgress(ip, pin, wifiMAC, nil)
+}
+
+// WakeSamsungDisplayWithProgress is WakeSamsungDisplay with an optional onWakeAttempt callback,
+// invoked once per probe/retry (phase=wakePhaseRemote) so callers can surface wake progress from
+// the very first attempt instead of only after this remote-wake phase gives up and a caller falls
+// through to a manual wait.
+func WakeSamsungDisplayWithProgress(ip, pin, wifiMAC string, onWakeAttempt func(phase string, attempt int)) error {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
@@ -349,7 +366,7 @@ func WakeSamsungDisplay(ip, pin, wifiMAC string) error {
 		logOutbound("mdc magic wake fail ip=%s err=%v", ip, err)
 	}
 	time.Sleep(mdcWakeInitialDelay)
-	if waitMDCAwake(ip, pin, wifiMAC, mdcWakeTimeout) {
+	if waitMDCAwake(ip, pin, wifiMAC, mdcWakeTimeout, onWakeAttempt) {
 		logOutbound("mdc wake ok ip=%s", ip)
 		return nil
 	}
@@ -365,12 +382,15 @@ func mdcSessionOK(ip, pin string) bool {
 	return true
 }
 
-func waitMDCAwake(ip, pin, wifiMAC string, timeout time.Duration) bool {
+func waitMDCAwake(ip, pin, wifiMAC string, timeout time.Duration, onWakeAttempt func(phase string, attempt int)) bool {
 	deadline := time.Now().Add(timeout)
 	nextMagic := time.Now().Add(mdcWakeMagicResend)
 	attempt := 0
 	for time.Now().Before(deadline) {
 		attempt++
+		if onWakeAttempt != nil {
+			onWakeAttempt(wakePhaseRemote, attempt)
+		}
 		if wifiMAC != "" && !nextMagic.After(time.Now()) {
 			sendWoL(wifiMAC, ip)
 			_ = sendSamsungMagicWake(ip, wifiMAC)

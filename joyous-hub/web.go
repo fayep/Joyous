@@ -2348,14 +2348,16 @@ async function waitSendDelivered(sendId,onTick){
 
 // showSendProgressToast renders live /api/send/{sendId} status as a top-right toast (not
 // button/status-line text — a "Retrying (N)…" message crammed into a small button was hard to
-// read and fighting for space with the button's own label). The "retrying" status and the
-// power-button hint for Samsung come straight from the server — see send_delivery.go's
-// IncrementRetry and samsung_mdc.go's waitForMDCAwakeManual — rather than the client guessing
-// from a fixed timer how long a send "should" take.
+// read and fighting for space with the button's own label). The "retrying" status and its detail
+// come straight from the server — see send_delivery.go's IncrementRetry and samsung_mdc.go's
+// waitMDCAwake/waitForMDCAwakeManual — rather than the client guessing from a fixed timer how
+// long a send "should" take. The power-button hint only shows once detail says the automatic
+// remote wake gave up (phase=manual server-side) — showing it during the automatic attempt would
+// tell the user to do something the frame itself is still trying to do on its own.
 function showSendProgressToast(toastId,j,dev){
   if(!toastId||!j) return;
   if(j.status==='retrying'){
-    const hint=dev&&dev.type==='samsung'?SAMSUNG_DEEP_SLEEP_WAKE_MSG+' — ':'';
+    const hint=(dev&&dev.type==='samsung'&&j.detail==='waiting for frame to wake')?SAMSUNG_DEEP_SLEEP_WAKE_MSG+' — ':'';
     showToast(toastId,hint+'Retrying ('+j.retry_attempts+')…');
     return;
   }

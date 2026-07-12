@@ -327,16 +327,20 @@ func bridgeDeliverSamsungImage(ctx context.Context, hub *Hub, client *bridgehub.
 // frame in deep sleep waits — up to mdcManualWakeTimeout (samsung_mdc.go, 5 minutes) — for
 // someone to hold its power button for ~3s.
 func pushSamsungFrameReportingProgress(hub *Hub, client *bridgehub.Client, frameID string, dev *Device, sendID string) error {
-	return hub.pushSamsungFrameWithProgress(frameID, dev, func(attempt int) {
+	return hub.pushSamsungFrameWithProgress(frameID, dev, func(phase string, attempt int) {
 		if sendID == "" || client == nil {
 			return
+		}
+		detail := "waking frame remotely"
+		if phase == wakePhaseManual {
+			detail = "waiting for frame to wake"
 		}
 		if pubErr := client.PublishSendComplete(protocol.SendCompletePayload{
 			SendID:   sendID,
 			DeviceID: dev.ID,
 			Success:  true, // not terminal — see Phase
 			Phase:    "retrying",
-			Detail:   "waiting for frame to wake",
+			Detail:   detail,
 		}); pubErr != nil {
 			log.Printf("samsung-bridge send.complete retrying: %v", pubErr)
 		}

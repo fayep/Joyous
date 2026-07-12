@@ -104,7 +104,9 @@ func closedLocalIP(t *testing.T) string {
 func TestWaitForMDCAwakeManualReportsEveryAttempt(t *testing.T) {
 	ip := closedLocalIP(t)
 	var attempts []int
-	err := waitForMDCAwakeManual(ip, "", 35*time.Millisecond, 10*time.Millisecond, func(attempt int) {
+	var phases []string
+	err := waitForMDCAwakeManual(ip, "", 35*time.Millisecond, 10*time.Millisecond, func(phase string, attempt int) {
+		phases = append(phases, phase)
 		attempts = append(attempts, attempt)
 	})
 	if err == nil {
@@ -118,6 +120,11 @@ func TestWaitForMDCAwakeManualReportsEveryAttempt(t *testing.T) {
 			t.Fatalf("attempts not sequential from 1: %v", attempts)
 		}
 	}
+	for _, p := range phases {
+		if p != wakePhaseManual {
+			t.Fatalf("expected all phases to be %q, got %v", wakePhaseManual, phases)
+		}
+	}
 }
 
 func TestWaitForMDCAwakeManualNilCallbackIsSafe(t *testing.T) {
@@ -125,5 +132,42 @@ func TestWaitForMDCAwakeManualNilCallbackIsSafe(t *testing.T) {
 	err := waitForMDCAwakeManual(ip, "", 15*time.Millisecond, 10*time.Millisecond, nil)
 	if err == nil {
 		t.Fatal("expected an error: nothing is listening on this address")
+	}
+}
+
+// TestWaitMDCAwakeReportsRemotePhaseFromFirstAttempt covers the gap reported in production: a
+// real wake sequence retried the automatic WoL/MDC-magic-wake attempt (waitMDCAwake) silently for
+// ~45s before the manual power-button fallback ever reported progress, so the UI showed nothing
+// for the entire first phase. onWakeAttempt must fire with phase=wakePhaseRemote starting at
+// attempt 1, not only once this phase gives up.
+func TestWaitMDCAwakeReportsRemotePhaseFromFirstAttempt(t *testing.T) {
+	// waitMDCAwake's probe interval (mdcWakeProbeInterval) is 1s, so a short timeout only ever
+	// observes a single attempt — that's the point: unlike the old silent remote-wake phase,
+	// attempt 1 must be reported immediately rather than only once the whole phase times out.
+	ip := closedLocalIP(t)
+	var attempts []int
+	var phases []string
+	ok := waitMDCAwake(ip, "", "", 35*time.Millisecond, func(phase string, attempt int) {
+		phases = append(phases, phase)
+		attempts = append(attempts, attempt)
+	})
+	if ok {
+		t.Fatal("expected wake to fail: nothing is listening on this address")
+	}
+	if len(attempts) < 1 || attempts[0] != 1 {
+		t.Fatalf("expected first reported attempt to be 1, got %v", attempts)
+	}
+	for _, p := range phases {
+		if p != wakePhaseRemote {
+			t.Fatalf("expected all phases to be %q, got %v", wakePhaseRemote, phases)
+		}
+	}
+}
+
+func TestWaitMDCAwakeNilCallbackIsSafe(t *testing.T) {
+	ip := closedLocalIP(t)
+	ok := waitMDCAwake(ip, "", "", 15*time.Millisecond, nil)
+	if ok {
+		t.Fatal("expected wake to fail: nothing is listening on this address")
 	}
 }

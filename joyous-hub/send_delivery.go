@@ -477,6 +477,9 @@ func sendStatusPayload(d *sendDelivery) map[string]any {
 	if d.RetryAttempts > 0 {
 		out["retry_attempts"] = d.RetryAttempts
 	}
+	if status == sendStatusRetrying && d.LastError != "" {
+		out["detail"] = d.LastError
+	}
 	if d.Status == sendStatusFailed && d.LastError != "" {
 		out["error"] = d.LastError
 	}
