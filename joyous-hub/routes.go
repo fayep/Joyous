@@ -106,6 +106,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("GET /api/send/{sendId}", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSendStatus(w, r, r.PathValue("sendId"))
 	})
+	mux.HandleFunc("GET /api/sends/active", hub.handleActiveSends)
 	mux.HandleFunc("POST /api/devices/{id}/refresh", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleRefresh(w, r, r.PathValue("id"))
 	})

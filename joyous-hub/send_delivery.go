@@ -336,6 +336,51 @@ func (t *SendDeliveryTracker) remove(sendID string) {
 	delete(t.byID, sendID)
 }
 
+// ActiveSendInfo is a minimal, JSON-safe view of an in-flight send.
+type ActiveSendInfo struct {
+	SendID   string `json:"send_id"`
+	DeviceID string `json:"device_id"`
+	ImageID  string `json:"image_id,omitempty"`
+}
+
+// ActiveSends returns every send that hasn't reached a terminal state yet (pending or
+// downloading — "retrying" is a display-only overlay on these, see handleSendStatus). This is
+// how a browser tab that didn't itself trigger a send — e.g. a scheduled send firing in the
+// background — discovers there's something to watch and show progress for.
+func (t *SendDeliveryTracker) ActiveSends() []ActiveSendInfo {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]ActiveSendInfo, 0, len(t.byID))
+	for _, d := range t.byID {
+		if d.Status == sendStatusPending || d.Status == sendStatusDownloading {
+			out = append(out, ActiveSendInfo{SendID: d.ID, DeviceID: d.DeviceID, ImageID: d.ImageID})
+		}
+	}
+	return out
+}
+
+// handleActiveSends serves GET /api/sends/active.
+func (h *Hub) handleActiveSends(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.sendDelivery == nil {
+		json.NewEncoder(w).Encode([]map[string]any{})
+		return
+	}
+	active := h.sendDelivery.ActiveSends()
+	out := make([]map[string]any, 0, len(active))
+	for _, a := range active {
+		entry := map[string]any{"send_id": a.SendID, "device_id": a.DeviceID}
+		if a.ImageID != "" {
+			entry["image_id"] = a.ImageID
+		}
+		if dev, ok := h.devices.Get(a.DeviceID); ok {
+			entry["device_type"] = string(dev.Type)
+		}
+		out = append(out, entry)
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
 func (h *Hub) handleSendStatus(w http.ResponseWriter, r *http.Request, sendID string) {
 	if sendID == "" {
 		http.Error(w, "send id required", http.StatusBadRequest)

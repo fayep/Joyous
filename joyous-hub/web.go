@@ -2389,32 +2389,84 @@ function showSendProgressToast(toastId,j,dev){
   if(j.status==='downloading') showToast(toastId,'Downloading…');
 }
 
+// sendWatches dedupes concurrent watchers of the same sendId — e.g. the code that triggered a
+// send and the automatic-send poller (see pollActiveSends) both discovering it within moments
+// of each other. Later callers just await the same in-flight watch instead of polling
+// /api/send/{sendId} twice for the same send.
+const sendWatches={};
+
+// watchSendProgress polls a send to completion, showing/updating a single toast the whole way
+// (retrying/downloading -> final result) — the one place this happens, used by every send
+// path (manual sends below, and pollActiveSends for sends nobody in this tab initiated).
+function watchSendProgress(sendId,dev){
+  if(!sendId) return Promise.resolve(false);
+  if(sendWatches[sendId]) return sendWatches[sendId];
+  const toastId='send-'+sendId;
+  const p=(async()=>{
+    try{
+      const delivered=await waitSendDelivered(sendId,j=>{
+        showSendProgressToast(toastId,j,dev);
+      });
+      showToast(toastId,delivered?'✓ Sent':'Sent (unconfirmed)',{type:'success',autoHideMs:2500});
+      return delivered;
+    }catch(e){
+      showToast(toastId,'Send failed: '+e.message,{type:'error',closable:true,autoHideMs:8000});
+      throw e;
+    }finally{
+      delete sendWatches[sendId];
+    }
+  })();
+  sendWatches[sendId]=p;
+  return p;
+}
+
+// pollActiveSends discovers sends this tab didn't itself trigger — a scheduled send firing in
+// the background is the main case — and starts watching them the same way as a manual send
+// (progress toast, retrying/press-power-button hint included), in any open tab. Runs
+// independently of which tab is active, since a scheduled send can happen while the user is
+// looking at Album or anywhere else.
+async function pollActiveSends(){
+  try{
+    const r=await fetch('/api/sends/active');
+    if(!r.ok) return;
+    const active=await r.json()||[];
+    for(const a of active){
+      if(!a.send_id||sendWatches[a.send_id]) continue;
+      watchSendProgress(a.send_id,{type:a.device_type});
+    }
+  }catch(_){}
+}
+setInterval(pollActiveSends,5000);
+
 async function doSend(imageId, deviceId, feedbackBtn){
   closePickers();
   const orig=feedbackBtn?feedbackBtn.textContent:'';
   const dev=devices.find(d=>d.id===deviceId);
   const deepHint=samsungDeepSleepWakeHint(dev);
+  if(feedbackBtn){
+    feedbackBtn.disabled=true;
+    feedbackBtn.textContent=deepHint||'Sending…';
+  }else if(deepHint){
+    alert(deepHint);
+  }
+  let sendId;
   try{
-    if(feedbackBtn){
-      feedbackBtn.disabled=true;
-      feedbackBtn.textContent=deepHint||'Sending…';
-    }else if(deepHint){
-      alert(deepHint);
-    }
-    const sendId=await postDisplay(deviceId,imageId);
-    if(sendId&&feedbackBtn&&dev?.type!=='samsung') feedbackBtn.textContent='Downloading…';
-    const toastId=sendId?'send-'+sendId:null;
-    const delivered=sendId?await waitSendDelivered(sendId,j=>{
-      showSendProgressToast(toastId,j,dev);
-    }):false;
-    if(toastId) dismissToast(toastId);
-    if(feedbackBtn){
-      feedbackBtn.textContent=delivered?'✓ Sent':(sendId?'Sent (unconfirmed)':'✓ Sent');
-      setTimeout(()=>{feedbackBtn.textContent=orig;feedbackBtn.disabled=false;},2000);
-    }
+    sendId=await postDisplay(deviceId,imageId);
   }catch(e){
     alert('Send failed: '+e.message);
     if(feedbackBtn){feedbackBtn.textContent=orig;feedbackBtn.disabled=false;}
+    return;
+  }
+  if(sendId&&feedbackBtn&&dev?.type!=='samsung') feedbackBtn.textContent='Downloading…';
+  let delivered=false;
+  try{
+    delivered=sendId?await watchSendProgress(sendId,dev):false;
+  }catch(e){
+    // watchSendProgress already surfaced this via toast.
+  }
+  if(feedbackBtn){
+    feedbackBtn.textContent=delivered?'✓ Sent':(sendId?'Sent (unconfirmed)':'✓ Sent');
+    setTimeout(()=>{feedbackBtn.textContent=orig;feedbackBtn.disabled=false;},2000);
   }
 }
 
@@ -2579,11 +2631,8 @@ async function sendCalibrationChart(){
     const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/calibration',{method:'POST'});
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
-    const toastId=j.send_id?'send-'+j.send_id:null;
-    const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      showSendProgressToast(toastId,j,{type:'samsung'});
-    }):false;
-    if(toastId) dismissToast(toastId);
+    let delivered=false;
+    try{ delivered=j.send_id?await watchSendProgress(j.send_id,{type:'samsung'}):false; }catch(_){}
     if(st) st.textContent=delivered?'✓ Sent to display':'Sent (unconfirmed)';
     await loadDevicesInner();
     loadSamsungFrames();
@@ -3211,11 +3260,8 @@ async function overlaySend(deviceId){
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
     if(btn&&d?.type!=='samsung') btn.textContent='Downloading…';
-    const toastId=j.send_id?'send-'+j.send_id:null;
-    const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      showSendProgressToast(toastId,j,d);
-    }):false;
-    if(toastId) dismissToast(toastId);
+    let delivered=false;
+    try{ delivered=j.send_id?await watchSendProgress(j.send_id,d):false; }catch(_){}
     if(btn){
       btn.textContent=delivered?'✓ Sent':'Sent (unconfirmed)';
       setTimeout(()=>{btn.textContent=orig;btn.disabled=false;},2000);
@@ -3931,11 +3977,8 @@ async function samsungPushCurrent(){
     const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/push',{method:'POST'});
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
-    const toastId=j.send_id?'send-'+j.send_id:null;
-    const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      showSendProgressToast(toastId,j,dev);
-    }):false;
-    if(toastId) dismissToast(toastId);
+    let delivered=false;
+    try{ delivered=j.send_id?await watchSendProgress(j.send_id,dev):false; }catch(_){}
     if(document.getElementById('samsung-auto-sleep').checked){
       const delay=parseInt(document.getElementById('samsung-sleep-delay').value,10)||15;
       if(st) st.textContent=delivered?('✓ Pushed — frame will sleep in ~'+delay+'s…'):'Pushed (unconfirmed)';

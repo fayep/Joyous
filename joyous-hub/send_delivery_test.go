@@ -172,3 +172,57 @@ func TestHandleSendStatusWait(t *testing.T) {
 		t.Fatalf("got %v", out)
 	}
 }
+
+func TestActiveSendsOnlyIncludesInFlight(t *testing.T) {
+	tr := NewSendDeliveryTracker()
+	pending := tr.Register("dev1", "img1")
+	downloading := tr.Register("dev2", "img2")
+	tr.MarkInkJoyDownloading(downloading.ID)
+	delivered := tr.Register("dev3", "img3")
+	tr.CompleteSend(delivered.ID, true)
+	failed := tr.Register("dev4", "img4")
+	tr.CompleteSend(failed.ID, false)
+
+	active := tr.ActiveSends()
+	got := map[string]bool{}
+	for _, a := range active {
+		got[a.SendID] = true
+	}
+	if len(active) != 2 || !got[pending.ID] || !got[downloading.ID] {
+		t.Fatalf("got %+v, want only the pending and downloading sends", active)
+	}
+}
+
+// TestHandleActiveSendsIncludesDeviceType covers a browser tab that didn't itself trigger a
+// send (e.g. a scheduled send fired while it was open) discovering the send and the device
+// type needed for the Samsung "press power button" hint, without depending on its own
+// possibly-stale `devices` array.
+func TestHandleActiveSendsIncludesDeviceType(t *testing.T) {
+	h := buildTestHub(t)
+	h.devices.MarkConnected("AABBCCDDEEFF")
+	send := h.sendDelivery.Register("AABBCCDDEEFF", "img1")
+	h.sendDelivery.BindInkJoy(send.ID, "m1")
+
+	rec := httptest.NewRecorder()
+	h.handleActiveSends(rec, httptest.NewRequest("GET", "/api/sends/active", nil))
+	var out []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("got %d active sends, want 1: %v", len(out), out)
+	}
+	if out[0]["send_id"] != send.ID || out[0]["device_id"] != "AABBCCDDEEFF" || out[0]["device_type"] != "inkjoy" {
+		t.Fatalf("got %+v", out[0])
+	}
+
+	tr := h.sendDelivery
+	tr.CompleteSend(send.ID, true)
+	rec2 := httptest.NewRecorder()
+	h.handleActiveSends(rec2, httptest.NewRequest("GET", "/api/sends/active", nil))
+	var out2 []map[string]any
+	json.NewDecoder(rec2.Body).Decode(&out2)
+	if len(out2) != 0 {
+		t.Fatalf("expected no active sends after completion, got %v", out2)
+	}
+}
