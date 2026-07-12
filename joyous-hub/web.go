@@ -1074,6 +1074,21 @@ function joyousUIBusy(){
   return !!(m&&m.classList.contains('open'));
 }
 
+// joyousAlbumGridBusy is joyousUIBusy() minus the zoom-open check — used only by
+// applyImagesEvent. Unlike a full-page reload (which would yank the zoom modal out from under
+// someone), rebuilding the grid behind an open zoom is harmless: the modal holds no reference to
+// grid DOM nodes, and the rotate buttons already patch the zoomed image directly from their own
+// PATCH response. Gating this the same as joyousUIBusy() meant the grid silently missed every
+// "images" update while zoomed — e.g. right after using the rotate buttons — until the next hard
+// reload happened to rebuild it from scratch.
+function joyousAlbumGridBusy(){
+  if(albumCaptionEditingId) return true;
+  if(albumReorderBusy) return true;
+  if(albumFilterEditing) return true;
+  const m=document.getElementById('crop-modal');
+  return !!(m&&m.classList.contains('open'));
+}
+
 // applyRevisionEvent handles the "revision" event the hub sends as part of every event-stream
 // handshake (see event_bus.go's handleEvents) — on first connect AND on every automatic
 // EventSource reconnect. A hub restart (new build deployed) drops the connection, so the very
@@ -2469,9 +2484,11 @@ function applyErrorEvent(data){
 // and provably correct compared to re-implementing the server's tag/format/orientation smart-
 // album filter matching in JS just to patch the DOM surgically, and on this app's LAN-local
 // single-hub setup the extra round trip is cheap. Only fires while the Album tab is the one
-// actually visible, and never while joyousUIBusy() (mid-edit — see its own doc comment).
+// actually visible, and never while joyousAlbumGridBusy() (mid-edit — see its own doc comment;
+// deliberately not joyousUIBusy(), which also counts the zoom modal as busy — see
+// joyousAlbumGridBusy's doc comment for why that's wrong here).
 function applyImagesEvent(data){
-  if(!data||activeTab!=='album'||joyousUIBusy()) return;
+  if(!data||activeTab!=='album'||joyousAlbumGridBusy()) return;
   const removedVisible=data.removed&&data.removed.some(id=>images.some(img=>img.id===id));
   const updatedAny=data.updated&&data.updated.length>0;
   const reorderedCurrent=data.reordered_albums&&data.reordered_albums.includes(currentAlbumId);
