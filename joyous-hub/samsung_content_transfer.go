@@ -65,19 +65,28 @@ func (h *samsungBridgeHTTPHandler) serveContentTransferProgress(method string, b
 	if method != http.MethodPost {
 		return http.StatusMethodNotAllowed, "text/plain", nil, []byte("method not allowed")
 	}
+	// Always log the raw body, unconditionally — the real phone app's server does the same
+	// (see "RAW REQUEST BODY: " in the decompiled handler) and it's the only way to nail the
+	// frame's exact field shape if samsungContentTransferProgress's reverse-engineered mapping
+	// turns out to be wrong for a given firmware version.
+	log.Printf("samsung-bridge content-transfer-progress: raw body: %s", body)
+
 	var progress samsungContentTransferProgress
 	if err := json.Unmarshal(body, &progress); err != nil {
-		log.Printf("samsung-bridge content-transfer-progress: bad body: %v", err)
+		log.Printf("samsung-bridge content-transfer-progress: invalid json: %v", err)
 		return http.StatusBadRequest, "text/plain", nil, []byte("invalid json")
 	}
 	if progress.ContentID == "" || progress.DeviceSerialNumber == "" {
-		log.Printf("samsung-bridge content-transfer-progress: missing contentId/deviceSerialNumber")
-		return http.StatusBadRequest, "text/plain", nil, []byte("contentId and deviceSerialNumber required")
+		// Don't block the ack on this — if our field-name mapping doesn't match this
+		// firmware's actual shape, failing the request here would leave the frame worse off
+		// than before (still no valid transfer completion). Log for diagnosis and still echo
+		// a 200 below; only state-relay (reportProgress) is skipped.
+		log.Printf("samsung-bridge content-transfer-progress: parsed but contentId/deviceSerialNumber empty, parsed=%+v", progress)
+	} else {
+		log.Printf("samsung-bridge content-transfer-progress content=%s device_serial=%s status=%s total=%d%%",
+			progress.ContentID, progress.DeviceSerialNumber, progress.Status, progress.TotalProgress)
+		h.reportProgress(progress)
 	}
-	log.Printf("samsung-bridge content-transfer-progress content=%s device_serial=%s status=%s total=%d%%",
-		progress.ContentID, progress.DeviceSerialNumber, progress.Status, progress.TotalProgress)
-
-	h.reportProgress(progress)
 
 	// Echo the request body back verbatim — matches the real phone app's embedded server,
 	// which re-serializes and returns the exact object it received.

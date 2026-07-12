@@ -41,15 +41,24 @@ func TestServeContentTransferProgressRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestServeContentTransferProgressRejectsMissingFields(t *testing.T) {
+// TestServeContentTransferProgressStillAcksOnMissingFields covers a real device sending a
+// shape our reverse-engineered field mapping doesn't match (contentId/deviceSerialNumber come
+// back empty after parsing): the ack must still succeed with a 200 rather than blocking the
+// frame's transfer over a mapping we might not have exactly right — only state-relay to the
+// hub is skipped in that case (see TestReportProgressIgnoresUnknownFrame for that half).
+func TestServeContentTransferProgressStillAcksOnMissingFields(t *testing.T) {
 	h := &samsungBridgeHTTPHandler{hub: buildTestHub(t)}
 	for _, body := range []string{
 		`{"deviceSerialNumber":"","contentId":"B0F2F657D5CD","status":"Successful","currentImageStatus":{"imageId":"x","imageName":"x","status":"Successful"},"totalProgress":0}`,
 		`{"deviceSerialNumber":"SERIAL123","contentId":"","status":"Successful","currentImageStatus":{"imageId":"x","imageName":"x","status":"Successful"},"totalProgress":0}`,
+		`{"someUnexpectedShape":true}`,
 	} {
-		status, _, _, _ := h.serveContentTransferProgress(http.MethodPost, []byte(body))
-		if status != http.StatusBadRequest {
-			t.Fatalf("body=%s: status=%d want 400", body, status)
+		status, _, _, respBody := h.serveContentTransferProgress(http.MethodPost, []byte(body))
+		if status != http.StatusOK {
+			t.Fatalf("body=%s: status=%d want 200 (must still ack)", body, status)
+		}
+		if string(respBody) != body {
+			t.Fatalf("body=%s: expected echoed back verbatim, got %s", body, respBody)
 		}
 	}
 }
