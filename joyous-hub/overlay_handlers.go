@@ -147,20 +147,10 @@ func (h *Hub) SendImageToDeviceWithOverlay(deviceID, imageID string) (string, er
 		return "", fmt.Errorf("device %q not found", deviceID)
 	}
 	token := cfg.sendToken(weather, dev.Portrait)
-	if dev.Type == DeviceTypeInkJoy {
-		if h.bridgeCoord != nil && h.bridgeCoord.BridgeOnline(string(DeviceTypeInkJoy)) {
-			return h.SendImageToDevice(deviceID, imageID, token)
-		}
-		if _, err := h.ensureOverlayBin(imageID, dev.Portrait, cfg, weather); err != nil {
-			return "", err
-		}
-	}
-	return h.SendImageToDevice(deviceID, imageID, token)
+	return h.sendImageToDevice(deviceID, imageID, token, &cfg, &weather)
 }
 
-// SendImageToDevice pushes an album image to any registered frame type.
-// overlayToken is empty for a plain send; otherwise the frame pulls a composited bin/png.
-func (h *Hub) SendImageToDevice(deviceID, imageID, overlayToken string) (string, error) {
+func (h *Hub) sendImageToDevice(deviceID, imageID, overlayToken string, overlayCfg *OverlayConfig, overlayWeather *WeatherSnapshot) (string, error) {
 	dev, ok := h.devices.Get(deviceID)
 	if !ok {
 		return "", fmt.Errorf("device %q not found", deviceID)
@@ -172,9 +162,11 @@ func (h *Hub) SendImageToDevice(deviceID, imageID, overlayToken string) (string,
 	var err error
 	switch dev.Type {
 	case DeviceTypeInkJoy:
-		err = h.sendInkJoyImage(dev, imageID, overlayToken, send.ID)
+		err = h.sendInkJoyImage(dev, imageID, overlayToken, send.ID, overlayCfg, overlayWeather)
 	case DeviceTypeSamsung:
-		err = h.sendSamsungImage(dev, imageID, overlayToken, send.ID)
+		err = h.sendSamsungImage(dev, imageID, overlayToken, send.ID, overlayCfg, overlayWeather)
+	case DeviceTypeNixplay:
+		err = h.sendNixplayImage(dev, imageID, overlayToken, send.ID, overlayCfg, overlayWeather)
 	default:
 		err = fmt.Errorf("unsupported device type %q", dev.Type)
 	}
@@ -186,6 +178,12 @@ func (h *Hub) SendImageToDevice(deviceID, imageID, overlayToken string) (string,
 		h.inkjoyRetry.Track(send.ID, deviceID, imageID, overlayToken)
 	}
 	return send.ID, nil
+}
+
+// SendImageToDevice pushes an album image to any registered frame type.
+// overlayToken is empty for a plain send; otherwise the frame pulls a composited bin/png.
+func (h *Hub) SendImageToDevice(deviceID, imageID, overlayToken string) (string, error) {
+	return h.sendImageToDevice(deviceID, imageID, overlayToken, nil, nil)
 }
 
 func (h *Hub) sendImageToDeviceAuto(deviceID, imageID string) (string, error) {

@@ -58,14 +58,6 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 		id, overlayToken, portrait := parseImageBinFilename(file)
 		hub.images.ServeBinOrientationHTTP(w, r, id, portrait, overlayToken)
 	})
-	mux.HandleFunc("GET /inkjoy/{mac}/{file}", func(w http.ResponseWriter, r *http.Request) {
-		if hub.inkjoy == nil {
-			http.NotFound(w, r)
-			return
-		}
-		name := strings.TrimSuffix(r.PathValue("file"), ".bin")
-		hub.inkjoy.ServeHTTP(w, r, r.PathValue("mac"), name)
-	})
 	mux.HandleFunc("GET /images/{id}/thumb", func(w http.ResponseWriter, r *http.Request) {
 		hub.images.ServeThumbHTTP(w, r, r.PathValue("id"))
 	})
@@ -155,6 +147,9 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("GET /samsung/{frameId}/image", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungImage(w, r, r.PathValue("frameId"))
 	})
+	mux.HandleFunc("HEAD /samsung/{frameId}/image", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleSamsungImage(w, r, r.PathValue("frameId"))
+	})
 	mux.HandleFunc("GET /samsung/{frameId}/status", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungStatus(w, r, r.PathValue("frameId"))
 	})
@@ -168,6 +163,14 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 		default:
 			http.NotFound(w, r)
 		}
+	})
+	mux.HandleFunc("HEAD /samsung/{file}", func(w http.ResponseWriter, r *http.Request) {
+		file := r.PathValue("file")
+		if strings.HasSuffix(file, ".png") {
+			hub.handleSamsungPNG(w, r, strings.TrimSuffix(file, ".png"))
+			return
+		}
+		http.NotFound(w, r)
 	})
 	mux.HandleFunc("/", hub.handleStatic)
 }

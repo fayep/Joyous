@@ -1,7 +1,11 @@
 package bridgehub
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"sync"
 	"time"
@@ -12,6 +16,9 @@ import (
 	"joyous-hub/protocol"
 )
 
+const bridgePresenceTTL = 45 * time.Second
+const defaultUIHTTPTimeout = 20 * time.Second
+
 // DeviceStore receives device updates from bridges.
 type DeviceStore interface {
 	SyncBridgeDevices(bridgeID string, devices []protocol.BridgeDevice)
@@ -19,15 +26,32 @@ type DeviceStore interface {
 	RemoveBridgeDevice(bridgeID, deviceID string)
 }
 
+type bridgeRecord struct {
+	hello    protocol.HelloPayload
+	lastSeen time.Time
+}
+
+// BridgeStatus is the hub-facing view of a connected bridge.
+type BridgeStatus struct {
+	ID           string   `json:"id"`
+	Kind         string   `json:"kind"`
+	Online       bool     `json:"online"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	HasConfigUI  bool     `json:"has_config_ui"`
+	ListenHTTP   string   `json:"listen_http,omitempty"`
+	ListenMQTT   string   `json:"listen_mqtt,omitempty"`
+}
+
 // Coordinator listens on the hub broker for bridge traffic and routes commands.
 type Coordinator struct {
 	broker   *mochi.Server
 	store    DeviceStore
 	mu       sync.RWMutex
-	bridges  map[string]protocol.HelloPayload
+	bridges  map[string]bridgeRecord
 	uiState  map[string]protocol.UIStatePayload
-	mqttLogs map[string]protocol.MQTTLogsPayload
-	onCmd    func(bridgeID string, cmd protocol.CmdPayload)
+	pending        map[string]chan protocol.UIHTTPResponsePayload
+	onCmd          func(bridgeID string, cmd protocol.CmdPayload)
+	onSendComplete func(body protocol.SendCompletePayload)
 }
 
 // NewCoordinator attaches bridge protocol hooks to the hub MQTT broker.
@@ -35,9 +59,9 @@ func NewCoordinator(broker *mochi.Server, store DeviceStore) *Coordinator {
 	c := &Coordinator{
 		broker:   broker,
 		store:    store,
-		bridges:  make(map[string]protocol.HelloPayload),
+		bridges:  make(map[string]bridgeRecord),
 		uiState:  make(map[string]protocol.UIStatePayload),
-		mqttLogs: make(map[string]protocol.MQTTLogsPayload),
+		pending:  make(map[string]chan protocol.UIHTTPResponsePayload),
 	}
 	return c
 }
@@ -45,6 +69,11 @@ func NewCoordinator(broker *mochi.Server, store DeviceStore) *Coordinator {
 // SetCommandHandler receives hub→bridge commands when bridges aren't subscribed inline.
 func (c *Coordinator) SetCommandHandler(fn func(bridgeID string, cmd protocol.CmdPayload)) {
 	c.onCmd = fn
+}
+
+// SetSendCompleteHandler receives bridge send delivery reports.
+func (c *Coordinator) SetSendCompleteHandler(fn func(body protocol.SendCompletePayload)) {
+	c.onSendComplete = fn
 }
 
 // AttachClient subscribes a Paho client to bridge topics (for tests or external broker).
@@ -80,9 +109,9 @@ func (c *Coordinator) handleBridgeTopic(topic string, payload []byte) {
 		if env.Type == protocol.TypeHello {
 			hello, _ := protocol.DecodePayload[protocol.HelloPayload](env)
 			c.mu.Lock()
-			c.bridges[bridgeID] = hello
+			c.bridges[bridgeID] = bridgeRecord{hello: hello, lastSeen: time.Now()}
 			c.mu.Unlock()
-			log.Printf("bridgehub: bridge %q online kind=%s", bridgeID, hello.Kind)
+			log.Printf("bridgehub: bridge %q online kind=%s caps=%v", bridgeID, hello.Kind, hello.Capabilities)
 		}
 	case "devices":
 		if env.Type == protocol.TypeDevices && c.store != nil {
@@ -95,17 +124,39 @@ func (c *Coordinator) handleBridgeTopic(topic string, payload []byte) {
 			c.store.ApplyBridgeDevice(bridgeID, body.Device)
 		}
 	case "ui":
-		if env.Type == protocol.TypeUIState {
+		switch env.Type {
+		case protocol.TypeUIState:
 			body, _ := protocol.DecodePayload[protocol.UIStatePayload](env)
 			c.mu.Lock()
 			c.uiState[bridgeID] = body
 			c.mu.Unlock()
+		case protocol.TypeUIHTTPResponse:
+			body, _ := protocol.DecodePayload[protocol.UIHTTPResponsePayload](env)
+			c.deliverUIHTTPResponse(body)
 		}
 	case "event":
-		if env.Type == protocol.TypeEvent {
+		switch env.Type {
+		case protocol.TypeEvent:
 			body, _ := protocol.DecodePayload[protocol.EventPayload](env)
 			log.Printf("bridgehub: event bridge=%s name=%s", bridgeID, body.Name)
+		case protocol.TypeSendComplete:
+			body, _ := protocol.DecodePayload[protocol.SendCompletePayload](env)
+			if c.onSendComplete != nil && body.SendID != "" {
+				c.onSendComplete(body)
+			}
 		}
+	}
+}
+
+func (c *Coordinator) deliverUIHTTPResponse(resp protocol.UIHTTPResponsePayload) {
+	c.mu.Lock()
+	ch := c.pending[resp.RequestID]
+	if ch != nil {
+		delete(c.pending, resp.RequestID)
+	}
+	c.mu.Unlock()
+	if ch != nil {
+		ch <- resp
 	}
 }
 
@@ -135,12 +186,83 @@ func (c *Coordinator) PublishUIAction(bridgeID string, action protocol.UIActionP
 	return nil
 }
 
+// ProxyBridgeHTTP tunnels an HTTP request to a bridge over MQTT and waits for the response.
+// The hub does not serve /{bridge_id}/… itself; paths under each bridge prefix are owned by the bridge.
+func (c *Coordinator) ProxyBridgeHTTP(ctx context.Context, bridgeID string, req protocol.UIHTTPRequestPayload) (protocol.UIHTTPResponsePayload, error) {
+	if !c.BridgeOnline(bridgeID) {
+		return protocol.UIHTTPResponsePayload{}, errors.New("bridge offline")
+	}
+	if req.RequestID == "" {
+		req.RequestID = newRequestID()
+	}
+	ch := make(chan protocol.UIHTTPResponsePayload, 1)
+	c.mu.Lock()
+	c.pending[req.RequestID] = ch
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.pending, req.RequestID)
+		c.mu.Unlock()
+	}()
+
+	payload, err := protocol.NewEnvelope(protocol.TypeUIHTTPRequest, bridgeID, req)
+	if err != nil {
+		return protocol.UIHTTPResponsePayload{}, err
+	}
+	topic := protocol.HubTopic(bridgeID, "ui")
+	if c.broker == nil {
+		return protocol.UIHTTPResponsePayload{}, errors.New("broker unavailable")
+	}
+	if err := c.broker.Publish(topic, payload, false, 1); err != nil {
+		return protocol.UIHTTPResponsePayload{}, err
+	}
+
+	timeout := defaultUIHTTPTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if d := time.Until(deadline); d > 0 && d < timeout {
+			timeout = d
+		}
+	}
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-ctx.Done():
+		return protocol.UIHTTPResponsePayload{}, ctx.Err()
+	case <-time.After(timeout):
+		return protocol.UIHTTPResponsePayload{}, errors.New("bridge HTTP timeout")
+	}
+}
+
+// ProxyUIHTTP is an alias for ProxyBridgeHTTP (bridge-owned HTTP under /{bridge_id}/…).
+func (c *Coordinator) ProxyUIHTTP(ctx context.Context, bridgeID string, req protocol.UIHTTPRequestPayload) (protocol.UIHTTPResponsePayload, error) {
+	return c.ProxyBridgeHTTP(ctx, bridgeID, req)
+}
+
 // BridgeOnline reports whether a bridge has announced presence recently.
 func (c *Coordinator) BridgeOnline(bridgeID string) bool {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	_, ok := c.bridges[bridgeID]
-	return ok
+	rec, ok := c.bridges[bridgeID]
+	c.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	return time.Since(rec.lastSeen) <= bridgePresenceTTL
+}
+
+// HasCapability reports whether an online bridge advertises a capability.
+func (c *Coordinator) HasCapability(bridgeID, cap string) bool {
+	c.mu.RLock()
+	rec, ok := c.bridges[bridgeID]
+	c.mu.RUnlock()
+	if !ok || time.Since(rec.lastSeen) > bridgePresenceTTL {
+		return false
+	}
+	for _, c := range rec.hello.Capabilities {
+		if c == cap {
+			return true
+		}
+	}
+	return false
 }
 
 // UIState returns cached bridge tab state.
@@ -151,15 +273,53 @@ func (c *Coordinator) UIState(bridgeID string) (protocol.UIStatePayload, bool) {
 	return s, ok
 }
 
-// ListBridges returns connected bridge hello payloads.
+// ListBridges returns connected bridge hello payloads (legacy map).
 func (c *Coordinator) ListBridges() map[string]protocol.HelloPayload {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := make(map[string]protocol.HelloPayload, len(c.bridges))
-	for k, v := range c.bridges {
-		out[k] = v
+	for k, rec := range c.bridges {
+		if time.Since(rec.lastSeen) <= bridgePresenceTTL {
+			out[k] = rec.hello
+		}
 	}
 	return out
+}
+
+// ListBridgeStatus returns hub-facing bridge status for the SPA.
+func (c *Coordinator) ListBridgeStatus() []BridgeStatus {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]BridgeStatus, 0, len(c.bridges))
+	for id, rec := range c.bridges {
+		online := time.Since(rec.lastSeen) <= bridgePresenceTTL
+		if !online {
+			continue
+		}
+		hasUI := false
+		for _, cap := range rec.hello.Capabilities {
+			if cap == protocol.CapConfigUI {
+				hasUI = true
+				break
+			}
+		}
+		out = append(out, BridgeStatus{
+			ID:           id,
+			Kind:         rec.hello.Kind,
+			Online:       true,
+			Capabilities: rec.hello.Capabilities,
+			HasConfigUI:  hasUI,
+			ListenHTTP:   rec.hello.ListenHTTP,
+			ListenMQTT:   rec.hello.ListenMQTT,
+		})
+	}
+	return out
+}
+
+func newRequestID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func splitTopic(topic string) []string {
@@ -186,6 +346,13 @@ type Client struct {
 	client   mqtt.Client
 	onCmd    func(protocol.CmdPayload)
 	onUI     func(protocol.UIActionPayload)
+	uiHTTP   UIHTTPHandler
+	hello    protocol.HelloPayload
+}
+
+// UIHTTPHandler serves bridge-owned configuration pages.
+type UIHTTPHandler interface {
+	ServeUIHTTP(method, path string, headers map[string]string, body []byte) (status int, contentType string, respHeaders map[string]string, respBody []byte)
 }
 
 // ClientConfig holds bridge-side hub connection options.
@@ -193,8 +360,10 @@ type ClientConfig struct {
 	HubMQTT   string // tcp://host:port
 	BridgeID  string
 	Kind      string
+	Hello     protocol.HelloPayload
 	OnCommand func(protocol.CmdPayload)
 	OnUI      func(protocol.UIActionPayload)
+	UIHTTP    UIHTTPHandler
 }
 
 // Connect dials the hub and announces presence.
@@ -204,6 +373,11 @@ func Connect(cfg ClientConfig) (*Client, error) {
 		kind:     cfg.Kind,
 		onCmd:    cfg.OnCommand,
 		onUI:     cfg.OnUI,
+		uiHTTP:   cfg.UIHTTP,
+		hello:    cfg.Hello,
+	}
+	if c.hello.Kind == "" {
+		c.hello.Kind = cfg.Kind
 	}
 	opts := mqtt.NewClientOptions().
 		AddBroker(cfg.HubMQTT).
@@ -215,6 +389,7 @@ func Connect(cfg ClientConfig) (*Client, error) {
 			mc.Subscribe(protocol.HubTopic(cfg.BridgeID, "cmd"), 1, c.onCmdMessage)
 			mc.Subscribe(protocol.HubTopic(cfg.BridgeID, "ui"), 1, c.onUIMessage)
 			c.publishHello(mc)
+			go c.heartbeat(mc)
 		})
 	c.client = mqtt.NewClient(opts)
 	tok := c.client.Connect()
@@ -223,6 +398,17 @@ func Connect(cfg ClientConfig) (*Client, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+func (c *Client) heartbeat(mc mqtt.Client) {
+	tick := time.NewTicker(15 * time.Second)
+	defer tick.Stop()
+	for range tick.C {
+		if mc == nil || !mc.IsConnected() {
+			return
+		}
+		c.publishHello(mc)
+	}
 }
 
 func (c *Client) onCmdMessage(_ mqtt.Client, msg mqtt.Message) {
@@ -234,29 +420,83 @@ func (c *Client) onCmdMessage(_ mqtt.Client, msg mqtt.Message) {
 	if err != nil {
 		return
 	}
-	if c.onCmd != nil {
-		c.onCmd(cmd)
+	if c.onCmd == nil {
+		return
+	}
+	// Encoding and other heavy work must not run on the MQTT callback thread or
+	// hub→bridge UI HTTP tunneled over the same client will time out.
+	if longRunningBridgeCmd(cmd.Cmd) {
+		go c.onCmd(cmd)
+		return
+	}
+	c.onCmd(cmd)
+}
+
+func longRunningBridgeCmd(cmd string) bool {
+	switch cmd {
+	case protocol.CmdSendImage, protocol.CmdBLEScan, protocol.CmdBLEAdopt:
+		return true
+	default:
+		return false
 	}
 }
 
 func (c *Client) onUIMessage(_ mqtt.Client, msg mqtt.Message) {
 	env, err := protocol.DecodeEnvelope(msg.Payload())
-	if err != nil || env.Type != protocol.TypeUIAction {
-		return
-	}
-	action, err := protocol.DecodePayload[protocol.UIActionPayload](env)
 	if err != nil {
 		return
 	}
-	if c.onUI != nil {
-		c.onUI(action)
+	switch env.Type {
+	case protocol.TypeUIAction:
+		action, err := protocol.DecodePayload[protocol.UIActionPayload](env)
+		if err != nil {
+			return
+		}
+		if c.onUI != nil {
+			c.onUI(action)
+		}
+	case protocol.TypeUIHTTPRequest:
+		req, err := protocol.DecodePayload[protocol.UIHTTPRequestPayload](env)
+		if err != nil {
+			return
+		}
+		go c.handleUIHTTPRequest(req)
+	}
+}
+
+func (c *Client) handleUIHTTPRequest(req protocol.UIHTTPRequestPayload) {
+	if c.uiHTTP == nil {
+		c.publishUIHTTPResponse(req.RequestID, 503, "text/plain", nil, []byte("bridge UI unavailable"))
+		return
+	}
+	status, ct, hdrs, body := c.uiHTTP.ServeUIHTTP(req.Method, req.Path, req.Headers, req.Body)
+	c.publishUIHTTPResponse(req.RequestID, status, ct, hdrs, body)
+}
+
+func (c *Client) publishUIHTTPResponse(requestID string, status int, contentType string, headers map[string]string, body []byte) {
+	resp := protocol.UIHTTPResponsePayload{
+		RequestID:   requestID,
+		Status:      status,
+		ContentType: contentType,
+		Headers:     headers,
+		Body:        body,
+	}
+	payload, err := protocol.NewEnvelope(protocol.TypeUIHTTPResponse, c.bridgeID, resp)
+	if err != nil {
+		return
+	}
+	topic := protocol.BridgeTopic(c.bridgeID, "ui")
+	if c.client != nil && c.client.IsConnected() {
+		c.client.Publish(topic, 1, false, payload)
 	}
 }
 
 func (c *Client) publishHello(mc mqtt.Client) {
-	payload, _ := protocol.NewEnvelope(protocol.TypeHello, c.bridgeID, protocol.HelloPayload{
-		Kind: c.kind,
-	})
+	hello := c.hello
+	if hello.Kind == "" {
+		hello.Kind = c.kind
+	}
+	payload, _ := protocol.NewEnvelope(protocol.TypeHello, c.bridgeID, hello)
 	topic := protocol.BridgeTopic(c.bridgeID, "presence")
 	mc.Publish(topic, 1, true, payload)
 }
@@ -305,17 +545,6 @@ func (c *Client) PublishSendComplete(body protocol.SendCompletePayload) error {
 	return tok.Error()
 }
 
-// PublishMQTTLogs sends MQTT debug logs for the InkJoy tab.
-func (c *Client) PublishMQTTLogs(logs protocol.MQTTLogsPayload) error {
-	payload, err := protocol.NewEnvelope(protocol.TypeMQTTLogs, c.bridgeID, logs)
-	if err != nil {
-		return err
-	}
-	tok := c.client.Publish(protocol.BridgeTopic(c.bridgeID, "event"), 0, false, payload)
-	tok.Wait()
-	return tok.Error()
-}
-
 // Disconnect closes the hub connection.
 func (c *Client) Disconnect() {
 	if c.client != nil && c.client.IsConnected() {
@@ -325,7 +554,6 @@ func (c *Client) Disconnect() {
 
 // DeviceFromRegistry converts a hub Device to protocol.BridgeDevice.
 func DeviceFromRegistry(id, typ string, d any) protocol.BridgeDevice {
-	// Generic JSON round-trip so bridge adapters don't import main.
 	b, _ := json.Marshal(d)
 	var out protocol.BridgeDevice
 	_ = json.Unmarshal(b, &out)

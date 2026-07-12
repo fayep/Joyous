@@ -29,6 +29,27 @@ func TestPublicHTTPHostUsesLANIP(t *testing.T) {
 	}
 }
 
+func TestInkjoyPlayURLUsesHubCachePath(t *testing.T) {
+	mac := "AA:BB:CC:DD:EE:FF"
+	url := inkjoyPlayURL("http://joyous.zippysoft.com:18080", "192.168.1.108", mac, "abc123~tok-p", "192.168.51.7")
+	if !strings.HasSuffix(url, "/inkjoy/AABBCCDDEEFF/abc123~tok-p.bin") {
+		t.Fatalf("unexpected url %q", url)
+	}
+	if strings.Contains(url, "zippysoft") {
+		t.Fatalf("play url must use LAN IP, got %q", url)
+	}
+	if !strings.Contains(url, "192.168.51.7:18080") {
+		t.Fatalf("play url must use hub LAN IP, got %q", url)
+	}
+}
+
+func TestInkjoyPlayContentHostPrefersFrameHubIP(t *testing.T) {
+	host := inkjoyPlayContentHost("http://joyous.zippysoft.com:18080", "192.168.1.108", "192.168.51.7")
+	if host != "192.168.51.7:18080" {
+		t.Fatalf("expected frame hub IP, got %q", host)
+	}
+}
+
 func TestSamsungMDCContentURL(t *testing.T) {
 	url := samsungMDCContentURL("hubhost.local:18080", "192.168.1.108", "192-168-1-108")
 	if strings.Contains(url, "hubhost.local") {

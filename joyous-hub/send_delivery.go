@@ -89,16 +89,18 @@ func (t *SendDeliveryTracker) BindSamsung(sendID, frameID, etag string) {
 }
 
 func (t *SendDeliveryTracker) BindInkJoy(sendID, msgid string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	d, ok := t.byID[sendID]
-	if !ok || msgid == "" {
+	if sendID == "" || msgid == "" {
 		return
 	}
-	if d.inkjoyMsgID != "" && d.inkjoyMsgID != msgid {
-		delete(t.inkjoyByMsgID, d.inkjoyMsgID)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if d, ok := t.byID[sendID]; ok {
+		if d.inkjoyMsgID != "" && d.inkjoyMsgID != msgid {
+			delete(t.inkjoyByMsgID, d.inkjoyMsgID)
+		}
+		d.inkjoyMsgID = msgid
 	}
-	d.inkjoyMsgID = msgid
+	// Hub registers sends; bridge only binds msgid from send.image cmd.
 	t.inkjoyByMsgID[msgid] = sendID
 }
 
@@ -157,14 +159,28 @@ func (t *SendDeliveryTracker) finish(d *sendDelivery, status sendStatus) bool {
 }
 
 func (t *SendDeliveryTracker) Fail(sendID string) {
+	t.CompleteSend(sendID, false)
+}
+
+// CompleteSend marks a hub send as delivered or failed by send id.
+func (t *SendDeliveryTracker) CompleteSend(sendID string, ok bool) {
 	t.mu.Lock()
-	d, ok := t.byID[sendID]
-	t.mu.Unlock()
-	if !ok {
+	d, found := t.byID[sendID]
+	if !found {
+		t.mu.Unlock()
 		return
 	}
-	t.mu.Lock()
-	t.finish(d, sendStatusFailed)
+	status := sendStatusFailed
+	if ok {
+		status = sendStatusDelivered
+	}
+	if d.inkjoyMsgID != "" {
+		delete(t.inkjoyByMsgID, d.inkjoyMsgID)
+	}
+	if d.samsungFrameID != "" {
+		delete(t.samsungByFrame, d.samsungFrameID)
+	}
+	t.finish(d, status)
 	t.mu.Unlock()
 }
 
@@ -189,6 +205,16 @@ func (t *SendDeliveryTracker) CompleteInkJoy(msgid string, ok bool) {
 		delete(t.inkjoyByMsgID, msgid)
 	}
 	t.mu.Unlock()
+}
+
+func (t *SendDeliveryTracker) MarkInkJoyDownloading(sendID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	d, ok := t.byID[sendID]
+	if !ok || d.Status != sendStatusPending {
+		return
+	}
+	d.Status = sendStatusDownloading
 }
 
 func (t *SendDeliveryTracker) MarkSamsungDownloading(frameID, etag string) {
@@ -296,7 +322,7 @@ func (h *Hub) handleSendStatus(w http.ResponseWriter, r *http.Request, sendID st
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	if wait > 0 && d.Status == sendStatusPending {
+	if wait > 0 && (d.Status == sendStatusPending || d.Status == sendStatusDownloading) {
 		timer := time.NewTimer(time.Duration(wait) * time.Second)
 		defer timer.Stop()
 		fresh := h.sendDelivery.Get(sendID)

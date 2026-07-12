@@ -22,22 +22,44 @@ import (
 )
 
 func main() {
-	hubMQTT := flag.String("hub-mqtt", "tcp://127.0.0.1:11883", "hub joyous MQTT broker")
-	bridgeID := flag.String("bridge-id", protocol.KindInkJoy, "bridge id announced to hub")
-	listenMQTT := flag.String("listen-mqtt", ":1883", "InkJoy frame MQTT broker")
-	listenHTTP := flag.String("listen-http", ":18081", "HTTP listen (play relay cache)")
-	upstream := flag.String("upstream", "13.39.148.101:1883", "InkJoy cloud MQTT broker")
-	upstreamUsr := flag.String("upstream-usr", "", "cloud MQTT username")
-	upstreamPwd := flag.String("upstream-pwd", "", "cloud MQTT password")
-	upstreamAllow := flag.String("upstream-allow", inkjoybridge.DefaultUpstreamAllowCSV(), "frame→cloud allow list")
-	downstreamAllow := flag.String("downstream-allow", inkjoybridge.DefaultDownstreamAllowCSV(), "cloud→frame allow list")
-	intercept := flag.String("intercept", inkjoybridge.DefaultInterceptCSV(), "intercept list")
-	dataDir := flag.String("data-dir", "./data-inkjoy", "bridge data directory")
-	serverAddr := flag.String("server-addr", "", "public HTTP address for play URLs")
-	captureDir := flag.String("capture-dir", "", "MQTT capture dir (auto/off)")
-	otaDir := flag.String("ota-dir", "", "OTA capture dir (auto/off)")
+	cfgPath := configPathFromArgs(os.Args)
+	if cfgPath == "" {
+		var err error
+		cfgPath, err = DefaultInkJoyConfigPath()
+		if err != nil {
+			log.Fatalf("config path: %v", err)
+		}
+	}
+	fileCfg, err := LoadInkJoyBridgeConfig(cfgPath)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	if _, err := os.Stat(cfgPath); err == nil {
+		log.Printf("config: %s", cfgPath)
+	}
+	applyInkJoyEnvOverrides(&fileCfg)
+
+	hubMQTT := flag.String("hub-mqtt", fileCfg.HubMQTT, "hub joyous MQTT broker")
+	bridgeID := flag.String("bridge-id", fileCfg.BridgeID, "bridge id announced to hub")
+	listenMQTT := flag.String("listen-mqtt", fileCfg.ListenMQTT, "InkJoy frame MQTT broker")
+	hubHTTP := flag.String("hub-http", fileCfg.HubHTTP, "Joyous hub HTTP base URL for play relay")
+	upstream := flag.String("upstream", fileCfg.Upstream, "InkJoy cloud MQTT broker")
+	upstreamUsr := flag.String("upstream-usr", fileCfg.UpstreamUsr, "cloud MQTT username")
+	upstreamPwd := flag.String("upstream-pwd", fileCfg.UpstreamPwd, "cloud MQTT password")
+	upstreamAllow := flag.String("upstream-allow", fileCfg.UpstreamAllow, "frame→cloud allow list")
+	downstreamAllow := flag.String("downstream-allow", fileCfg.DownstreamAllow, "cloud→frame allow list")
+	intercept := flag.String("intercept", fileCfg.Intercept, "intercept list")
+	dataDir := flag.String("data-dir", fileCfg.DataDir, "bridge data directory")
+	hubDataDir := flag.String("hub-data-dir", fileCfg.HubDataDir, "hub data directory (play relay cache + device import)")
+	captureDir := flag.String("capture-dir", fileCfg.CaptureDir, "MQTT capture dir (auto/off)")
+	otaDir := flag.String("ota-dir", fileCfg.OTADir, "OTA capture dir (auto/off)")
+	flag.String("config", cfgPath, "config file")
 	flag.Parse()
 
+	if *bridgeID == "" {
+		*bridgeID = protocol.KindInkJoy
+	}
+	*hubDataDir = reconcileHubDataDir(*hubDataDir)
 	if *upstreamUsr == "" {
 		*upstreamUsr = os.Getenv("INKJOY_MQTT_USER")
 	}
@@ -54,6 +76,14 @@ func main() {
 	if err := devices.Load(); err != nil {
 		log.Printf("warn: load devices: %v", err)
 	}
+	if n, err := devices.ImportInkJoyFrom(*hubDataDir); err != nil {
+		log.Printf("warn: import hub InkJoy devices: %v", err)
+	} else if n > 0 {
+		log.Printf("imported %d InkJoy device(s) from hub data dir %s", n, *hubDataDir)
+		if err := devices.Save(); err != nil {
+			log.Printf("warn: save imported devices: %v", err)
+		}
+	}
 	capture := NewMessageCapture(
 		resolveCaptureDir(*captureDir, *dataDir),
 		inkjoybridge.ParseAllowList(*upstreamAllow),
@@ -62,13 +92,16 @@ func main() {
 	)
 	otaCapture := NewOTACapture(resolveOTADir(*otaDir, *dataDir))
 	mqttLog := NewMQTTLogBuffer(20)
-	inkjoyCache := NewInkJoyCache(*dataDir)
 	sendDelivery := NewSendDeliveryTracker()
 
-	addr := *serverAddr
-	if addr == "" {
-		addr = localAddr(*listenHTTP)
+	relayCacheDir := strings.TrimSpace(*hubDataDir)
+	if relayCacheDir == "" {
+		log.Printf("warn: hub_data_dir unset; cloud play relay cache stays in bridge data_dir (frames may not fetch it)")
+		relayCacheDir = *dataDir
 	}
+	hubInkjoyCache := NewInkJoyCache(relayCacheDir)
+	hubPlayAddr := hubHTTPHostPort(*hubHTTP)
+	hubPlayIP := resolvedLANIP(hubPlayAddr)
 
 	imageStore, err := NewImageStoreE(*dataDir)
 	if err != nil {
@@ -77,14 +110,23 @@ func main() {
 	colorStore := NewColorStore(*dataDir)
 	imageStore.SetColorStore(colorStore)
 	overlayStore := NewOverlayStore(*dataDir)
+	displayPreview := NewDisplayPreviewStore(*dataDir)
 	encodeHub := &Hub{
 		images:     imageStore,
 		color:      colorStore,
 		overlay:    overlayStore,
-		serverAddr: addr,
+		serverAddr: hubPlayAddr,
+		hubIP:      hubPlayIP,
 	}
 
-	relay := &playRelayAdapter{hub: &Hub{inkjoy: inkjoyCache, serverAddr: addr, images: imageStore}}
+	relay := &playRelayAdapter{hub: &Hub{
+		inkjoy:         hubInkjoyCache,
+		serverAddr:     hubPlayAddr,
+		hubIP:          hubPlayIP,
+		devices:        devices,
+		displayPreview: displayPreview,
+		images:         imageStore,
+	}}
 	srv := inkjoybridge.NewServer(inkjoybridge.Config{
 		ListenMQTT:      *listenMQTT,
 		Upstream:        *upstream,
@@ -106,6 +148,12 @@ func main() {
 		inkjoyRetry.OnPlayAck(ackMsgid, result)
 	})
 
+	mqttHost := bridgeMQTTHost(*listenMQTT)
+	mqttPort := bridgeMQTTPort(*listenMQTT)
+	mux := http.NewServeMux()
+	bridgeUI := newInkJoyBridgeUI(mux, devices, srv, mqttLog, mqttHost, mqttPort)
+	_ = bridgeUI
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -115,8 +163,14 @@ func main() {
 		HubMQTT:  *hubMQTT,
 		BridgeID: *bridgeID,
 		Kind:     protocol.KindInkJoy,
+		Hello: protocol.HelloPayload{
+			Kind:         protocol.KindInkJoy,
+			Capabilities: []string{protocol.CapConfigUI},
+			ListenMQTT:   *listenMQTT,
+		},
+		UIHTTP: bridgeUI,
 		OnCommand: func(cmd protocol.CmdPayload) {
-			handleInkJoyBridgeCommand(ctx, srv, encodeHub, devices, sendDelivery, inkjoyCache, hubClient, addr, cmd)
+			handleInkJoyBridgeCommand(ctx, srv, encodeHub, devices, sendDelivery, inkjoyRetry, hubInkjoyCache, hubClient, cmd)
 		},
 	})
 	if connectErr != nil {
@@ -124,27 +178,44 @@ func main() {
 	}
 	defer hubClient.Disconnect()
 
+	inkjoyRetry.SetSendCompleteNotifier(func(body protocol.SendCompletePayload) {
+		if err := hubClient.PublishSendComplete(body); err != nil {
+			log.Printf("inkjoy-bridge send.complete publish: %v", err)
+		}
+	})
+	bridgeCtx := ctx
+	inkjoyRetry.SetResender(func(entry *inkjoyRetryEntry) error {
+		dev, ok := devices.Get(entry.deviceID)
+		if !ok {
+			return fmt.Errorf("device %q not found", entry.deviceID)
+		}
+		return bridgeDeliverInkJoyImage(bridgeCtx, srv, encodeHub, sendDelivery, inkjoyRetry, hubInkjoyCache, dev, protocol.SendImageBody{
+			ImageID:      entry.imageID,
+			OverlayToken: entry.overlayToken,
+			SendID:       entry.sendID,
+			HubBaseURL:   entry.hubBaseURL,
+		})
+	})
+
 	if err := srv.Start(ctx); err != nil {
 		log.Fatalf("inkjoy mqtt: %v", err)
 	}
-
-	mux := http.NewServeMux()
-	registerInkJoyBridgeHTTP(mux, inkjoyCache)
-	httpServer := &http.Server{Addr: *listenHTTP, Handler: mux}
-	go func() {
-		log.Printf("inkjoy-bridge HTTP on %s", *listenHTTP)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("HTTP: %v", err)
+	log.Printf("inkjoy-bridge play relay via hub http://%s (cache %s)", hubPlayAddr, relayCacheDir)
+	{
+		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		err := VerifyInkjoyCacheServing(probeCtx, *hubHTTP)
+		cancel()
+		if err != nil {
+			log.Printf("warn: hub inkjoy cache route check failed: %v (upgrade/restart joyous-hub before sending)", err)
+		} else {
+			log.Printf("hub inkjoy cache route check ok")
 		}
-	}()
+	}
 
-	go inkjoyBridgeSyncLoop(ctx, hubClient, devices, mqttLog)
+	go inkjoyBridgeSyncLoop(ctx, hubClient, devices)
 
 	<-ctx.Done()
 	log.Println("inkjoy-bridge shutting down...")
-	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	httpServer.Shutdown(shutCtx)
 	devices.Save()
 }
 
@@ -154,18 +225,7 @@ func (p srvPublisher) Publish(topic string, payload []byte) error {
 	return p.srv.Publish(topic, payload)
 }
 
-func registerInkJoyBridgeHTTP(mux *http.ServeMux, cache *InkJoyCache) {
-	mux.HandleFunc("GET /inkjoy/{mac}/{file}", func(w http.ResponseWriter, r *http.Request) {
-		if cache == nil {
-			http.NotFound(w, r)
-			return
-		}
-		name := strings.TrimSuffix(r.PathValue("file"), ".bin")
-		cache.ServeHTTP(w, r, r.PathValue("mac"), name)
-	})
-}
-
-func inkjoyBridgeSyncLoop(ctx context.Context, client *bridgehub.Client, reg *DeviceRegistry, logBuf *MQTTLogBuffer) {
+func inkjoyBridgeSyncLoop(ctx context.Context, client *bridgehub.Client, reg *DeviceRegistry) {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
@@ -175,12 +235,6 @@ func inkjoyBridgeSyncLoop(ctx context.Context, client *bridgehub.Client, reg *De
 		case <-tick.C:
 			devs := bridgeDevicesFromRegistry(reg, DeviceTypeInkJoy)
 			_ = client.PublishDevices(devs)
-			if logBuf != nil {
-				local, upstream := logBuf.Snapshot()
-				lb, _ := json.Marshal(local)
-				ub, _ := json.Marshal(upstream)
-				_ = client.PublishMQTTLogs(protocol.MQTTLogsPayload{Local: lb, Upstream: ub})
-			}
 			_ = client.PublishUIState(protocol.UIStatePayload{
 				Revision: int(time.Now().Unix()),
 				State:    marshalBridgeUI(devs),
@@ -195,9 +249,9 @@ func handleInkJoyBridgeCommand(
 	encodeHub *Hub,
 	devices *DeviceRegistry,
 	sendDelivery *SendDeliveryTracker,
+	inkjoyRetry *InkJoySendRetry,
 	cache *InkJoyCache,
 	hubClient *bridgehub.Client,
-	bridgeAddr string,
 	cmd protocol.CmdPayload,
 ) {
 	switch cmd.Cmd {
@@ -211,29 +265,20 @@ func handleInkJoyBridgeCommand(
 		if !ok || dev.Type != DeviceTypeInkJoy {
 			return
 		}
-		portrait := dev.Portrait
-		bin, err := bridgeEncodeInkJoy(ctx, encodeHub, body, dev)
-		if err != nil {
-			log.Printf("inkjoy-bridge encode: %v", err)
+		if err := bridgeDeliverInkJoyImage(ctx, srv, encodeHub, sendDelivery, inkjoyRetry, cache, dev, body); err != nil {
+			log.Printf("inkjoy-bridge send.image: %v", err)
 			if body.SendID != "" && sendDelivery != nil {
 				sendDelivery.Fail(body.SendID)
+				if hubClient != nil {
+					_ = hubClient.PublishSendComplete(protocol.SendCompletePayload{
+						SendID:   body.SendID,
+						DeviceID: dev.ID,
+						Success:  false,
+						Detail:   err.Error(),
+					})
+				}
 			}
-			return
 		}
-		cacheFile := imageBinFilename(body.ImageID, body.OverlayToken, portrait)
-		cacheName := strings.TrimSuffix(cacheFile, ".bin")
-		if err := cache.Save(dev.MAC, cacheName, bin); err != nil {
-			log.Printf("inkjoy-bridge cache: %v", err)
-			return
-		}
-		imgURL := fmt.Sprintf("http://%s/inkjoy/%s/%s.bin", bridgeAddr, dev.MAC, cacheName)
-		payload, msgid := buildPlayPayload(dev.MAC, imgURL)
-		if body.SendID != "" {
-			sendDelivery.UnbindInkJoy(body.SendID)
-			sendDelivery.BindInkJoy(body.SendID, msgid)
-		}
-		registerInjectedPlay(msgid)
-		_ = srv.PublishToFrame(dev.MAC, payload)
 	case protocol.CmdRefresh:
 		dev, ok := devices.Get(cmd.DeviceID)
 		if !ok {
@@ -270,4 +315,51 @@ func handleInkJoyBridgeCommand(
 	if hubClient != nil {
 		_ = hubClient.PublishDevices(bridgeDevicesFromRegistry(devices, DeviceTypeInkJoy))
 	}
+}
+
+func bridgeDeliverInkJoyImage(
+	ctx context.Context,
+	srv *inkjoybridge.Server,
+	encodeHub *Hub,
+	sendDelivery *SendDeliveryTracker,
+	inkjoyRetry *InkJoySendRetry,
+	cache *InkJoyCache,
+	dev *Device,
+	body protocol.SendImageBody,
+) error {
+	bin, err := bridgeEncodeInkJoy(ctx, encodeHub, body, dev)
+	if err != nil {
+		return fmt.Errorf("encode: %w", err)
+	}
+	cacheName := inkjoyAlbumCacheName(body.ImageID, body.OverlayToken, dev.Portrait)
+	if err := cache.Save(dev.MAC, cacheName, bin); err != nil {
+		return fmt.Errorf("cache: %w", err)
+	}
+	cachePath := cache.FilePath(dev.MAC, cacheName)
+	hubHost := dev.HubIP
+	if hubHost == "" {
+		hubHost = encodeHub.hubIP
+	}
+	imgURL := inkjoyPlayURL(body.HubBaseURL, dev.IP, dev.MAC, cacheName, hubHost)
+	log.Printf("[%s] cache write %s (%dB) play url %s hub_host=%s", dev.MAC, cachePath, len(bin), imgURL, hubHost)
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	err = ProbeHubURL(probeCtx, imgURL, int64(len(bin)))
+	cancel()
+	if err != nil {
+		return fmt.Errorf("hub cache probe %s: %w", imgURL, err)
+	}
+	log.Printf("[%s] hub cache probe ok image=%s", dev.MAC, body.ImageID)
+	payload, msgid := buildPlayPayload(dev.MAC, imgURL)
+	if body.SendID != "" && sendDelivery != nil {
+		sendDelivery.UnbindInkJoy(body.SendID)
+		sendDelivery.BindInkJoy(body.SendID, msgid)
+		if inkjoyRetry != nil {
+			inkjoyRetry.TrackFromBridge(body.SendID, dev.ID, body.ImageID, body.OverlayToken, body.HubBaseURL)
+		}
+	}
+	registerInjectedPlay(msgid)
+	if err := srv.PublishToFrame(dev.MAC, payload); err != nil {
+		return err
+	}
+	return nil
 }

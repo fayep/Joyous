@@ -1,11 +1,10 @@
-//go:build !inkjoybridge && !samsungbridge
+//go:build !inkjoybridge && !samsungbridge && !nixplaybridge
 
 package main
 
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -22,6 +21,7 @@ import (
 
 	"joyous-hub/bridgehub"
 	"joyous-hub/internal/linkmeta"
+	"joyous-hub/protocol"
 )
 
 func main() {
@@ -108,17 +108,37 @@ func main() {
 	}
 
 	bridgeCoord := bridgehub.NewCoordinator(broker, devices)
-	_ = broker.AddHook(&bridgeHook{coord: bridgeCoord}, nil)
+	joyousMQTTLog := NewMQTTLogBuffer(20)
+	_ = broker.AddHook(&bridgeHook{coord: bridgeCoord, log: joyousMQTTLog}, nil)
 
 	sendDelivery := NewSendDeliveryTracker()
+	bridgeCoord.SetSendCompleteHandler(func(body protocol.SendCompletePayload) {
+		if sendDelivery == nil || body.SendID == "" {
+			return
+		}
+		switch body.Phase {
+		case "bound", "prepared":
+			if body.FrameID != "" {
+				sendDelivery.BindSamsung(body.SendID, body.FrameID, body.ETag)
+				log.Printf("send bound send_id=%s device=%s frame=%s", body.SendID, body.DeviceID, body.FrameID)
+			}
+		case "downloading":
+			sendDelivery.MarkInkJoyDownloading(body.SendID)
+			log.Printf("send downloading send_id=%s device=%s", body.SendID, body.DeviceID)
+		default:
+			sendDelivery.CompleteSend(body.SendID, body.Success)
+			if body.Success {
+				log.Printf("send delivered send_id=%s device=%s", body.SendID, body.DeviceID)
+			} else if body.Detail != "" {
+				log.Printf("send failed send_id=%s device=%s: %s", body.SendID, body.DeviceID, body.Detail)
+			}
+		}
+	})
 	addr := *serverAddr
 	if addr == "" {
 		addr = localAddr(*httpAddr)
 	}
-	mqttPortNum := 1883
-	if _, portStr, err := net.SplitHostPort(*mqttAddr); err == nil {
-		fmt.Sscanf(portStr, "%d", &mqttPortNum)
-	}
+	mqttPortNum := DefaultInkJoyFrameMQTTPort
 	hubIP := resolvedLANIP(addr)
 	hub := &Hub{
 		devices:        devices,
@@ -133,6 +153,7 @@ func main() {
 		color:          colorStore,
 		publisher:      &bridgeCoordinatorPublisher{coord: bridgeCoord},
 		bridgeCoord:    bridgeCoord,
+		joyousMQTTLog:  joyousMQTTLog,
 		serverAddr:     addr,
 		mqttPort:       mqttPortNum,
 		hubIP:          hubIP,
@@ -141,7 +162,11 @@ func main() {
 
 	mux := http.NewServeMux()
 	registerRoutes(mux, hub)
+	registerInkJoyCacheRoutes(mux, inkjoyCache)
 	registerBridgeRoutes(mux, hub)
+
+	log.Printf("InkJoy frame .bin cache at %s (GET/HEAD /inkjoy/{mac}/{file}.bin)", filepath.Join(*dataDir, "inkjoy"))
+	log.Printf("Samsung frame cache at %s (GET/HEAD /samsung/{frameId}/…)", filepath.Join(*dataDir, "samsung"))
 
 	httpServer := &http.Server{Addr: *httpAddr, Handler: accessLogMiddleware(mux)}
 
@@ -157,6 +182,28 @@ func main() {
 		log.Printf("HTTP server listening on %s (images at http://%s)", *httpAddr, addr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP: %v", err)
+		}
+	}()
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		probeHost := "127.0.0.1"
+		_, port, err := net.SplitHostPort(*httpAddr)
+		if err != nil || port == "" {
+			port = "8080"
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		base := "http://" + net.JoinHostPort(probeHost, port)
+		if err := VerifyInkjoyCacheServing(ctx, base); err != nil {
+			log.Printf("warn: inkjoy cache route self-check: %v", err)
+		} else {
+			log.Printf("inkjoy cache route self-check ok")
+		}
+		if err := VerifySamsungCacheServing(ctx, base); err != nil {
+			log.Printf("warn: samsung cache route self-check: %v", err)
+		} else {
+			log.Printf("samsung cache route self-check ok")
 		}
 	}()
 

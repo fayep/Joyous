@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"joyous-hub/protocol"
 )
 
 type statusResponseWriter struct {
@@ -79,7 +81,18 @@ func isImagesRevisionPoll(r *http.Request) bool {
 }
 
 func isMQTTLogsPoll(r *http.Request) bool {
-	return r.Method == http.MethodGet && r.URL.Path == "/api/mqtt/logs"
+	if r.Method != http.MethodGet {
+		return false
+	}
+	p := r.URL.Path
+	if p == "/api/mqtt/logs" {
+		return true
+	}
+	if !strings.HasSuffix(p, "/api/mqtt/logs") {
+		return false
+	}
+	bridgeID := strings.TrimPrefix(strings.TrimSuffix(p, "/api/mqtt/logs"), "/")
+	return protocol.IsBridgeKind(bridgeID)
 }
 
 func isSamsungListPoll(r *http.Request) bool {

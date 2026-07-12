@@ -18,6 +18,7 @@ type DeviceType string
 const (
 	DeviceTypeInkJoy  DeviceType = "inkjoy"
 	DeviceTypeSamsung DeviceType = "samsung"
+	DeviceTypeNixplay DeviceType = "nixplay"
 )
 
 // SamsungRecentWindow is how long after hub contact a Samsung frame counts as active.
@@ -643,6 +644,45 @@ func (r *DeviceRegistry) Load() error {
 		r.m[d.ID] = d
 	}
 	return nil
+}
+
+// ImportInkJoyFrom copies InkJoy devices from another registry directory (typically
+// the hub data_dir) into this one. Existing IDs are left unchanged. Returns the
+// number of devices imported.
+func (r *DeviceRegistry) ImportInkJoyFrom(hubDir string) (int, error) {
+	return r.importDevicesFrom(hubDir, DeviceTypeInkJoy)
+}
+
+// ImportSamsungFrom copies Samsung devices from another registry directory.
+func (r *DeviceRegistry) ImportSamsungFrom(hubDir string) (int, error) {
+	return r.importDevicesFrom(hubDir, DeviceTypeSamsung)
+}
+
+func (r *DeviceRegistry) importDevicesFrom(hubDir string, kind DeviceType) (int, error) {
+	if strings.TrimSpace(hubDir) == "" {
+		return 0, nil
+	}
+	other := NewDeviceRegistry(hubDir)
+	if err := other.Load(); err != nil {
+		return 0, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, d := range other.List() {
+		if d.Type != kind {
+			continue
+		}
+		if _, ok := r.m[d.ID]; ok {
+			continue
+		}
+		cp := d
+		cp.Connected = false
+		cp.bridgeID = ""
+		r.m[d.ID] = &cp
+		n++
+	}
+	return n, nil
 }
 
 func migrateDevice(d *Device) {

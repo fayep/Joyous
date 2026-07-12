@@ -78,6 +78,37 @@ func TestMarkShutdown(t *testing.T) {
 	}
 }
 
+// TestImportInkJoyFrom copies hub InkJoy devices into an empty bridge registry.
+func TestImportInkJoyFrom(t *testing.T) {
+	hubDir := t.TempDir()
+	bridgeDir := t.TempDir()
+
+	hub := NewDeviceRegistry(hubDir)
+	hub.MarkConnected("AABBCCDDEEFF")
+	hub.SetName("AABBCCDDEEFF", "10in frame")
+	if err := hub.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	bridge := NewDeviceRegistry(bridgeDir)
+	n, err := bridge.ImportInkJoyFrom(hubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("imported %d want 1", n)
+	}
+	devs := bridge.List()
+	if len(devs) != 1 || devs[0].ID != "AABBCCDDEEFF" || devs[0].Name != "10in frame" {
+		t.Fatalf("bridge devices: %+v", devs)
+	}
+
+	n, err = bridge.ImportInkJoyFrom(hubDir)
+	if err != nil || n != 0 {
+		t.Fatalf("second import: n=%d err=%v", n, err)
+	}
+}
+
 // TestLastSeenUpdated: MarkConnected and UpdateHeart update LastSeen.
 func TestLastSeenUpdated(t *testing.T) {
 	reg := NewDeviceRegistry(t.TempDir())

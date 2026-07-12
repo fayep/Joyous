@@ -13,6 +13,15 @@ func TestTopics(t *testing.T) {
 	}
 }
 
+func TestBridgeKinds(t *testing.T) {
+	if !IsBridgeKind(KindInkJoy) || !IsBridgeKind(KindSamsung) {
+		t.Fatal("expected inkjoy and samsung")
+	}
+	if IsBridgeKind("images") || IsBridgeKind("api") {
+		t.Fatal("hub paths must not be bridge kinds")
+	}
+}
+
 func TestEnvelopeRoundTrip(t *testing.T) {
 	b, err := NewEnvelope(TypeHello, "inkjoy", HelloPayload{Kind: KindInkJoy})
 	if err != nil {

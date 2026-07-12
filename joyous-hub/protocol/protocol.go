@@ -6,6 +6,7 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -15,7 +16,18 @@ const Version = "1"
 const (
 	KindInkJoy  = "inkjoy"
 	KindSamsung = "samsung"
+	KindNixplay = "nixplay"
 )
+
+// BridgeKinds lists path prefixes owned by vendor bridges (hub proxies /{kind}/…).
+func BridgeKinds() []string {
+	return []string{KindInkJoy, KindSamsung, KindNixplay}
+}
+
+// IsBridgeKind reports whether id is a known bridge path prefix.
+func IsBridgeKind(id string) bool {
+	return slices.Contains(BridgeKinds(), id)
+}
 
 // Topic layout on the hub broker:
 //
@@ -49,18 +61,25 @@ type Envelope struct {
 	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
+// Bridge capability strings (HelloPayload.Capabilities).
+const (
+	CapConfigUI = "config.ui" // bridge serves a vendor configuration page over ui HTTP proxy
+)
+
 // Message type constants.
 const (
-	TypeHello         = "bridge.hello"
-	TypeDevices       = "devices.sync"
-	TypeDevice        = "device.update"
-	TypeDeviceRemove  = "device.remove"
-	TypeEvent         = "bridge.event"
-	TypeUIState       = "ui.state"
-	TypeUIAction      = "ui.action"
-	TypeCmd           = "bridge.cmd"
-	TypeSendComplete  = "send.complete"
-	TypeMQTTLogs      = "mqtt.logs"
+	TypeHello           = "bridge.hello"
+	TypeDevices         = "devices.sync"
+	TypeDevice          = "device.update"
+	TypeDeviceRemove    = "device.remove"
+	TypeEvent           = "bridge.event"
+	TypeUIState         = "ui.state"
+	TypeUIAction        = "ui.action"
+	TypeUIHTTPRequest   = "ui.http.request"
+	TypeUIHTTPResponse  = "ui.http.response"
+	TypeCmd             = "bridge.cmd"
+	TypeSendComplete    = "send.complete"
+	TypeMQTTLogs        = "mqtt.logs"
 )
 
 // HelloPayload announces a bridge at startup.
@@ -130,6 +149,7 @@ const (
 	CmdSamsungWake   = "samsung.wake"
 	CmdSamsungSleep  = "samsung.sleep"
 	CmdSamsungConfig = "samsung.config"
+	CmdDeviceTouch   = "device.touch" // hub → bridge: LastSeen/action from hub-side contact
 	CmdBLEScan       = "ble.scan"
 	CmdBLEAdopt      = "ble.adopt"
 )
@@ -147,11 +167,19 @@ type CropRect struct {
 // fetches the original from HubBaseURL, picks the crop/format appropriate for
 // the destination device, and performs vendor-specific encode.
 type SendImageBody struct {
-	ImageID      string               `json:"image_id"`
-	Crops        map[string]CropRect  `json:"crops,omitempty"` // all album crops, keyed by aspect (e.g. "4:3", "16:9")
-	OverlayToken string               `json:"overlay_token,omitempty"`
-	SendID       string               `json:"send_id,omitempty"`
-	HubBaseURL   string               `json:"hub_base_url"`
+	ImageID      string              `json:"image_id"`
+	Crops        map[string]CropRect `json:"crops,omitempty"` // all album crops, keyed by aspect (e.g. "4:3", "16:9")
+	OverlayToken string              `json:"overlay_token,omitempty"`
+	Overlay      *OverlaySendInfo    `json:"overlay,omitempty"`
+	SendID       string              `json:"send_id,omitempty"`
+	HubBaseURL   string              `json:"hub_base_url"`
+}
+
+// OverlaySendInfo carries overlay config and weather snapshot from the hub so
+// the bridge can composite the same overlay the hub previewed.
+type OverlaySendInfo struct {
+	Config  json.RawMessage `json:"config"`
+	Weather json.RawMessage `json:"weather"`
 }
 
 // SendCompletePayload reports send delivery to the hub.
@@ -160,6 +188,11 @@ type SendCompletePayload struct {
 	DeviceID string `json:"device_id"`
 	Success  bool   `json:"success"`
 	Detail   string `json:"detail,omitempty"`
+	// Phase is optional: "bound" (Samsung etag ready), "downloading", empty/"delivered" on completion.
+	Phase string `json:"phase,omitempty"`
+	// FrameID and ETag are set with phase=bound so the hub can BindSamsung before frame pull.
+	FrameID string `json:"frame_id,omitempty"`
+	ETag    string `json:"etag,omitempty"`
 }
 
 // UIStatePayload is bridge-owned tab state (InkJoy / Samsung pages).
@@ -172,6 +205,24 @@ type UIStatePayload struct {
 type UIActionPayload struct {
 	Action string          `json:"action"`
 	Body   json.RawMessage `json:"body,omitempty"`
+}
+
+// UIHTTPRequestPayload is a hub→bridge HTTP request tunneled over MQTT.
+type UIHTTPRequestPayload struct {
+	RequestID string            `json:"request_id"`
+	Method    string            `json:"method"`
+	Path      string            `json:"path"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      []byte            `json:"body,omitempty"`
+}
+
+// UIHTTPResponsePayload is the bridge→hub reply for UIHTTPRequestPayload.
+type UIHTTPResponsePayload struct {
+	RequestID   string            `json:"request_id"`
+	Status      int               `json:"status"`
+	ContentType string            `json:"content_type,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Body        []byte            `json:"body,omitempty"`
 }
 
 // EventPayload is an ephemeral bridge event.

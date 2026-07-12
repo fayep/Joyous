@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"joyous-hub/protocol"
 )
 
 func TestMQTTLogBufferRing(t *testing.T) {
@@ -35,5 +37,43 @@ func TestMQTTLogSnapshotSides(t *testing.T) {
 	}
 	if upstream[0].Note != "blocked" {
 		t.Fatalf("note=%q", upstream[0].Note)
+	}
+}
+
+func TestMQTTLogBufferEvictsNoisyBeforePlay(t *testing.T) {
+	b := NewMQTTLogBuffer(3)
+	b.AddLocal("bridge→frame", "/inkjoyap/AA", []byte(`{"action":"play"}`), "")
+	for i := 0; i < 5; i++ {
+		b.AddLocal("bridge→frame", "/inkjoyap/AA", []byte(`{"action":"heart"}`), "")
+	}
+	local, _ := b.Snapshot()
+	hasPlay := false
+	for _, e := range local {
+		if e.Action == "play" {
+			hasPlay = true
+		}
+	}
+	if !hasPlay {
+		t.Fatalf("play evicted by heart noise: %+v", local)
+	}
+}
+
+func TestJoyousMQTTLogEvictsNoisyBeforeSendImage(t *testing.T) {
+	b := NewMQTTLogBuffer(3)
+	sendPayload, _ := protocol.NewEnvelope(protocol.TypeCmd, "inkjoy", protocol.CmdPayload{Cmd: protocol.CmdSendImage})
+	syncPayload, _ := protocol.NewEnvelope(protocol.TypeDevices, "inkjoy", protocol.DevicesPayload{})
+	b.AddJoyousHubToBridge("joyous/hub/inkjoy/cmd", sendPayload)
+	for i := 0; i < 5; i++ {
+		b.AddJoyousBridgeToHub("joyous/bridge/inkjoy/devices", syncPayload)
+	}
+	_, upstream := b.Snapshot()
+	hasSend := false
+	for _, e := range upstream {
+		if e.Action == protocol.TypeCmd+" · "+protocol.CmdSendImage {
+			hasSend = true
+		}
+	}
+	if !hasSend {
+		t.Fatalf("send.image evicted by devices.sync: %+v", upstream)
 	}
 }

@@ -105,17 +105,51 @@ func (a *playRelayAdapter) OnExternalPlay(mac string, payload []byte) {
 }
 
 // SyncBridgeDevices replaces devices owned by a bridge with a fresh snapshot.
+// Hub-observed Samsung contacts (HTTP pulls on :18080) are preserved when newer
+// than the bridge snapshot — otherwise devices.sync every 10s marks frames offline.
 func (r *DeviceRegistry) SyncBridgeDevices(bridgeID string, devices []protocol.BridgeDevice) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// Remove prior bridge-owned devices (tracked by bridge_id tag in memory).
+	type contact struct {
+		lastSeen        time.Time
+		lastAction      string
+		deepSleepActive bool
+	}
+	preserved := make(map[string]contact)
 	for id, d := range r.m {
 		if d.bridgeID == bridgeID {
+			preserved[id] = contact{
+				lastSeen:        d.LastSeen,
+				lastAction:      d.LastAction,
+				deepSleepActive: d.DeepSleepActive,
+			}
 			delete(r.m, id)
 		}
 	}
 	for _, bd := range devices {
 		r.applyBridgeDeviceLocked(bridgeID, bd)
+		p, ok := preserved[bd.ID]
+		if !ok {
+			continue
+		}
+		d := r.m[bd.ID]
+		if d == nil {
+			continue
+		}
+		if p.lastSeen.After(d.LastSeen) {
+			d.LastSeen = p.lastSeen
+			if p.lastAction != "" {
+				d.LastAction = p.lastAction
+			}
+			// Hub cleared deep sleep after frame contact; don't let a stale bridge
+			// snapshot revive the sticky UI flag.
+			if !p.deepSleepActive {
+				d.DeepSleepActive = false
+			}
+		}
+		if d.Type == DeviceTypeSamsung {
+			ApplySamsungConnected(d)
+		}
 	}
 }
 
@@ -201,9 +235,13 @@ func bridgeDevicesFromRegistry(reg *DeviceRegistry, kind DeviceType) []protocol.
 	devs := reg.List()
 	out := make([]protocol.BridgeDevice, 0)
 	for _, d := range devs {
-		if d.Type == kind {
-			out = append(out, deviceToBridge(d))
+		if d.Type != kind {
+			continue
 		}
+		if d.Type == DeviceTypeSamsung {
+			ApplySamsungConnected(&d)
+		}
+		out = append(out, deviceToBridge(d))
 	}
 	return out
 }

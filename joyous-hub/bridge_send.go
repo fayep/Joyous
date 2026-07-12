@@ -94,6 +94,70 @@ func syncColorFromHub(store *ColorStore, hubBase string) {
 	}
 }
 
+func decodeOverlaySendInfo(info *protocol.OverlaySendInfo) (OverlayConfig, WeatherSnapshot, error) {
+	if info == nil {
+		return OverlayConfig{}, WeatherSnapshot{}, fmt.Errorf("overlay info missing")
+	}
+	var cfg OverlayConfig
+	var weather WeatherSnapshot
+	if err := json.Unmarshal(info.Config, &cfg); err != nil {
+		return cfg, weather, fmt.Errorf("decode overlay config: %w", err)
+	}
+	if err := json.Unmarshal(info.Weather, &weather); err != nil {
+		return cfg, weather, fmt.Errorf("decode overlay weather: %w", err)
+	}
+	return cfg, weather, nil
+}
+
+func overlaySendInfo(cfg OverlayConfig, weather WeatherSnapshot) (*protocol.OverlaySendInfo, error) {
+	cb, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	wb, err := json.Marshal(weather)
+	if err != nil {
+		return nil, err
+	}
+	return &protocol.OverlaySendInfo{Config: cb, Weather: wb}, nil
+}
+
+func bridgeOverlayContext(ctx context.Context, hub *Hub, body protocol.SendImageBody, portrait bool) (OverlayConfig, WeatherSnapshot, error) {
+	if body.Overlay != nil {
+		cfg, weather, err := decodeOverlaySendInfo(body.Overlay)
+		if err != nil {
+			return OverlayConfig{}, WeatherSnapshot{}, err
+		}
+		if hub.overlay != nil {
+			if err := hub.overlay.Save(cfg); err != nil {
+				return OverlayConfig{}, WeatherSnapshot{}, err
+			}
+		}
+		if body.OverlayToken != "" {
+			if token := cfg.sendToken(weather, portrait); token != body.OverlayToken {
+				return OverlayConfig{}, WeatherSnapshot{}, fmt.Errorf("overlay token mismatch")
+			}
+		}
+		return cfg, weather, nil
+	}
+	if hub.overlay == nil {
+		return OverlayConfig{}, WeatherSnapshot{}, fmt.Errorf("overlay store unavailable")
+	}
+	if err := syncOverlayFromHub(hub.overlay, body.HubBaseURL); err != nil {
+		return OverlayConfig{}, WeatherSnapshot{}, err
+	}
+	weather, err := hub.fetchOverlayWeather(ctx)
+	if err != nil {
+		return OverlayConfig{}, WeatherSnapshot{}, fmt.Errorf("overlay weather: %w", err)
+	}
+	cfg := hub.overlay.Config()
+	if body.OverlayToken != "" {
+		if token := cfg.sendToken(weather, portrait); token != body.OverlayToken {
+			return OverlayConfig{}, WeatherSnapshot{}, fmt.Errorf("overlay token mismatch")
+		}
+	}
+	return cfg, weather, nil
+}
+
 // bridgeEncodeInkJoy fetches the hub original and encodes an InkJoy .bin locally.
 // Crop selection uses the destination device (portrait → 3:4 or 4:3) against body.Crops.
 func bridgeEncodeInkJoy(
@@ -124,23 +188,23 @@ func bridgeEncodeInkJoy(
 	}
 
 	if body.OverlayToken != "" {
-		if hub.overlay == nil {
-			return nil, fmt.Errorf("overlay send requires overlay store on bridge")
-		}
-		if err := syncOverlayFromHub(hub.overlay, body.HubBaseURL); err != nil {
+		cfg, weather, err := bridgeOverlayContext(ctx, hub, body, portrait)
+		if err != nil {
 			return nil, err
 		}
-		weather, err := hub.fetchOverlayWeather(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("overlay weather: %w", err)
-		}
-		cfg := hub.overlay.Config()
-		photoName := hub.overlayPhotoName(body.ImageID, cfg)
+		photoName := overlayPhotoNameFromMeta(meta, cfg)
 		return hub.images.ServeBinOrientationOverlay(body.ImageID, portrait, body.OverlayToken, func(img image.Image, flatRGB bool) (image.Image, error) {
 			return drawWeatherOverlay(img, cfg, weather, photoName, portrait), nil
 		})
 	}
 	return hub.images.ServeBinOrientation(body.ImageID, portrait)
+}
+
+func overlayPhotoNameFromMeta(meta ImageMeta, cfg OverlayConfig) string {
+	if !cfg.ShowPhotoName {
+		return ""
+	}
+	return overlayPhotoNameFromFilename(meta.Name)
 }
 
 func mergeSendCrops(meta *ImageMeta, crops map[string]protocol.CropRect) {
@@ -166,7 +230,7 @@ func cropsToProtocol(crops map[string]CropRect) map[string]protocol.CropRect {
 	return out
 }
 
-func buildSendImageBody(h *Hub, imageID, overlayToken, sendID string) (protocol.SendImageBody, error) {
+func buildSendImageBody(h *Hub, imageID, overlayToken, sendID string, overlayCfg *OverlayConfig, overlayWeather *WeatherSnapshot) (protocol.SendImageBody, error) {
 	body := protocol.SendImageBody{
 		ImageID:      imageID,
 		OverlayToken: overlayToken,
@@ -179,6 +243,31 @@ func buildSendImageBody(h *Hub, imageID, overlayToken, sendID string) (protocol.
 			return body, err
 		}
 		body.Crops = cropsToProtocol(crops)
+	}
+	if overlayToken != "" {
+		cfg := overlayCfg
+		weather := overlayWeather
+		if cfg == nil || weather == nil {
+			if h.overlay == nil {
+				return body, fmt.Errorf("overlay send requires overlay config")
+			}
+			if cfg == nil {
+				c := h.overlay.Config()
+				cfg = &c
+			}
+			if weather == nil {
+				w, err := h.fetchOverlayWeather(context.Background())
+				if err != nil {
+					return body, err
+				}
+				weather = &w
+			}
+		}
+		info, err := overlaySendInfo(*cfg, *weather)
+		if err != nil {
+			return body, err
+		}
+		body.Overlay = info
 	}
 	return body, nil
 }
@@ -207,6 +296,54 @@ func syncOverlayFromHub(store *OverlayStore, hubBase string) error {
 		return err
 	}
 	return store.Save(cfg)
+}
+
+// bridgeEncodeSamsung fetches the hub original and encodes a Samsung PNG locally.
+func bridgeEncodeSamsung(
+	ctx context.Context,
+	hub *Hub,
+	body protocol.SendImageBody,
+	dev *Device,
+) ([]byte, error) {
+	if hub == nil || hub.images == nil || hub.samsung == nil {
+		return nil, fmt.Errorf("bridge encode: samsung encode hub unavailable")
+	}
+	if dev == nil {
+		return nil, fmt.Errorf("bridge encode: device required")
+	}
+	if body.HubBaseURL == "" {
+		return nil, fmt.Errorf("bridge encode: hub_base_url required")
+	}
+	syncColorFromHub(hub.color, body.HubBaseURL)
+
+	meta, raw, err := fetchHubImage(ctx, body.HubBaseURL, body.ImageID)
+	if err != nil {
+		return nil, err
+	}
+	mergeSendCrops(&meta, body.Crops)
+	if err := hub.images.CacheHubImage(body.ImageID, meta, raw); err != nil {
+		return nil, err
+	}
+
+	frameID := SamsungFrameID(dev)
+	profile := hub.samsungDisplayProfile(dev, frameID)
+	crop, hasCrop := cropForFormat(meta.Crops, profile.CropFormat)
+	img, err := prepareSamsungFrameRGBA(raw, profile, crop, hasCrop)
+	if err != nil {
+		return nil, err
+	}
+	pipe := hub.colorPipelineForImage(body.ImageID)
+	if body.OverlayToken != "" {
+		cfg, weather, err := bridgeOverlayContext(ctx, hub, body, dev.Portrait)
+		if err != nil {
+			return nil, err
+		}
+		photoName := overlayPhotoNameFromMeta(meta, cfg)
+		return encodeSamsungPNGWithOverlay(img, func(base image.Image) image.Image {
+			return drawWeatherOverlay(base, cfg, weather, photoName, dev.Portrait)
+		}, pipe)
+	}
+	return encodeSamsungPNGFromRGBA(img, pipe)
 }
 
 func hubBaseURL(serverAddr string) string {

@@ -1,4 +1,4 @@
-.PHONY: build test darwin-arm64 linux-arm linux-mips clean install build-release ldflags-linkmeta build-inkjoy-bridge build-samsung-bridge build-all
+.PHONY: build test darwin-arm64 linux-arm linux-mips clean install build-release ldflags-linkmeta build-inkjoy-bridge build-samsung-bridge build-nixplay-bridge build-all
 
 VERSION ?= dev
 
@@ -11,7 +11,10 @@ build-inkjoy-bridge:
 build-samsung-bridge:
 	CGO_ENABLED=1 go build -tags samsungbridge -ldflags "-X joyous-hub/internal/linkmeta.Version=$(VERSION)" -o samsung-bridge .
 
-build-all: build build-inkjoy-bridge build-samsung-bridge
+build-nixplay-bridge:
+	CGO_ENABLED=1 go build -tags nixplaybridge -ldflags "-X joyous-hub/internal/linkmeta.Version=$(VERSION)" -o nixplay-bridge .
+
+build-all: build build-inkjoy-bridge build-samsung-bridge build-nixplay-bridge
 
 # Release build with version-linked metadata (JOYOUS_SEAL must be set).
 build-release:
@@ -48,4 +51,4 @@ linux-mips:
 	GOOS=linux GOARCH=mips GOMIPS=softfloat go build -o joyous-hub-linux-mips .
 
 clean:
-	rm -f joyous-hub inkjoy-bridge samsung-bridge joyous-hub-linux-arm joyous-hub-linux-arm64 joyous-hub-linux-mips
+	rm -f joyous-hub inkjoy-bridge samsung-bridge nixplay-bridge joyous-hub-linux-arm joyous-hub-linux-arm64 joyous-hub-linux-mips
