@@ -57,15 +57,18 @@ func samsungContentFileID(frameID string, pngData []byte) string {
 	return frameID + "-" + strings.ToUpper(hex.EncodeToString(sum[:8]))
 }
 
-// buildContentJSON returns the manifest Samsung mobile deploy expects. contentID (samsungContentFileID)
-// is purely a change-detection token — it's what the manifest's top-level "id" and the content's
-// "file_id" carry, and what the frame echoes straight back in its content-transfer-progress
-// callback (see samsung_content_transfer.go) — so it must change whenever the pushed image
-// changes. fileName is the on-device storage location (file_path/file_name) and must stay
-// *stable* per frame (frameID-based — confirmed working against a real transfer, see
-// samsungContentFileID's doc comment): tying it to contentID too, as an earlier version of this
-// function did, would make every push write to a new never-cleaned-up path on the frame's own
-// storage instead of overwriting the one "currently showing" file in place.
+// buildContentJSON returns the manifest Samsung mobile deploy expects. contentID
+// (samsungContentFileID) is a change-detection token — it's what the manifest's top-level "id"
+// and the content's "file_id" carry, and what the frame echoes straight back in its
+// content-transfer-progress callback (see samsung_content_transfer.go) — so it must change
+// whenever the pushed image changes. fileName is the on-device storage location (file_path/
+// file_name); confirmed against a real frame that reusing the same file_name across two
+// different pushes gets ignored, so callers currently pass contentID for this too. A stable,
+// frameID-based fileName was tried first (on the theory that the frame should just overwrite one
+// "currently showing" file in place) but that turned out to be wrong — keep this a separate
+// parameter from contentID rather than collapsing them back into one, since it may turn out
+// image_url (passed in above, still static per frame) needs the same treatment and isn't
+// necessarily coupled to this.
 func buildContentJSON(imageURL, contentID, fileName string, fileSize int) []byte {
 	type content struct {
 		ImageURL string `json:"image_url"`

@@ -651,7 +651,12 @@ func (h *Hub) handleSamsungContentJSON(w http.ResponseWriter, r *http.Request, f
 		frameIP = dev.IP
 	}
 	imageURL := samsungImageURL(addr, frameIP, frameID)
-	manifest := buildContentJSON(imageURL, contentID, frameID, len(data))
+	// file_name/file_path (where the frame saves the download locally) also needs to vary per
+	// push, same as contentID — confirmed against a real frame that a stable file_name across
+	// two different pushes gets ignored. image_url (what the frame downloads FROM, above) stays
+	// static for now: that's untested territory, not confirmed necessary or unnecessary, so
+	// change it separately if this alone turns out not to be enough.
+	manifest := buildContentJSON(imageURL, contentID, contentID, len(data))
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Write(manifest)

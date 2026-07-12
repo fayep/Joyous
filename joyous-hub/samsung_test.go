@@ -316,12 +316,14 @@ func TestSamsungImageUploadBumpsContentJSONFileID(t *testing.T) {
 	if secondID == firstID {
 		t.Fatalf("content.json file_id unchanged after a second, different upload: %q", secondID)
 	}
-	// file_name (and file_path, which is built from it) is where the frame stores the download
-	// on its own storage — it must stay stable across pushes to the same frame, or the frame
-	// accumulates a new never-cleaned-up file per send instead of overwriting the one
-	// "currently showing" image in place. Only the change-detection id should vary.
-	if firstFileName != secondFileName {
-		t.Fatalf("file_name changed across pushes to the same frame: %q -> %q (should stay stable)", firstFileName, secondFileName)
+	// file_name (and file_path, built from it) is where the frame stores the download on its
+	// own storage. A stable, frameID-based file_name was tried first, on the theory that the
+	// frame should just overwrite one "currently showing" file in place — but that turned out to
+	// be wrong: confirmed against a real frame that reusing the same file_name across two
+	// different pushes gets ignored. So file_name must vary right along with the change-detection
+	// id, same as it does here (see buildContentJSON's doc comment).
+	if firstFileName == secondFileName {
+		t.Fatalf("file_name unchanged after a second, different upload: %q", secondFileName)
 	}
 }
 
