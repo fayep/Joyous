@@ -2286,27 +2286,20 @@ function samsungDeepSleep(d,rec,s){
     (d&&d.last_action==='mdc_deep_sleep')||(rec&&rec.last_action==='mdc_deep_sleep'));
 }
 
-const SAMSUNG_MANUAL_WAKE_HINT_MS=20000;
-const SAMSUNG_MANUAL_WAKE_MSG='Press power button on frame…';
 const SAMSUNG_DEEP_SLEEP_WAKE_MSG='Press power button on frame for 3s to wake frame';
 
 function samsungDeepSleepWakeHint(d,rec,s){
   return samsungDeepSleep(d,rec,s)?SAMSUNG_DEEP_SLEEP_WAKE_MSG:null;
 }
 
-async function postDisplay(deviceId,imageId,onLongWait){
-  const hintTimer=setTimeout(()=>{if(onLongWait) onLongWait();},SAMSUNG_MANUAL_WAKE_HINT_MS);
-  try{
-    const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/display',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({image_id:imageId})
-    });
-    if(!r.ok) throw new Error(await r.text());
-    const j=await r.json();
-    return j.send_id||'';
-  }finally{
-    clearTimeout(hintTimer);
-  }
+async function postDisplay(deviceId,imageId){
+  const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/display',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({image_id:imageId})
+  });
+  if(!r.ok) throw new Error(await r.text());
+  const j=await r.json();
+  return j.send_id||'';
 }
 
 const SEND_DELIVERY_TIMEOUT_MS=180000;
@@ -2331,16 +2324,21 @@ async function waitSendDelivered(sendId,onTick){
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
     if(j.status==='delivered') return true;
-    if(j.status==='failed') throw new Error('Frame did not finish downloading');
+    if(j.status==='failed') throw new Error(j.error||'Frame did not finish downloading');
     if(onTick) onTick(j);
   }
   return false;
 }
 
-function applySendDeliveryTick(el,j){
+// applySendDeliveryTick renders live /api/send/{sendId} status onto a feedback button. The
+// "retrying" status (and the power-button hint for Samsung) comes straight from the server —
+// see send_delivery.go's IncrementRetry and main_samsung_bridge.go's pushSamsungFrameWithRetry
+// — rather than the client guessing from a fixed timer how long a send "should" take.
+function applySendDeliveryTick(el,j,dev){
   if(!el||!j) return;
-  if(j.retry_attempts>0){
-    el.textContent='Retrying ('+j.retry_attempts+')…';
+  if(j.status==='retrying'){
+    const hint=dev&&dev.type==='samsung'?SAMSUNG_DEEP_SLEEP_WAKE_MSG+' — ':'';
+    el.textContent=hint+'Retrying ('+j.retry_attempts+')…';
     return;
   }
   if(j.status==='downloading') el.textContent='Downloading…';
@@ -2358,14 +2356,10 @@ async function doSend(imageId, deviceId, feedbackBtn){
     }else if(deepHint){
       alert(deepHint);
     }
-    const sendId=await postDisplay(deviceId,imageId,()=>{
-      if(dev&&dev.type==='samsung'&&feedbackBtn&&!deepHint){
-        feedbackBtn.textContent=SAMSUNG_MANUAL_WAKE_MSG;
-      }
-    });
+    const sendId=await postDisplay(deviceId,imageId);
     if(sendId&&feedbackBtn&&dev?.type!=='samsung') feedbackBtn.textContent='Downloading…';
     const delivered=sendId?await waitSendDelivered(sendId,j=>{
-      if(feedbackBtn) applySendDeliveryTick(feedbackBtn,j);
+      if(feedbackBtn) applySendDeliveryTick(feedbackBtn,j,dev);
     }):false;
     if(feedbackBtn){
       feedbackBtn.textContent=delivered?'✓ Sent':(sendId?'Sent (unconfirmed)':'✓ Sent');
@@ -2539,7 +2533,7 @@ async function sendCalibrationChart(){
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
     const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      if(st) applySendDeliveryTick(st,j);
+      if(st) applySendDeliveryTick(st,j,{type:'samsung'});
     }):false;
     if(st) st.textContent=delivered?'✓ Sent to display':'Sent (unconfirmed)';
     await loadDevicesInner();
@@ -3169,7 +3163,7 @@ async function overlaySend(deviceId){
     const j=await r.json();
     if(btn&&d?.type!=='samsung') btn.textContent='Downloading…';
     const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      if(btn) applySendDeliveryTick(btn,j);
+      if(btn) applySendDeliveryTick(btn,j,d);
     }):false;
     if(btn){
       btn.textContent=delivered?'✓ Sent':'Sent (unconfirmed)';
@@ -3887,7 +3881,7 @@ async function samsungPushCurrent(){
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
     const delivered=j.send_id?await waitSendDelivered(j.send_id,j=>{
-      if(st) applySendDeliveryTick(st,j);
+      if(st) applySendDeliveryTick(st,j,dev);
     }):false;
     if(document.getElementById('samsung-auto-sleep').checked){
       const delay=parseInt(document.getElementById('samsung-sleep-delay').value,10)||15;

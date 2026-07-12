@@ -19,6 +19,11 @@ const (
 	sendStatusDownloading sendStatus = "downloading"
 	sendStatusDelivered   sendStatus = "delivered"
 	sendStatusFailed      sendStatus = "failed"
+	// sendStatusRetrying is a display-only overlay (see handleSendStatus), not a state
+	// sendDelivery.Status itself ever transitions to — it's derived from
+	// pending/downloading + RetryAttempts>0 so Wait()/finish()'s pending/downloading
+	// checks don't need to special-case it.
+	sendStatusRetrying sendStatus = "retrying"
 )
 
 type sendDelivery struct {
@@ -28,6 +33,8 @@ type sendDelivery struct {
 	Status         sendStatus
 	Created        time.Time
 	DeliveredAt    time.Time
+	RetryAttempts  int    // bumped by IncrementRetry; any bridge can report progress this way
+	LastError      string // most recent retry/failure detail (SendCompletePayload.Detail)
 	done           chan struct{}
 	inkjoyMsgID    string
 	samsungFrameID string
@@ -167,6 +174,12 @@ func (t *SendDeliveryTracker) Fail(sendID string) {
 
 // CompleteSend marks a hub send as delivered or failed by send id.
 func (t *SendDeliveryTracker) CompleteSend(sendID string, ok bool) {
+	t.CompleteSendDetailed(sendID, ok, "")
+}
+
+// CompleteSendDetailed is CompleteSend plus a failure reason (SendCompletePayload.Detail),
+// recorded so GET /api/send/{sendId} can report why a send failed instead of just that it did.
+func (t *SendDeliveryTracker) CompleteSendDetailed(sendID string, ok bool, detail string) {
 	t.mu.Lock()
 	d, found := t.byID[sendID]
 	if !found {
@@ -176,6 +189,8 @@ func (t *SendDeliveryTracker) CompleteSend(sendID string, ok bool) {
 	status := sendStatusFailed
 	if ok {
 		status = sendStatusDelivered
+	} else if detail != "" {
+		d.LastError = detail
 	}
 	if d.inkjoyMsgID != "" {
 		delete(t.inkjoyByMsgID, d.inkjoyMsgID)
@@ -185,6 +200,23 @@ func (t *SendDeliveryTracker) CompleteSend(sendID string, ok bool) {
 	}
 	t.finish(d, status)
 	t.mu.Unlock()
+}
+
+// IncrementRetry records another delivery attempt for a still-in-flight send (e.g. a Samsung
+// frame that's asleep and needs a physical wake, or an InkJoy play republish after a missed
+// ack). GET /api/send/{sendId} reports status "retrying" once this is above zero, instead of
+// each caller inventing its own client-side guess for how long to wait before hinting at that.
+func (t *SendDeliveryTracker) IncrementRetry(sendID, detail string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	d, ok := t.byID[sendID]
+	if !ok || (d.Status != sendStatusPending && d.Status != sendStatusDownloading) {
+		return
+	}
+	d.RetryAttempts++
+	if detail != "" {
+		d.LastError = detail
+	}
 }
 
 func (t *SendDeliveryTracker) CompleteInkJoy(msgid string, ok bool) {
@@ -342,9 +374,13 @@ func (h *Hub) handleSendStatus(w http.ResponseWriter, r *http.Request, sendID st
 			return
 		}
 	}
+	status := d.Status
+	if d.RetryAttempts > 0 && (status == sendStatusPending || status == sendStatusDownloading) {
+		status = sendStatusRetrying
+	}
 	out := map[string]any{
 		"send_id":   d.ID,
-		"status":    string(d.Status),
+		"status":    string(status),
 		"device_id": d.DeviceID,
 	}
 	if d.ImageID != "" {
@@ -353,10 +389,11 @@ func (h *Hub) handleSendStatus(w http.ResponseWriter, r *http.Request, sendID st
 	if !d.DeliveredAt.IsZero() {
 		out["delivered_at"] = d.DeliveredAt
 	}
-	if h.inkjoyRetry != nil {
-		if n := h.inkjoyRetry.Attempts(sendID); n > 1 {
-			out["retry_attempts"] = n - 1
-		}
+	if d.RetryAttempts > 0 {
+		out["retry_attempts"] = d.RetryAttempts
+	}
+	if d.Status == sendStatusFailed && d.LastError != "" {
+		out["error"] = d.LastError
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)

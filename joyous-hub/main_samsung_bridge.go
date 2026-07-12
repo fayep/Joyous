@@ -314,11 +314,71 @@ func bridgeDeliverSamsungImage(ctx context.Context, hub *Hub, client *bridgehub.
 	}
 	log.Printf("samsung-bridge hub cache probe ok frame=%s image=%s", frameID, body.ImageID)
 
-	if err := hub.pushSamsungFrame(frameID, dev); err != nil {
+	if err := pushSamsungFrameWithRetry(ctx, hub, client, frameID, dev, body.SendID); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 	hub.devices.SetLastImage(dev.ID, body.ImageID, body.OverlayToken)
 	return nil
+}
+
+const (
+	// samsungPushRetryInterval/Window bound how long the bridge keeps retrying an MDC push
+	// that's failing (most commonly: the frame is in deep sleep and needs someone to hold its
+	// power button for ~3s to wake it). The window leaves headroom under the SPA's own
+	// SEND_DELIVERY_TIMEOUT_MS (180s, see web.go) after accounting for encode/upload time
+	// already spent above.
+	samsungPushRetryInterval = 10 * time.Second
+	samsungPushRetryWindow   = 2 * time.Minute
+)
+
+// pushSamsungFrameWithRetry retries hub.pushSamsungFrame on failure until it succeeds or
+// samsungPushRetryWindow elapses, reporting each failed attempt to the hub as a "retrying"
+// SendCompletePayload (not a terminal failure) so GET /api/send/{sendId} reflects real retry
+// state — see send_delivery.go's IncrementRetry — instead of the SPA guessing from a fixed
+// client-side timer when to show a "press the power button" hint.
+func pushSamsungFrameWithRetry(ctx context.Context, hub *Hub, client *bridgehub.Client, frameID string, dev *Device, sendID string) error {
+	return retryWithProgress(ctx, samsungPushRetryWindow, samsungPushRetryInterval,
+		func() error { return hub.pushSamsungFrame(frameID, dev) },
+		func(attempt int, err error) {
+			log.Printf("samsung-bridge push retry frame=%s attempt=%d: %v — will retry in %s", frameID, attempt, err, samsungPushRetryInterval)
+			if sendID == "" || client == nil {
+				return
+			}
+			if pubErr := client.PublishSendComplete(protocol.SendCompletePayload{
+				SendID:   sendID,
+				DeviceID: dev.ID,
+				Success:  true, // not terminal — see Phase
+				Phase:    "retrying",
+				Detail:   err.Error(),
+			}); pubErr != nil {
+				log.Printf("samsung-bridge send.complete retrying: %v", pubErr)
+			}
+		})
+}
+
+// retryWithProgress calls attempt in a loop until it succeeds, ctx is cancelled, or window
+// elapses, sleeping interval between tries and calling onRetry (1-indexed) before each sleep.
+// Split out from pushSamsungFrameWithRetry so the retry/give-up logic is testable with a fake
+// attempt func and tiny durations rather than a live MDC device and a 2-minute wait.
+func retryWithProgress(ctx context.Context, window, interval time.Duration, attempt func() error, onRetry func(attemptNum int, err error)) error {
+	deadline := time.Now().Add(window)
+	n := 0
+	for {
+		n++
+		err := attempt()
+		if err == nil {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("attempt %d: %w", n, err)
+		}
+		onRetry(n, err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }
 
 type bridgeDiscoverRecorder struct {

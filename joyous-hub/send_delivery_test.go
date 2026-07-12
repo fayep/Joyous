@@ -86,6 +86,70 @@ func TestSendDeliverySamsungComplete(t *testing.T) {
 	}
 }
 
+func TestIncrementRetryReportsAsRetryingStatus(t *testing.T) {
+	h := buildTestHub(t)
+	send := h.sendDelivery.Register("dev", "img")
+
+	h.sendDelivery.IncrementRetry(send.ID, "frame asleep")
+	h.sendDelivery.IncrementRetry(send.ID, "frame asleep")
+
+	rec := httptest.NewRecorder()
+	h.handleSendStatus(rec, httptest.NewRequest("GET", "/api/send/"+send.ID, nil), send.ID)
+	var out map[string]any
+	json.NewDecoder(rec.Body).Decode(&out)
+	if out["status"] != "retrying" {
+		t.Fatalf("got status=%v, want retrying: %v", out["status"], out)
+	}
+	if n, _ := out["retry_attempts"].(float64); n != 2 {
+		t.Fatalf("got retry_attempts=%v, want 2: %v", out["retry_attempts"], out)
+	}
+}
+
+func TestIncrementRetryIgnoredAfterCompletion(t *testing.T) {
+	tr := NewSendDeliveryTracker()
+	send := tr.Register("dev", "img")
+	tr.CompleteSend(send.ID, true)
+
+	tr.IncrementRetry(send.ID, "too late")
+
+	d := tr.Get(send.ID)
+	if d == nil || d.RetryAttempts != 0 {
+		t.Fatalf("expected no retry recorded on an already-completed send: %+v", d)
+	}
+}
+
+func TestRetryClearedByFinalCompletion(t *testing.T) {
+	h := buildTestHub(t)
+	send := h.sendDelivery.Register("dev", "img")
+	h.sendDelivery.IncrementRetry(send.ID, "frame asleep")
+	h.sendDelivery.CompleteSend(send.ID, true)
+
+	rec := httptest.NewRecorder()
+	h.handleSendStatus(rec, httptest.NewRequest("GET", "/api/send/"+send.ID, nil), send.ID)
+	var out map[string]any
+	json.NewDecoder(rec.Body).Decode(&out)
+	if out["status"] != "delivered" {
+		t.Fatalf("got status=%v, want delivered (retrying must not outlive completion): %v", out["status"], out)
+	}
+}
+
+func TestCompleteSendDetailedSurfacesErrorOnFailure(t *testing.T) {
+	h := buildTestHub(t)
+	send := h.sendDelivery.Register("dev", "img")
+	h.sendDelivery.CompleteSendDetailed(send.ID, false, "gave up after 12 attempts")
+
+	rec := httptest.NewRecorder()
+	h.handleSendStatus(rec, httptest.NewRequest("GET", "/api/send/"+send.ID, nil), send.ID)
+	var out map[string]any
+	json.NewDecoder(rec.Body).Decode(&out)
+	if out["status"] != "failed" {
+		t.Fatalf("got status=%v, want failed: %v", out["status"], out)
+	}
+	if out["error"] != "gave up after 12 attempts" {
+		t.Fatalf("got error=%v, want the failure detail surfaced: %v", out["error"], out)
+	}
+}
+
 func TestHandleSendStatusWait(t *testing.T) {
 	h := buildTestHub(t)
 	send := h.sendDelivery.Register("dev", "img")

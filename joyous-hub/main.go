@@ -125,8 +125,14 @@ func main() {
 		case "downloading":
 			sendDelivery.MarkInkJoyDownloading(body.SendID)
 			log.Printf("send downloading send_id=%s device=%s", body.SendID, body.DeviceID)
+		case "retrying":
+			// Not terminal — a bridge is still trying (e.g. a Samsung frame asleep and
+			// waiting on a physical wake, or an InkJoy play republish). Must not fall to
+			// default, which would treat this as a final completion.
+			sendDelivery.IncrementRetry(body.SendID, body.Detail)
+			log.Printf("send retrying send_id=%s device=%s: %s", body.SendID, body.DeviceID, body.Detail)
 		default:
-			sendDelivery.CompleteSend(body.SendID, body.Success)
+			sendDelivery.CompleteSendDetailed(body.SendID, body.Success, body.Detail)
 			if body.Success {
 				log.Printf("send delivered send_id=%s device=%s", body.SendID, body.DeviceID)
 			} else if body.Detail != "" {
