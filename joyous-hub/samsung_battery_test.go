@@ -66,3 +66,18 @@ func TestSamsungBatteryPushDeltaIgnoresPoll(t *testing.T) {
 		t.Fatalf("push delta: got %d want -3", d)
 	}
 }
+
+func TestSamsungBatteryPushDeltaUsesPostPush(t *testing.T) {
+	history := []SamsungBatterySample{
+		{At: time.Now().Add(-2 * time.Hour), Percent: 100, Source: samsungBatteryPostPush},
+		{At: time.Now().Add(-time.Hour), Percent: 99, Source: samsungBatteryPoll},
+		{At: time.Now(), Percent: 96, Source: samsungBatteryPostPush},
+	}
+	d, ok := samsungBatteryPushDelta(history)
+	if !ok {
+		t.Fatal("expected push delta")
+	}
+	if d != -4 {
+		t.Fatalf("push delta: got %d want -4", d)
+	}
+}

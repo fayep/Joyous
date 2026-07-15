@@ -183,7 +183,7 @@ func main() {
 		hub.events.Publish(BroadcastSessionID, "bridges", bridgeCoord.ListBridgeStatus())
 	})
 	bridgeCoord.SetDevicesChangedHandler(func() {
-		hub.events.Publish(BroadcastSessionID, "devices", hub.devices.List())
+		hub.events.Publish(BroadcastSessionID, "devices", hub.devicesSnapshotForUI())
 	})
 
 	mux := http.NewServeMux()

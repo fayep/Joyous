@@ -21,7 +21,8 @@ const (
 	DeviceTypeNixplay DeviceType = "nixplay"
 )
 
-// SamsungRecentWindow is how long after hub contact a Samsung frame counts as active.
+// SamsungRecentWindow is retained for diagnostics / future "last contact age" UI.
+// Active/asleep for Samsung is not based on this window — see ApplySamsungConnected.
 const SamsungRecentWindow = 5 * time.Minute
 
 // Device holds runtime state for a connected or discovered frame.
@@ -146,7 +147,10 @@ func samsungActionProvesAwake(action string) bool {
 	}
 }
 
-// ApplySamsungConnected sets Connected for Samsung devices from recent awake proof (InkJoy unchanged).
+// ApplySamsungConnected sets Connected for Samsung devices from awake/sleep proof
+// (InkJoy unchanged). Rule of thumb: a successful push means the frame was on; if
+// the hub did not sleep it, treat it as on until NoteSamsungSlept (including the
+// idle-sleep mark scheduled from the frame's MDC sleep-time setting).
 func ApplySamsungConnected(d *Device) {
 	if d == nil || d.Type != DeviceTypeSamsung {
 		return
@@ -155,7 +159,7 @@ func ApplySamsungConnected(d *Device) {
 		d.Connected = false
 		return
 	}
-	d.Connected = SamsungRecentlySeen(d.LastSeen) && samsungActionProvesAwake(d.LastAction)
+	d.Connected = samsungActionProvesAwake(d.LastAction)
 }
 
 // Get returns a device by ID, or nil.
@@ -498,6 +502,7 @@ func (r *DeviceRegistry) NoteSamsungSlept(ip string, deep bool) bool {
 		d.LastAction = "mdc_sleep"
 		d.DeepSleepActive = false
 	}
+	ApplySamsungConnected(d)
 	return true
 }
 
@@ -532,6 +537,7 @@ func (r *DeviceRegistry) TouchSamsung(ip, action string) bool {
 	}
 	d.LastSeen = time.Now()
 	d.LastAction = action
+	ApplySamsungConnected(d)
 	return true
 }
 
@@ -555,6 +561,7 @@ func (r *DeviceRegistry) UpdateSamsungBattery(ip string, percent int, powerSourc
 	d.PowerSource = powerSource
 	d.LastSeen = time.Now()
 	d.LastAction = "mdc_battery"
+	ApplySamsungConnected(d)
 	return true
 }
 

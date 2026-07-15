@@ -215,7 +215,7 @@ func (h *Hub) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ch, unsubscribe := h.events.Subscribe(sessionID)
 	defer unsubscribe()
 
-	if !h.writeSSE(w, flusher, []byte(mustMarshalEvent("devices", h.devices.List()))) {
+	if !h.writeSSE(w, flusher, []byte(mustMarshalEvent("devices", h.devicesSnapshotForUI()))) {
 		return
 	}
 	if h.bridgeCoord != nil {

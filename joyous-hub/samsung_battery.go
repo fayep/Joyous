@@ -16,7 +16,8 @@ const (
 
 // Samsung battery reading sources.
 const (
-	samsungBatteryPreSleep = "pre_sleep"
+	samsungBatteryPreSleep = "pre_sleep" // manual/overnight sleep MDC session
+	samsungBatteryPostPush = "post_push" // after successful content push (preferred for push delta)
 	samsungBatteryPoll     = "poll"
 )
 
@@ -173,7 +174,8 @@ func (s *SamsungBatteryStore) Summary(deviceID string, recentLimit int) SamsungB
 func samsungBatteryPushDelta(history []SamsungBatterySample) (int, bool) {
 	var push []SamsungBatterySample
 	for _, sample := range history {
-		if sample.Source == samsungBatteryPreSleep {
+		switch sample.Source {
+		case samsungBatteryPostPush, samsungBatteryPreSleep:
 			push = append(push, sample)
 		}
 	}

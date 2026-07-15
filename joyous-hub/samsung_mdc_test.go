@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -171,3 +172,39 @@ func TestWaitMDCAwakeNilCallbackIsSafe(t *testing.T) {
 		t.Fatal("expected wake to fail: nothing is listening on this address")
 	}
 }
+
+func TestSleepAfterPushSupersededByLaterNoSleepPush(t *testing.T) {
+	ip := "192.0.2.50"
+	var slept atomic.Bool
+	sleepFn := func(string, string) error {
+		slept.Store(true)
+		return nil
+	}
+	// Force ensureMDCAwake to succeed without network: patch by calling the
+	// sleep-scheduling logic indirectly isn't easy — exercise seq via bump +
+	// current helpers and the scheduled path with a mock that skips wake.
+	// Use pushSamsungContent with a listening MDC that accepts content is heavy;
+	// unit-test the seq cancel contract used by that path.
+	seq1 := bumpSleepAfterPushSeq(ip)
+	done := make(chan struct{})
+	go func(seq uint64) {
+		time.Sleep(40 * time.Millisecond)
+		if currentSleepAfterPushSeq(ip) != seq {
+			close(done)
+			return
+		}
+		_ = sleepFn(ip, "")
+		close(done)
+	}(seq1)
+	// Later send with auto-sleep off bumps seq and must supersede.
+	_ = bumpSleepAfterPushSeq(ip)
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timed out waiting for sleep worker")
+	}
+	if slept.Load() {
+		t.Fatal("superseded sleep-after-push should not run")
+	}
+}
+

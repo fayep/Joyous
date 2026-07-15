@@ -88,6 +88,23 @@ func (h *Hub) handleDevices(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(devs)
 }
 
+// devicesSnapshotForUI returns a List() copy with Samsung Connected recomputed.
+// SSE must use this (not raw List()) so live badges match GET /api/devices —
+// TouchSamsung used to leave Connected stale as false after a sleep while
+// LastAction already proved the frame was awake again.
+func (h *Hub) devicesSnapshotForUI() []Device {
+	devs := h.devices.List()
+	if devs == nil {
+		return []Device{}
+	}
+	for i := range devs {
+		if devs[i].Type == DeviceTypeSamsung {
+			ApplySamsungConnected(&devs[i])
+		}
+	}
+	return devs
+}
+
 // utcHHMMToLocal converts a "HH:MM" string from UTC to the server's local timezone.
 // Returns the input unchanged on any parse error or if it's empty/00:00.
 func utcHHMMToLocal(hhmm string) string {
@@ -1047,7 +1064,7 @@ const indexHTML = `<!DOCTYPE html>
             <label style="font-size:.9rem">Sleep delay (sec)<br><input type="number" id="samsung-sleep-delay" min="5" value="15" style="width:5rem;padding:.3rem;margin-top:.25rem"></label>
             <button class="btn btn-sm btn-primary" onclick="saveSamsungConfig()">Save settings</button>
           </div>
-          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">The frame should stay <strong>asleep</strong> between pushes. On send: wake → deliver image → sleep (after delay). WiFi MAC required for remote wake. Moon/power are for manual override only.</p>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">With <strong>Sleep after send</strong> on, the usual cycle is wake → deliver image → sleep (after delay). With it off, a successful send means the frame is <strong>active</strong>; the hub reads the frame’s idle sleep setting and marks it asleep after that many minutes (each new send resets the countdown). Always-on leaves it active. WiFi MAC required for remote wake. Moon/power are for manual override only.</p>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">Set inactive begin and end to the <strong>same time</strong> (e.g. 00:00–00:00) to disable hub-managed network sleep — the frame keeps its current deep sleep or network standby mode.</p>
           <p style="font-size:.8rem;color:#888;margin:.75rem 0 0"><strong>Overnight deep sleep:</strong> at inactive begin the hub wakes the frame, turns off network standby, and sleeps it (lower battery drain). A send during inactive hours needs a <strong>3s power-button wake</strong> and returns to deep sleep after; outside those hours the hub restores network standby for remote wake.</p>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0"><strong>Daily refresh:</strong> the frame pre-refreshes a few minutes before the scheduled time, then refreshes at inactive end. While it is awake for that cycle, the hub tries to restore network standby from <em>10 minutes before</em> inactive end through inactive end (e.g. 8:50–9:00). Sync daily refresh to <em>inactive end</em>.</p>

@@ -935,11 +935,40 @@ func (h *Hub) pushSamsungFrameWithProgress(frameID string, dev *Device, onWakeAt
 	}, onWakeAttempt)
 	if err == nil {
 		h.devices.TouchSamsung(dev.IP, "mdc_push")
-		if restoreStandby {
+		h.querySamsungBatteryAfterPush(dev.IP, dev.MDCPin)
+		// Leaving the frame awake (restore standby after overnight, or sleep-after-send
+		// disabled) must clear the sticky deep-sleep flag so the UI does not keep
+		// showing asleep/deep sleep while the display is still on.
+		if restoreStandby || !autoSleep {
 			h.clearSamsungDeepSleepAfterPush(frameID)
+		}
+		// Hub is not sleeping the frame; the Samsung app idle timer will. Query it and
+		// mark asleep after that many minutes (cancelled by the next send).
+		if !autoSleep {
+			h.scheduleSamsungIdleSleepMark(dev.IP, dev.MDCPin)
 		}
 	}
 	return err
+}
+
+// querySamsungBatteryAfterPush reads battery right after a successful MDC content push,
+// independent of auto-sleep. Best-effort: push success is not affected by telemetry failure.
+func (h *Hub) querySamsungBatteryAfterPush(ip, pin string) {
+	if ip == "" {
+		return
+	}
+	res, err := QueryMDCBatteryLevel(ip, pin)
+	if res.BatteryOK {
+		h.recordSamsungBattery(ip, res.Percent, res.PowerSource, samsungBatteryPostPush)
+		logOutbound("mdc post-push battery ip=%s pct=%d src=%s", ip, res.Percent, res.PowerSource)
+		return
+	}
+	if res.SessionOK {
+		h.devices.TouchSamsung(ip, "mdc_session")
+	}
+	if err != nil {
+		logOutbound("mdc post-push battery ip=%s err=%v", ip, err)
+	}
 }
 
 func (h *Hub) handleSamsungPush(w http.ResponseWriter, r *http.Request, frameID string) {

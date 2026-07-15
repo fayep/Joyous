@@ -228,7 +228,6 @@ func TestTouchSamsungUpdatesLastSeen(t *testing.T) {
 	if d.LastAction != "content.json" {
 		t.Fatalf("LastAction: got %q", d.LastAction)
 	}
-	ApplySamsungConnected(d)
 	if !d.Connected {
 		t.Fatal("frame should be active after touch")
 	}
@@ -253,7 +252,6 @@ func TestUpdateSamsungBattery(t *testing.T) {
 	if d.LastAction != "mdc_battery" {
 		t.Fatalf("LastAction: got %q", d.LastAction)
 	}
-	ApplySamsungConnected(d)
 	if !d.Connected {
 		t.Fatal("frame should be active after battery update")
 	}
@@ -268,7 +266,21 @@ func TestApplySamsungConnectedStale(t *testing.T) {
 	d, _ := reg.Get("samsung:192.168.1.108")
 	ApplySamsungConnected(d)
 	if d.Connected {
-		t.Fatal("stale frame should not be active")
+		t.Fatal("discover-only frame should not be active")
+	}
+}
+
+func TestApplySamsungConnectedStaysAwakeAfterQuietPush(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	reg.TouchSamsung("192.168.1.108", "mdc_push")
+	reg.mu.Lock()
+	reg.m["samsung:192.168.1.108"].LastSeen = time.Now().Add(-SamsungRecentWindow - time.Hour)
+	reg.mu.Unlock()
+	d, _ := reg.Get("samsung:192.168.1.108")
+	ApplySamsungConnected(d)
+	if !d.Connected {
+		t.Fatal("successful push without hub sleep should stay active even if LastSeen is old")
 	}
 }
 
@@ -289,13 +301,11 @@ func TestNoteSamsungSleptNotActive(t *testing.T) {
 	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
 	reg.TouchSamsung("192.168.1.108", "mdc_push")
 	d, _ := reg.Get("samsung:192.168.1.108")
-	ApplySamsungConnected(d)
 	if !d.Connected {
 		t.Fatal("frame should be active after push touch")
 	}
 	reg.NoteSamsungSlept("192.168.1.108", false)
 	d, _ = reg.Get("samsung:192.168.1.108")
-	ApplySamsungConnected(d)
 	if d.Connected {
 		t.Fatal("frame should be asleep after sleep command")
 	}
