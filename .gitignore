@@ -24,6 +24,13 @@ InkJoy/com.inkjoyframe.domus/
 InkJoy/inkjoy-0.*
 InkJoy/firmware*
 Samsung/epaper-decompiled
+# Nixplay captures / dumps (docs stay tracked)
+Nixplay/captures/
+Nixplay/db/
+Nixplay/decompiled/
+Nixplay/firmware/
+Nixplay/photos_recovered/
+Nixplay/*.apk
 # Generated calibration binaries (see Samsung/gen_color_*.py)
 Samsung/color-guesses*.bin
 Samsung/color-primaries*.bin
