@@ -9,6 +9,11 @@ Gowin FPGA we don't have firmware for, so this is a clean-room reimplementation
 of just the wire protocol, targeting a standard e-paper driver IC (T133A01)
 instead.
 
+Daytime networking uses ESP-IDF **esp-mqtt** (event-driven; the Arduino loop
+blocks on a FreeRTOS event/timeout instead of busy-polling) plus
+`WIFI_PS_MIN_MODEM` so the radio can nap between AP beacons while staying
+MQTT-reachable for `play`.
+
 Protocol reference: `research/firmware-notes.md` at the repo root has the full
 reverse-engineered writeup this firmware implements against.
 

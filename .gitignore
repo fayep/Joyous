@@ -23,6 +23,11 @@ joyous-hub/data/
 InkJoy/com.inkjoyframe.domus/
 InkJoy/inkjoy-0.*
 InkJoy/firmware*
+# Captured / unpacked Gowin FPGA bitstreams (large; keep local)
+InkJoy/fpga-*.fs
+InkJoy/fpga-*.ascii.fs
+InkJoy/fpga-*.unpacked.v
+InkJoy/fpga-*.bin
 Samsung/epaper-decompiled
 # Nixplay captures / dumps (docs stay tracked)
 Nixplay/captures/

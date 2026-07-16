@@ -1,9 +1,9 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
 #include <Preferences.h>
+#include <esp_wifi.h>
 #include <string.h>
 
 #include "secrets.h"
@@ -12,13 +12,11 @@
 #include "panel.h"
 #include "power.h"
 #include "ble_provision.h"
+#include "mqtt_hub.h"
 
 // EPaper is Seeed_Arduino_LCD's e-paper sprite/driver class (Extensions/EPaper.cpp);
 // panel.cpp owns init/render, this file just needs the instance to exist.
 EPaper epaper;
-
-WiFiClient wifiClient;
-PubSubClient mqtt(wifiClient);
 
 static String clientId;    // MAC without colons — also the frame's clientID/stamac
 static String reportTopic; // /device/report/{MAC} — we publish here
@@ -33,9 +31,6 @@ RTC_DATA_ATTR int savedSleepEndMin = -1;
 static unsigned long lastHeartMs = 0;
 static String g_currentPlayAckMsgId;
 
-// Runtime WiFi/hub config — loaded from NVS if this frame has been adopted
-// over BLE (see ble_provision.h), falling back to compile-time secrets.h for
-// boards flashed with credentials baked in the old way.
 struct RuntimeConfig {
     String ssid;
     String wifiPass;
@@ -84,9 +79,7 @@ static String minToHHMM(int minutes) {
     return String(buf);
 }
 
-static void publish(const String &payload) {
-    mqtt.publish(reportTopic.c_str(), (const uint8_t *)payload.c_str(), payload.length(), false);
-}
+static void publish(const String &payload) { MqttHub::publish(payload); }
 
 static void sendLogin() {
     publish(InkJoy::buildLogin(clientId, minToHHMM(savedSleepBeginMin), minToHHMM(savedSleepEndMin)));
@@ -95,8 +88,6 @@ static void sendLogin() {
 static int currentBatteryPct() {
     int batteryPct = 100;
 #if BATTERY_ADC_PIN >= 0
-    // Placeholder linear mapping — replace once the divider is wired and the
-    // real min/max ADC counts for this battery are known.
     batteryPct = map(analogRead(BATTERY_ADC_PIN), 0, 4095, 0, 100);
 #endif
     return batteryPct;
@@ -138,9 +129,9 @@ static void handleWifiSleep(JsonDocument &doc) {
     publish(InkJoy::buildAck("wifi_sleep_ack", clientId, win.ackMsgId, InkJoy::RESULT_ACCEPTED));
 }
 
-static void mqttCallback(char *topic, byte *payloadBytes, unsigned int len) {
+static void onMqttMessage(const char *payload, int len) {
     JsonDocument doc;
-    if (deserializeJson(doc, payloadBytes, len)) return;
+    if (deserializeJson(doc, payload, len)) return;
 
     const char *action = doc["action"] | "";
     if (!strcmp(action, "play")) {
@@ -148,9 +139,6 @@ static void mqttCallback(char *topic, byte *payloadBytes, unsigned int len) {
     } else if (!strcmp(action, "wifi_sleep")) {
         handleWifiSleep(doc);
     }
-    // login_ack, heart_ack, and everything else (ota/fpga/BLE-provisioning
-    // related actions) are intentionally unhandled — out of scope for a
-    // hub-only frame. See include/config.h and the project README.
 }
 
 static void connectWiFi() {
@@ -159,18 +147,8 @@ static void connectWiFi() {
     while (WiFi.status() != WL_CONNECTED) {
         delay(250);
     }
-}
-
-static void connectMqtt() {
-    while (!mqtt.connected()) {
-        // clean_session=false, matching the real frame's persistent session.
-        if (mqtt.connect(clientId.c_str(), nullptr, nullptr, nullptr, 0, false, nullptr, false)) {
-            mqtt.subscribe(subTopic.c_str());
-            sendLogin();
-        } else {
-            delay(2000);
-        }
-    }
+    // Nap between AP DTIM beacons while staying associated + MQTT-reachable.
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 }
 
 void setup() {
@@ -178,8 +156,6 @@ void setup() {
 
     Panel::begin();
 
-    // MAC is available as soon as the WiFi driver is up, before we connect —
-    // needed both for clientId and for the BLE provisioning name below.
     WiFi.mode(WIFI_STA);
     clientId = WiFi.macAddress();
     clientId.replace(":", "");
@@ -189,9 +165,6 @@ void setup() {
 
     bool adopted = loadConfig();
     if (!adopted) {
-        // No saved WiFi/hub config in NVS — advertise over BLE as "IJ_<MAC>"
-        // and wait for the hub's scan/adopt tooling to push it (same wire
-        // format it already uses for real frames; see ble_provision.h).
         Panel::showProvisioning(clientId);
         BleProvision::Config received = BleProvision::waitForAdopt(clientId);
         saveConfig(received);
@@ -200,31 +173,37 @@ void setup() {
     connectWiFi();
     Power::beginTimeSync();
 
-    mqtt.setServer(g_cfg.hubHost.c_str(), g_cfg.hubPort);
-    mqtt.setCallback(mqttCallback);
-    mqtt.setBufferSize(2048);
-    mqtt.setKeepAlive(120);
-    connectMqtt();
+    MqttHub::setReportTopic(reportTopic.c_str());
+    MqttHub::setConnectedHandler([]() { sendLogin(); });
+    if (!MqttHub::begin(g_cfg.hubHost.c_str(), g_cfg.hubPort, clientId.c_str(), subTopic.c_str())) {
+        Serial.println("mqtt begin failed");
+    }
 
     lastHeartMs = millis();
 }
 
 void loop() {
-    if (!mqtt.connected()) {
-        connectMqtt();
-    }
-    mqtt.loop();
+    uint32_t now = millis();
+    uint32_t untilHeart = (now - lastHeartMs >= HEART_INTERVAL_MS)
+                              ? 0
+                              : (HEART_INTERVAL_MS - (now - lastHeartMs));
+    // Also wake periodically to evaluate the wifi_sleep window.
+    uint32_t waitMs = untilHeart < 60000UL ? untilHeart : 60000UL;
+
+    MqttHub::loopWait(waitMs, onMqttMessage);
 
     if (millis() - lastHeartMs >= HEART_INTERVAL_MS) {
-        sendHeart();
+        if (MqttHub::connected()) sendHeart();
         lastHeartMs = millis();
     }
 
     int nowMin = Power::nowMinutesSinceMidnight();
     if (Power::withinWindow(nowMin, savedSleepBeginMin, savedSleepEndMin)) {
-        publish(InkJoy::buildSleep(clientId, currentBatteryPct(), InkJoy::SLEEP_REASON_SCHEDULED));
-        mqtt.disconnect();
-        delay(200); // let the publish flush before the radio drops
+        if (MqttHub::connected()) {
+            publish(InkJoy::buildSleep(clientId, currentBatteryPct(), InkJoy::SLEEP_REASON_SCHEDULED));
+            delay(200);  // let the publish flush before the radio drops
+        }
+        MqttHub::stop();
         Power::deepSleepSeconds((uint64_t)Power::secondsUntil(nowMin, savedSleepEndMin));
     }
 }
