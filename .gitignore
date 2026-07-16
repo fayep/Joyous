@@ -21,13 +21,13 @@ joyous-hub/data/
 *.xapk
 *.swp
 InkJoy/com.inkjoyframe.domus/
-InkJoy/inkjoy-0.*
-InkJoy/firmware*
+inkjoy-0.*
+firmware*
 # Captured / unpacked Gowin FPGA bitstreams (large; keep local)
-InkJoy/fpga-*.fs
-InkJoy/fpga-*.ascii.fs
-InkJoy/fpga-*.unpacked.v
-InkJoy/fpga-*.bin
+fpga-*
+# Windows offline-tool binary + extracted firmware SPIFFS images (large, reproducible; keep local)
+ISFR-lite.exe
+InkJoy/spiffs_extracted/
 Samsung/epaper-decompiled
 # Nixplay captures / dumps (docs stay tracked)
 Nixplay/captures/
