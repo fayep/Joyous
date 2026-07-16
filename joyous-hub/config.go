@@ -27,6 +27,7 @@ type InkJoyBridgeConfig struct {
 	DataDir         string `yaml:"data_dir"`
 	HubDataDir      string `yaml:"hub_data_dir"`
 	HubHTTP         string `yaml:"hub_http"`
+	ServerAddr      string `yaml:"server_addr"`
 	CaptureDir      string `yaml:"capture_dir"`
 	OTADir          string `yaml:"ota_dir"`
 	LogDir          string `yaml:"log_dir"`

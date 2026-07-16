@@ -35,9 +35,10 @@ func TestHubInkjoyBinServedBeforeBridgeProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	hub := &Hub{}
 	mux := http.NewServeMux()
-	registerInkJoyCacheRoutes(mux, cache)
-	registerBridgeRoutes(mux, &Hub{})
+	registerInkJoyCacheRoutes(mux, hub, cache)
+	registerBridgeRoutes(mux, hub)
 
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/inkjoy/"+mac+"/"+name+".bin", nil))
@@ -54,6 +55,30 @@ func TestInkJoyAPIStillUsesBridgeProxyPath(t *testing.T) {
 		return
 	}
 	t.Fatal("api/devices must not be treated as frame bin path")
+}
+
+// TestInkJoyAPIRouteNotShadowedByBinCache is an end-to-end regression test for a real bug:
+// /inkjoy/{mac}/{file} (inkjoy_cache.go, for serving cached .bin files) is a more specific
+// two-segment pattern than the generic /inkjoy/{path...} bridge-proxy catch-all, so Go's
+// ServeMux silently preferred it for ANY two-segment InkJoy path — including API calls like
+// /inkjoy/api/devices — which isInkJoyFrameBinProxyPath alone can never catch, since that
+// guard only runs inside the bridge-proxy handler, which this bug prevented from ever being
+// reached. A real Hub with no bridgeCoord is used, since the request only needs to prove it
+// reached handleBridgeProxy (500 "bridge coordinator unavailable"), not complete a full
+// MQTT round trip — a 404 here means the bin-cache route swallowed the request again.
+func TestInkJoyAPIRouteNotShadowedByBinCache(t *testing.T) {
+	dir := t.TempDir()
+	cache := NewInkJoyCache(dir)
+	hub := &Hub{}
+	mux := http.NewServeMux()
+	registerInkJoyCacheRoutes(mux, hub, cache)
+	registerBridgeRoutes(mux, hub)
+
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/inkjoy/api/devices", nil))
+	if rr.Code == http.StatusNotFound {
+		t.Fatalf("status=%d body=%q — /inkjoy/api/devices was shadowed by the bin-cache route again", rr.Code, rr.Body.String())
+	}
 }
 
 func TestInkJoyBinProxyGuardBridgeKind(t *testing.T) {

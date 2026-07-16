@@ -144,13 +144,17 @@ input[type=text],input[type=password],input[type=time]{padding:.35rem .5rem;bord
 <script>
 let devices=[], currentId=null, previewKey=null, adoptTarget=null;
 async function loadDevices(){
-  const r=await fetch('/inkjoy/api/devices');
-  if(!r.ok) return;
-  devices=await r.json();
-  renderList();
-  if(currentId){
-    const d=devices.find(x=>x.id===currentId);
-    if(d) updateStatus(d); else { currentId=null; hideEditor(); }
+  try{
+    const r=await fetch('/inkjoy/api/devices');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    devices=await r.json();
+    renderList();
+    if(currentId){
+      const d=devices.find(x=>x.id===currentId);
+      if(d) updateStatus(d); else { currentId=null; hideEditor(); }
+    }
+  }catch(e){
+    document.getElementById('frame-list').innerHTML='<p style="color:#c00;font-size:.9rem">Failed to load frames: '+e.message+'</p>';
   }
 }
 function hideEditor(){
@@ -291,7 +295,10 @@ async function submitAdopt(){
     const r=await fetch('/inkjoy/api/ble/adopt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({address:adoptTarget.address,ssid,wifi_pwd:pwd})});
     if(!r.ok) throw new Error(await r.text());
     st.textContent='Adopted! Waiting for frame to connect…';
-    setTimeout(()=>{ closeAdopt(); loadDevices(); }, 3000);
+    bleScanResults=[];
+    document.getElementById('ble-scan-results').innerHTML='';
+    document.getElementById('ble-scan-status').textContent='';
+    setTimeout(()=>{ closeAdopt(); loadDevices(); startBLEScan(); }, 3000);
   }catch(e){ st.textContent='Failed: '+e.message; }
 }
 loadDevices();

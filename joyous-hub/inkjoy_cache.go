@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"joyous-hub/protocol"
 )
 
 // InkJoyCache stores .bin images relayed from cloud play commands for local serving.
@@ -107,12 +109,21 @@ func setInkjoyCacheResponseHeaders(w http.ResponseWriter) {
 	w.Header().Set(inkjoyCacheResponseHeader, "1")
 }
 
-func registerInkJoyCacheRoutes(mux *http.ServeMux, cache *InkJoyCache) {
+func registerInkJoyCacheRoutes(mux *http.ServeMux, hub *Hub, cache *InkJoyCache) {
 	if mux == nil || cache == nil {
 		return
 	}
 	serve := func(w http.ResponseWriter, r *http.Request) {
 		if !looksLikeInkJoyMAC(r.PathValue("mac")) {
+			// This two-segment pattern (/inkjoy/{mac}/{file}) is a more specific match
+			// than the generic /inkjoy/{path...} bridge-proxy catch-all in Go's ServeMux,
+			// so it silently wins for any two-segment InkJoy path — including API calls
+			// like /inkjoy/api/devices. Forward those on to the bridge proxy instead of
+			// 404ing outright.
+			if hub != nil {
+				hub.handleBridgeProxy(w, r, protocol.KindInkJoy, r.PathValue("mac")+"/"+r.PathValue("file"))
+				return
+			}
 			http.NotFound(w, r)
 			return
 		}
@@ -211,6 +222,44 @@ func VerifyInkjoyCacheServing(ctx context.Context, hubBaseURL string) error {
 
 func (c *InkJoyCache) binPath(mac, name string) string {
 	return filepath.Join(c.dir, inkjoyMACDir(mac), name+".bin")
+}
+
+// LatestImageID reports the imageID/overlayToken of the most-recently-modified cached
+// .bin for mac, parsed from its filename (see imageBinFilename: {id}[~{overlayToken}][-p].bin).
+// This is the actual currently-displayed content — the DeviceRegistry's LastImageID field
+// can't be trusted for this since the hub and inkjoy-bridge processes each keep their own
+// independent in-memory registry loaded from the same devices.json, so a send recorded by
+// one is invisible to (and gets silently overwritten by) the other. The cache directory has
+// no such split-brain problem: whichever process sent the image, it landed on this disk.
+func (c *InkJoyCache) LatestImageID(mac string) (imageID, overlayToken string, ok bool) {
+	entries, err := os.ReadDir(filepath.Join(c.dir, inkjoyMACDir(mac)))
+	if err != nil {
+		return "", "", false
+	}
+	var latestName string
+	var latestMod time.Time
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".bin") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(latestMod) {
+			latestMod = info.ModTime()
+			latestName = e.Name()
+		}
+	}
+	if latestName == "" {
+		return "", "", false
+	}
+	name := strings.TrimSuffix(latestName, ".bin")
+	name = strings.TrimSuffix(name, "-p")
+	if id, token, found := strings.Cut(name, "~"); found {
+		return id, token, true
+	}
+	return name, "", true
 }
 
 // Save writes bin atomically: to a temp file in the same directory, fsynced,

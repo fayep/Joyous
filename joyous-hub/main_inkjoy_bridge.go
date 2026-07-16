@@ -43,6 +43,7 @@ func main() {
 	bridgeID := flag.String("bridge-id", fileCfg.BridgeID, "bridge id announced to hub")
 	listenMQTT := flag.String("listen-mqtt", fileCfg.ListenMQTT, "InkJoy frame MQTT broker")
 	hubHTTP := flag.String("hub-http", fileCfg.HubHTTP, "Joyous hub HTTP base URL for play relay")
+	serverAddr := flag.String("server-addr", fileCfg.ServerAddr, "hostname:port shown to frames for image URLs and BLE adopt")
 	upstream := flag.String("upstream", fileCfg.Upstream, "InkJoy cloud MQTT broker")
 	upstreamUsr := flag.String("upstream-usr", fileCfg.UpstreamUsr, "cloud MQTT username")
 	upstreamPwd := flag.String("upstream-pwd", fileCfg.UpstreamPwd, "cloud MQTT password")
@@ -152,10 +153,10 @@ func main() {
 		inkjoyRetry.OnPlayAck(ackMsgid, result)
 	})
 
-	mqttHost := bridgeMQTTHost(*listenMQTT)
+	mqttHost := bridgeMQTTHost(*listenMQTT, *serverAddr)
 	mqttPort := bridgeMQTTPort(*listenMQTT)
 	mux := http.NewServeMux()
-	bridgeUI := newInkJoyBridgeUI(mux, devices, srv, mqttLog, mqttHost, mqttPort)
+	bridgeUI := newInkJoyBridgeUI(mux, devices, hubInkjoyCache, srv, mqttLog, mqttHost, mqttPort)
 	_ = bridgeUI
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"joyous-hub/bridgehub"
@@ -17,6 +16,7 @@ import (
 
 type inkjoyBridgeUI struct {
 	devices  *DeviceRegistry
+	cache    *InkJoyCache
 	srv      *inkjoybridge.Server
 	mqttLog  *MQTTLogBuffer
 	mqttHost string
@@ -24,9 +24,10 @@ type inkjoyBridgeUI struct {
 	mux      *http.ServeMux
 }
 
-func newInkJoyBridgeUI(mux *http.ServeMux, devices *DeviceRegistry, srv *inkjoybridge.Server, mqttLog *MQTTLogBuffer, mqttHost string, mqttPort int) *inkjoyBridgeUI {
+func newInkJoyBridgeUI(mux *http.ServeMux, devices *DeviceRegistry, cache *InkJoyCache, srv *inkjoybridge.Server, mqttLog *MQTTLogBuffer, mqttHost string, mqttPort int) *inkjoyBridgeUI {
 	ui := &inkjoyBridgeUI{
 		devices:  devices,
+		cache:    cache,
 		srv:      srv,
 		mqttLog:  mqttLog,
 		mqttHost: mqttHost,
@@ -124,6 +125,12 @@ func (ui *inkjoyBridgeUI) inkjoyDevices() []Device {
 		if d.Type == DeviceTypeInkJoy {
 			d.SleepBeginTime = utcHHMMToLocal(d.SleepBeginTime)
 			d.SleepEndTime = utcHHMMToLocal(d.SleepEndTime)
+			if ui.cache != nil {
+				if imageID, overlayToken, ok := ui.cache.LatestImageID(d.MAC); ok {
+					d.LastImageID = imageID
+					d.LastOverlayHash = overlayToken
+				}
+			}
 			out = append(out, d)
 		}
 	}
@@ -266,16 +273,23 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func bridgeMQTTHost(listenMQTT string) string {
-	host, _, err := net.SplitHostPort(listenMQTT)
-	if err != nil {
-		if strings.Contains(listenMQTT, ":") {
-			return "127.0.0.1"
+// bridgeMQTTHost returns the hostname frames should use to reach this bridge's
+// MQTT listener. server_addr (the operator-configured "hostname:port shown to
+// frames for image URLs and BLE adopt") takes priority since it's a real,
+// deliberately-reachable address; if unset, falls back to resolvedLANIP's
+// interface-scan auto-detect (the same mechanism already used for image
+// URLs) rather than a hardcoded "127.0.0.1" — listenMQTT's own host is
+// almost always a wildcard bind ("" / "0.0.0.0") and useless to hand to a
+// physical frame.
+func bridgeMQTTHost(listenMQTT, serverAddr string) string {
+	if serverAddr != "" {
+		if host, _, err := net.SplitHostPort(serverAddr); err == nil && host != "" {
+			return host
 		}
-		return listenMQTT
 	}
-	if host == "" || host == "0.0.0.0" || host == "[::]" {
-		return "127.0.0.1"
+	host, _, err := net.SplitHostPort(listenMQTT)
+	if err != nil || host == "" || host == "0.0.0.0" || host == "[::]" {
+		return resolvedLANIP(listenMQTT)
 	}
 	return host
 }

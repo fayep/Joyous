@@ -188,7 +188,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	registerRoutes(mux, hub)
-	registerInkJoyCacheRoutes(mux, inkjoyCache)
+	registerInkJoyCacheRoutes(mux, hub, inkjoyCache)
 	registerBridgeRoutes(mux, hub)
 
 	log.Printf("InkJoy frame .bin cache at %s (GET/HEAD /inkjoy/{mac}/{file}.bin)", filepath.Join(*dataDir, "inkjoy"))

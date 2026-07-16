@@ -14,7 +14,7 @@ func TestVerifyInkjoyCacheServing(t *testing.T) {
 	dir := t.TempDir()
 	cache := NewInkJoyCache(dir)
 	mux := http.NewServeMux()
-	registerInkJoyCacheRoutes(mux, cache)
+	registerInkJoyCacheRoutes(mux, nil, cache)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -35,7 +35,7 @@ func TestHubInkjoyCacheRoute(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	registerInkJoyCacheRoutes(mux, cache)
+	registerInkJoyCacheRoutes(mux, nil, cache)
 
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/inkjoy/AABBCCDDEEFF/cloud-img.bin", nil))
