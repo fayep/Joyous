@@ -98,15 +98,10 @@ func stuckiOptionsSamsung(pipe ColorPipeline) stuckiOptions {
 	}
 }
 
+// stuckiOptionsInkJoy matches Samsung's Stucki tuning (serpentine, edge preserve,
+// always-on pre-dither). Experiment: does that alone shrink InkJoy midtone islands?
 func stuckiOptionsInkJoy(pipe ColorPipeline) stuckiOptions {
-	opts := stuckiOptions{
-		DynamicRange: pipe.LABDynamicRangeEnabled,
-	}
-	if pipe.PortraitEnhance {
-		opts.PreDither = true
-		opts.PreDitherStrength = inkjoyPortraitPreDitherNoise
-	}
-	return opts
+	return stuckiOptionsSamsung(pipe)
 }
 
 // hiBytes maps palette index 0-5 to the hi byte values used in the .bin format.
