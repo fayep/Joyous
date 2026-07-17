@@ -72,6 +72,51 @@ def enc_jalr(rd, rs1, imm12):
     return _u(32, (imm12 << 20) | (rs1 << 15) | (0 << 12) | (rd << 7) | 0x67)
 
 
+def enc_itype(rd, rs1, imm12, funct3, opcode):
+    imm12 = _u(12, imm12)
+    return _u(32, (imm12 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode)
+
+
+def enc_lw(rd, rs1, imm12):
+    return enc_itype(rd, rs1, imm12, 0b010, 0x03)
+
+
+def enc_stype(rs1, rs2, imm12, funct3, opcode):
+    imm12 = _u(12, imm12)
+    imm_hi = (imm12 >> 5) & 0x7F
+    imm_lo = imm12 & 0x1F
+    return _u(32, (imm_hi << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (imm_lo << 7) | opcode)
+
+
+def enc_sw(rs1, rs2, imm12):
+    """store rs2 to imm12(rs1)."""
+    return enc_stype(rs1, rs2, imm12, 0b010, 0x23)
+
+
+def enc_btype(rs1, rs2, imm13, funct3):
+    """imm13 is a signed byte offset (branch target - branch instr addr), must be even."""
+    assert imm13 % 2 == 0
+    imm = _u(13, imm13)
+    bit12 = (imm >> 12) & 1
+    bits10_5 = (imm >> 5) & 0x3F
+    bits4_1 = (imm >> 1) & 0xF
+    bit11 = (imm >> 11) & 1
+    enc = (bit12 << 31) | (bits10_5 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) | (bits4_1 << 8) | (bit11 << 7) | 0x63
+    return _u(32, enc)
+
+
+def enc_beq(rs1, rs2, imm13):
+    return enc_btype(rs1, rs2, imm13, 0b000)
+
+
+def enc_bne(rs1, rs2, imm13):
+    return enc_btype(rs1, rs2, imm13, 0b001)
+
+
+def enc_addi_(rd, rs1, imm12):  # alias kept for readability at call sites
+    return enc_addi(rd, rs1, imm12)
+
+
 REG = {name: i for i, name in enumerate(
     "zero ra sp gp tp t0 t1 t2 s0 s1 a0 a1 a2 a3 a4 a5 a6 a7 "
     "s2 s3 s4 s5 s6 s7 s8 s9 s10 s11 t3 t4 t5 t6".split()
@@ -103,6 +148,130 @@ def load_abs(rd, target_va):
     """lui+addi to materialize an absolute address in a register."""
     hi, lo = hi_lo(target_va)
     return enc_lui(REG[rd], hi).to_bytes(4, "little") + enc_addi(REG[rd], REG[rd], lo).to_bytes(4, "little")
+
+
+class Asm:
+    """Tiny two-pass RV32I assembler for hand-written cave bodies. Every
+    instruction is 4 bytes (uncompressed) so addresses are trivial to
+    pre-compute; labels let branches/jumps be written without hand-counting
+    byte offsets.
+
+    asm = Asm(base_va=cave_va)
+    asm.li("t0", 5)
+    asm.label("loop")
+    asm.addi("t0", "t0", -1)
+    asm.bne("t0", "zero", "loop")
+    asm.ret()
+    code = asm.assemble()
+    """
+
+    def __init__(self, base_va: int):
+        self.base_va = base_va
+        self._items = []  # list of ("label", name) | ("insn", encode_fn)
+
+    def label(self, name):
+        self._items.append(("label", name))
+        return self
+
+    def _addr_of(self, labels, name):
+        if name not in labels:
+            raise KeyError(f"undefined label {name!r}")
+        return labels[name]
+
+    def _emit(self, fn):
+        self._items.append(("insn", fn))
+        return self
+
+    # --- raw instructions (register args accept names or ints) ---
+    def _r(self, x):
+        return REG[x] if isinstance(x, str) else x
+
+    def lui(self, rd, imm20):
+        return self._emit(lambda labels, addr: enc_lui(self._r(rd), imm20))
+
+    def addi(self, rd, rs1, imm12):
+        return self._emit(lambda labels, addr: enc_addi(self._r(rd), self._r(rs1), imm12))
+
+    def jal(self, rd, label):
+        return self._emit(lambda labels, addr: enc_jal(self._r(rd), self._addr_of(labels, label) - addr))
+
+    def jalr(self, rd, rs1, imm12):
+        return self._emit(lambda labels, addr: enc_jalr(self._r(rd), self._r(rs1), imm12))
+
+    def lw(self, rd, imm12, rs1):
+        return self._emit(lambda labels, addr: enc_lw(self._r(rd), self._r(rs1), imm12))
+
+    def sw(self, rs2, imm12, rs1):
+        return self._emit(lambda labels, addr: enc_sw(self._r(rs1), self._r(rs2), imm12))
+
+    def beq(self, rs1, rs2, label):
+        return self._emit(lambda labels, addr: enc_beq(self._r(rs1), self._r(rs2), self._addr_of(labels, label) - addr))
+
+    def bne(self, rs1, rs2, label):
+        return self._emit(lambda labels, addr: enc_bne(self._r(rs1), self._r(rs2), self._addr_of(labels, label) - addr))
+
+    # --- pseudo-instructions ---
+    def mv(self, rd, rs):
+        return self.addi(rd, rs, 0)
+
+    def li(self, rd, imm):
+        if -2048 <= imm < 2048:
+            return self.addi(rd, "zero", imm)
+        hi, lo = hi_lo(imm)
+
+        def two(labels, addr, rd=self._r(rd), hi=hi, lo=lo):
+            return enc_lui(rd, hi).to_bytes(4, "little") + enc_addi(rd, rd, lo).to_bytes(4, "little")
+        # split into two single-instruction emits so addresses stay 4-byte granular
+        self._emit(lambda labels, addr, rd=self._r(rd), hi=hi: enc_lui(rd, hi))
+        return self._emit(lambda labels, addr, rd=self._r(rd), lo=lo: enc_addi(rd, rd, lo))
+
+    def la(self, rd, target_va):
+        """Load an absolute address (not PC-relative — same convention as the
+        rest of this tool, since these firmware images use plain lui+addi
+        for statics rather than auipc+addi)."""
+        return self.li(rd, target_va)
+
+    def call(self, target_va, link="ra", scratch=None):
+        """Absolute far call: lui+jalr. If scratch is None, uses `link` as
+        the scratch register too (matches call_abs's convention)."""
+        # scratch must be a real (non-zero) register even for a tail call
+        # (link="zero"): "zero" can't hold the lui'd high bits, so a naive
+        # `scratch = scratch or link` here would silently emit `lui zero,
+        # ...` (a discarded no-op) followed by `jalr zero, zero, lo` —
+        # jumping to a near-zero address instead of target_va.
+        scratch = scratch or (link if link != "zero" else "ra")
+        hi, lo = hi_lo(target_va)
+        self._emit(lambda labels, addr, rs=self._r(scratch), hi=hi: enc_lui(rs, hi))
+        return self._emit(lambda labels, addr, rd=self._r(link), rs=self._r(scratch), lo=lo: enc_jalr(rd, rs, lo))
+
+    def j(self, label):
+        return self.jal("zero", label)
+
+    def ret(self):
+        return self.jalr("zero", "ra", 0)
+
+    def nop(self):
+        return self.addi("zero", "zero", 0)
+
+    def assemble(self) -> bytes:
+        # pass 1: assign addresses (every item is exactly one 4-byte instruction)
+        labels = {}
+        addr = self.base_va
+        for kind, payload in self._items:
+            if kind == "label":
+                labels[payload] = addr
+            else:
+                addr += 4
+        # pass 2: encode
+        out = bytearray()
+        addr = self.base_va
+        for kind, payload in self._items:
+            if kind == "label":
+                continue
+            word = payload(labels, addr)
+            out += word.to_bytes(4, "little")
+            addr += 4
+        return bytes(out)
 
 
 @dataclass
@@ -156,6 +325,15 @@ class Firmware:
         return sum(len(s.data) + 8 for s in self.img.segments) + 24
 
     # --- patch primitives ---
+
+    def next_cave_va(self, align: int = 4) -> int:
+        """VA the next add_cave() call will place its data at, for building
+        code that needs to know its own address ahead of time (e.g. Asm
+        code that embeds and references string constants after itself)."""
+        seg = self.irom_segment()
+        cur_len = len(seg.data)
+        pad = (-cur_len) % align
+        return seg.addr + cur_len + pad
 
     def add_cave(self, code: bytes, name: str, align: int = 4) -> int:
         """Append `code` to the end of the IROM segment. Returns the VA the
