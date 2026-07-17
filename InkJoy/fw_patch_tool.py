@@ -85,6 +85,14 @@ def enc_lw(rd, rs1, imm12):
     return enc_itype(rd, rs1, imm12, 0b010, 0x03)
 
 
+def enc_lb(rd, rs1, imm12):
+    return enc_itype(rd, rs1, imm12, 0b000, 0x03)
+
+
+def enc_lbu(rd, rs1, imm12):
+    return enc_itype(rd, rs1, imm12, 0b100, 0x03)
+
+
 def enc_stype(rs1, rs2, imm12, funct3, opcode):
     imm12 = _u(12, imm12)
     imm_hi = (imm12 >> 5) & 0x7F
@@ -204,6 +212,9 @@ class Asm:
 
     def lw(self, rd, imm12, rs1):
         return self._emit(lambda labels, addr: enc_lw(self._r(rd), self._r(rs1), imm12))
+
+    def lbu(self, rd, imm12, rs1):
+        return self._emit(lambda labels, addr: enc_lbu(self._r(rd), self._r(rs1), imm12))
 
     def sw(self, rs2, imm12, rs1):
         return self._emit(lambda labels, addr: enc_sw(self._r(rs1), self._r(rs2), imm12))
