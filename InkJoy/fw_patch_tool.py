@@ -22,11 +22,15 @@ in project memory) — `Firmware.load` records the partition budget so
 """
 from __future__ import annotations
 
+import copy
+import hashlib
+import io
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from esptool.bin_image import LoadFirmwareImage
+from esptool.bin_image import ImageSegment, LoadFirmwareImage
+from esptool.loader import ESPLoader
 
 IROM_SEGMENT_INDEX = 2
 OTA_PARTITION_SIZE = 0x2A3000  # ota_0 / ota_1, see project memory
@@ -274,6 +278,113 @@ class Asm:
         return bytes(out)
 
 
+def _save_preserving_segment_order(img, filename: str) -> None:
+    """Same as ESP32C5FirmwareImage.save(), except flash/RAM segments are
+    ordered by their *original file position* (segment.file_offs) instead of
+    ascending virtual address.
+
+    esptool's stock save() does `sorted(self.segments, key=lambda s: s.addr)`.
+    On ij_epd's memory map DROM sits at a *higher* VA (0x42160020) than IROM
+    (0x42000020), so that sort silently swaps them: IROM ends up first in
+    the saved file, DROM second. That breaks OTA validation — ESP-IDF's
+    esp_ota_ops reads the esp_app_desc_t struct (project name, version,
+    min/max_efuse_blk_rev_full, ...) assuming it's in the first segment, so
+    with the reordering it reads our code bytes instead and gets garbage
+    (observed on real hardware: "Image requires efuse blk rev >= v174.42,
+    but chip is v0.3" — 17442 decoded from bytes that aren't the app_desc
+    struct at all). The original, unmodified firmware.bin has DROM as
+    segment 0 despite its higher address — file_offs preserves that.
+
+    This is a verbatim copy of esptool 5.3.0's ESP32FirmwareImage.save()
+    with only the two sort keys changed; re-check against esptool's source
+    if bumping the esptool dependency ever starts failing here.
+    """
+    total_segments = 0
+    with io.BytesIO() as f:
+        img.write_common_header(f, img.segments)
+        img.save_extended_header(f)
+
+        checksum = ESPLoader.ESP_CHECKSUM_MAGIC
+
+        def order_key(s):
+            return s.file_offs if s.file_offs is not None else s.addr
+
+        flash_segments = [
+            copy.deepcopy(s)
+            for s in sorted(img.segments, key=order_key)
+            if img.is_flash_addr(s.addr)
+        ]
+        ram_segments = [
+            copy.deepcopy(s)
+            for s in sorted(img.segments, key=order_key)
+            if not img.is_flash_addr(s.addr)
+        ]
+
+        if len(flash_segments) > 0:
+            last_addr = flash_segments[0].addr
+            for segment in flash_segments[1:]:
+                if segment.addr // img.IROM_ALIGN == last_addr // img.IROM_ALIGN:
+                    raise ValueError(
+                        f"Segment loaded at {segment.addr:#010x} lands in same "
+                        f"{img.IROM_ALIGN // 1024} KB flash mapping as segment "
+                        f"loaded at {last_addr:#010x}."
+                    )
+                last_addr = segment.addr
+
+        def get_alignment_data_needed(segment):
+            align_past = (segment.addr % img.IROM_ALIGN) - img.SEG_HEADER_LEN
+            pad_len = (img.IROM_ALIGN - (f.tell() % img.IROM_ALIGN)) + align_past
+            if pad_len == 0 or pad_len == img.IROM_ALIGN:
+                return 0
+            pad_len -= img.SEG_HEADER_LEN
+            if pad_len < 0:
+                pad_len += img.IROM_ALIGN
+            return pad_len
+
+        while len(flash_segments) > 0:
+            segment = flash_segments[0]
+            pad_len = get_alignment_data_needed(segment)
+            if pad_len > 0:
+                if len(ram_segments) > 0 and pad_len > img.SEG_HEADER_LEN:
+                    pad_segment = ram_segments[0].split_image(pad_len)
+                    if len(ram_segments[0].data) == 0:
+                        ram_segments.pop(0)
+                else:
+                    pad_segment = ImageSegment(0, b"\x00" * pad_len, f.tell())
+                checksum = img.save_segment(f, pad_segment, checksum, segment.name)
+                total_segments += 1
+            else:
+                assert (f.tell() + 8) % img.IROM_ALIGN == segment.addr % img.IROM_ALIGN
+                checksum = img.save_flash_segment(f, segment, checksum)
+                flash_segments.pop(0)
+                total_segments += 1
+
+        for segment in ram_segments:
+            checksum = img.save_segment(f, segment, checksum, segment.name)
+            total_segments += 1
+
+        img.append_checksum(f, checksum)
+        image_length = f.tell()
+
+        f.seek(1)
+        f.write(bytes([total_segments]))
+
+        if img.append_digest:
+            f.seek(0)
+            digest = hashlib.sha256()
+            digest.update(f.read(image_length))
+            f.write(digest.digest())
+
+        if img.pad_to_size:
+            image_length = f.tell()
+            if image_length % img.pad_to_size != 0:
+                pad_by = img.pad_to_size - (image_length % img.pad_to_size)
+                f.write(b"\xff" * pad_by)
+
+        with open(filename, "wb") as real_file:
+            real_file.write(f.getvalue())
+
+
 @dataclass
 class Patch:
     name: str
@@ -383,7 +494,7 @@ class Firmware:
     # --- persistence ---
 
     def save(self, out_path: str):
-        self.img.save(out_path)
+        _save_preserving_segment_order(self.img, out_path)
         manifest_path = Path(out_path).with_suffix(".patches.json")
         manifest_path.write_text(json.dumps(
             [dict(name=p.name, kind=p.kind, va=hex(p.va), length=p.length, note=p.note)
