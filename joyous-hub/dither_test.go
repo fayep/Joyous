@@ -466,26 +466,19 @@ func TestStuckiEdgeAttenuation(t *testing.T) {
 	}
 }
 
-func TestStuckiOptionsInkJoyUsesClassicStucki(t *testing.T) {
+func TestStuckiOptionsInkJoyMatchesSamsung(t *testing.T) {
 	pipe := ColorPipeline{}
 	ij := stuckiOptionsInkJoy(pipe)
-	if ij.Serpentine || ij.EdgePreserve > 0 || ij.PreDither {
-		t.Fatalf("InkJoy landscape should use classic Stucki, got %+v", ij)
-	}
 	sg := stuckiOptionsSamsung(pipe)
-	if !sg.Serpentine || !sg.PreDither || sg.EdgePreserve <= 0 {
-		t.Fatalf("Samsung should use full Stucki tuning, got %+v", sg)
+	if ij != sg {
+		t.Fatalf("InkJoy Stucki opts = %+v, want Samsung %+v", ij, sg)
 	}
-	portrait := stuckiOptionsInkJoy(ColorPipeline{PortraitEnhance: true})
-	if !portrait.PreDither || portrait.PreDitherStrength != inkjoyPortraitPreDitherNoise {
-		t.Fatalf("InkJoy portrait pre-dither = %+v, want strength %v", portrait, inkjoyPortraitPreDitherNoise)
+	if !ij.Serpentine || !ij.PreDither || ij.EdgePreserve <= 0 {
+		t.Fatalf("expected Samsung-style Stucki tuning, got %+v", ij)
 	}
-	if portrait.Serpentine || portrait.EdgePreserve > 0 {
-		t.Fatal("InkJoy portrait should not use Samsung serpentine/edge tuning")
-	}
-	dr := stuckiOptionsInkJoy(ColorPipeline{LABDynamicRangeEnabled: true, PortraitEnhance: true})
-	if !dr.DynamicRange {
-		t.Fatal("InkJoy portrait photos should still use dynamic range when enabled")
+	dr := stuckiOptionsInkJoy(ColorPipeline{LABDynamicRangeEnabled: true})
+	if !dr.DynamicRange || !dr.Serpentine || !dr.PreDither {
+		t.Fatalf("dynamic range should ride on Samsung-style base, got %+v", dr)
 	}
 }
 
