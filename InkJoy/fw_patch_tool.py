@@ -105,6 +105,11 @@ def enc_sw(rs1, rs2, imm12):
     return enc_stype(rs1, rs2, imm12, 0b010, 0x23)
 
 
+def enc_sb(rs1, rs2, imm12):
+    """store low byte of rs2 to imm12(rs1)."""
+    return enc_stype(rs1, rs2, imm12, 0b000, 0x23)
+
+
 def enc_btype(rs1, rs2, imm13, funct3):
     """imm13 is a signed byte offset (branch target - branch instr addr), must be even."""
     assert imm13 % 2 == 0
@@ -218,6 +223,9 @@ class Asm:
 
     def sw(self, rs2, imm12, rs1):
         return self._emit(lambda labels, addr: enc_sw(self._r(rs1), self._r(rs2), imm12))
+
+    def sb(self, rs2, imm12, rs1):
+        return self._emit(lambda labels, addr: enc_sb(self._r(rs1), self._r(rs2), imm12))
 
     def beq(self, rs1, rs2, label):
         return self._emit(lambda labels, addr: enc_beq(self._r(rs1), self._r(rs2), self._addr_of(labels, label) - addr))
