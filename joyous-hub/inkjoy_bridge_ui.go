@@ -107,6 +107,9 @@ func (ui *inkjoyBridgeUI) registerRoutes() {
 	ui.mux.HandleFunc("POST /inkjoy/api/devices/{id}/sleep", func(w http.ResponseWriter, r *http.Request) {
 		ui.handleSleep(w, r, r.PathValue("id"))
 	})
+	ui.mux.HandleFunc("POST /inkjoy/api/devices/{id}/ota", func(w http.ResponseWriter, r *http.Request) {
+		ui.handleOTA(w, r, r.PathValue("id"))
+	})
 	ui.mux.HandleFunc("POST /inkjoy/api/ble/scan", ui.handleBLEScan)
 	ui.mux.HandleFunc("POST /inkjoy/api/ble/adopt", ui.handleBLEAdopt)
 	ui.mux.HandleFunc("GET /inkjoy/api/mqtt/logs", ui.handleMQTTLogs)
@@ -224,6 +227,40 @@ func (ui *inkjoyBridgeUI) handleSleep(w http.ResponseWriter, r *http.Request, id
 	}
 	ui.devices.UpdateSleep(dev.MAC, utcBegin, utcEnd)
 	ui.devices.Save()
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// handleOTA pushes a custom "ota" pointer at a frame — the same message
+// shape the real InkJoy cloud sends, but aimed at any host/port/path so a
+// locally hand-patched firmware.bin can be tested without touching the
+// device physically. The frame self-flashes and self-reboots (esp_restart)
+// exactly as it would for a real cloud OTA; watch its ota_ack come back
+// through the MQTT traffic panel (or tail hub logs — see the explicit
+// "ota_ack" case in inkjoybridge/server.go).
+func (ui *inkjoyBridgeUI) handleOTA(w http.ResponseWriter, r *http.Request, id string) {
+	dev, ok := ui.devices.Get(id)
+	if !ok || dev.Type != DeviceTypeInkJoy {
+		http.Error(w, "inkjoy device required", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		Host string `json:"host"`
+		Port int    `json:"port"`
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Host == "" || body.Path == "" {
+		http.Error(w, "body: {host,port,path} required", http.StatusBadRequest)
+		return
+	}
+	if body.Port == 0 {
+		body.Port = 80
+	}
+	payload := buildOTAPayload(dev.MAC, body.Host, body.Port, body.Path)
+	if err := ui.srv.PublishToFrame(dev.MAC, payload); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 	writeJSON(w, map[string]any{"ok": true})
 }
 
