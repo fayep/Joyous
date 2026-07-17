@@ -15,6 +15,7 @@ images/
 .env.*
 !.env.example
 !**/.env.example
+joyous-hub/previews/
 joyous-hub/data/
 # APK files and decompiled output
 *.apk
