@@ -360,9 +360,12 @@ func bridgeDeliverInkJoyImage(
 		return fmt.Errorf("hub cache probe %s: %w", imgURL, err)
 	}
 	log.Printf("[%s] hub cache probe ok image=%s", dev.MAC, body.ImageID)
-	payload, msgid := buildPlayPayload(dev.MAC, imgURL)
+	reuseMsgid := ""
 	if body.SendID != "" && sendDelivery != nil {
-		sendDelivery.UnbindInkJoy(body.SendID)
+		reuseMsgid = sendDelivery.InkJoyMsgid(body.SendID)
+	}
+	payload, msgid := buildPlayPayload(dev.MAC, imgURL, reuseMsgid)
+	if body.SendID != "" && sendDelivery != nil {
 		sendDelivery.BindInkJoy(body.SendID, msgid)
 		if inkjoyRetry != nil {
 			inkjoyRetry.TrackFromBridge(body.SendID, dev.ID, body.ImageID, body.OverlayToken, body.HubBaseURL)

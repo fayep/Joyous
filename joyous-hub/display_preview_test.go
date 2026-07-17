@@ -14,7 +14,7 @@ import (
 )
 
 func TestParsePlayBinURL(t *testing.T) {
-	payload, _ := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://192.168.1.7:8080/images/abc-p.bin")
+	payload, _ := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://192.168.1.7:8080/images/abc-p.bin", "")
 	url, ok := parsePlayBinURL(payload)
 	if !ok {
 		t.Fatal("expected ok")
@@ -222,7 +222,7 @@ func TestRestoreFromDisk(t *testing.T) {
 }
 
 func TestBuildPlayPayloadRoundtrip(t *testing.T) {
-	payload, _ := buildPlayPayload("mac", "https://host:1443/foo/bar.bin")
+	payload, _ := buildPlayPayload("mac", "https://host:1443/foo/bar.bin", "")
 	if _, ok := parsePlayBinURL(payload); !ok {
 		t.Fatal("parse failed")
 	}

@@ -432,9 +432,11 @@ func buildAckPayloadFor(mac, ackAction, ackMsgid string, data map[string]any) []
 }
 
 // buildPlayPayload returns the MQTT payload and the msgid it embedded.
+// If msgid is empty a fresh unix-ms id is minted; otherwise that id is reused
+// (same message replay — frame skips redo for duplicate msgid).
 // Callers should register the msgid via registerInjectedPlay so the
 // corresponding play_ack can be suppressed from upstream forwarding.
-func buildPlayPayload(mac, imgURL string) ([]byte, string) {
+func buildPlayPayload(mac, imgURL, msgid string) ([]byte, string) {
 	// imgURL is e.g. "https://192.168.1.7:1443/images/abc.bin"
 	// Strip scheme (http:// or https://)
 	rest := imgURL
@@ -453,7 +455,9 @@ func buildPlayPayload(mac, imgURL string) ([]byte, string) {
 	}
 	port := 8080
 	fmt.Sscanf(portStr, "%d", &port)
-	msgid := fmt.Sprintf("%d", time.Now().UnixMilli())
+	if msgid == "" {
+		msgid = fmt.Sprintf("%d", time.Now().UnixMilli())
+	}
 	b, _ := json.Marshal(map[string]any{
 		"action": "play",
 		"msgid":  msgid,

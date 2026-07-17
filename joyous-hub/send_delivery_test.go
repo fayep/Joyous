@@ -59,6 +59,25 @@ func TestBindInkJoyWithoutRegister(t *testing.T) {
 	if got := tr.SendIDForInkJoyMsgid("msg-bridge"); got != "hub-send-id" {
 		t.Fatalf("msgid map: got %q want hub-send-id", got)
 	}
+	if got := tr.InkJoyMsgid("hub-send-id"); got != "msg-bridge" {
+		t.Fatalf("InkJoyMsgid: got %q want msg-bridge", got)
+	}
+	tr.UnbindInkJoy("hub-send-id")
+	if got := tr.InkJoyMsgid("hub-send-id"); got != "" {
+		t.Fatalf("after Unbind InkJoyMsgid=%q", got)
+	}
+}
+
+func TestBuildPlayPayloadReusesMsgid(t *testing.T) {
+	_, a := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "fixed-msgid")
+	_, b := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "fixed-msgid")
+	if a != "fixed-msgid" || b != "fixed-msgid" {
+		t.Fatalf("reuse: got %q %q", a, b)
+	}
+	_, c := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "")
+	if c == "" || c == "fixed-msgid" {
+		t.Fatalf("empty should mint fresh msgid, got %q", c)
+	}
 }
 
 func TestMarkInkJoyDownloading(t *testing.T) {

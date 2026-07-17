@@ -118,6 +118,8 @@ func (t *SendDeliveryTracker) BindInkJoy(sendID, msgid string) {
 			delete(t.inkjoyByMsgID, d.inkjoyMsgID)
 		}
 		d.inkjoyMsgID = msgid
+	} else if old := t.msgidForSendLocked(sendID); old != "" && old != msgid {
+		delete(t.inkjoyByMsgID, old)
 	}
 	// Bridge can bind a msgid for a sendID the hub hasn't (or no longer)
 	// Register()'d — see TestBindInkJoyWithoutRegister. Track it anyway so
@@ -126,18 +128,40 @@ func (t *SendDeliveryTracker) BindInkJoy(sendID, msgid string) {
 	t.inkjoyByMsgID[msgid] = sendID
 }
 
-// UnbindInkJoy removes the current msgid mapping for a pending send (before re-publish).
+// UnbindInkJoy clears the play msgid for a send so the next publish mints a
+// fresh id (e.g. after play_ack interrupted — same msgid would be skipped).
 func (t *SendDeliveryTracker) UnbindInkJoy(sendID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	d, ok := t.byID[sendID]
-	if !ok {
+	if d, ok := t.byID[sendID]; ok {
+		if d.inkjoyMsgID != "" {
+			delete(t.inkjoyByMsgID, d.inkjoyMsgID)
+			d.inkjoyMsgID = ""
+		}
 		return
 	}
-	if d.inkjoyMsgID != "" {
-		delete(t.inkjoyByMsgID, d.inkjoyMsgID)
-		d.inkjoyMsgID = ""
+	if msgid := t.msgidForSendLocked(sendID); msgid != "" {
+		delete(t.inkjoyByMsgID, msgid)
 	}
+}
+
+// InkJoyMsgid returns the play msgid currently bound to sendID, if any.
+func (t *SendDeliveryTracker) InkJoyMsgid(sendID string) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if d, ok := t.byID[sendID]; ok {
+		return d.inkjoyMsgID
+	}
+	return t.msgidForSendLocked(sendID)
+}
+
+func (t *SendDeliveryTracker) msgidForSendLocked(sendID string) string {
+	for msgid, sid := range t.inkjoyByMsgID {
+		if sid == sendID {
+			return msgid
+		}
+	}
+	return ""
 }
 
 // SendIDForInkJoyMsgid returns the hub send id bound to a play msgid.

@@ -69,6 +69,24 @@ func TestInkJoySendRetryCompleteClears(t *testing.T) {
 	}
 }
 
+func TestInkJoySendRetryInterruptUnbindsMsgid(t *testing.T) {
+	h := buildTestHub(t)
+	h.inkjoyRetry = NewInkJoySendRetry(h)
+
+	send := h.sendDelivery.Register("AABBCCDDEEFF", "img1")
+	h.sendDelivery.BindInkJoy(send.ID, "msg-1")
+	h.inkjoyRetry.Track(send.ID, "AABBCCDDEEFF", "img1", "")
+
+	h.inkjoyRetry.OnPlayAck("msg-1", inkjoyAckInterrupted)
+
+	if got := h.sendDelivery.InkJoyMsgid(send.ID); got != "" {
+		t.Fatalf("interrupt should unbind msgid, got %q", got)
+	}
+	if h.inkjoyRetry.Attempts(send.ID) == 0 {
+		t.Fatal("expected retry still pending after interrupt")
+	}
+}
+
 func TestInkJoySendRetryProgressResetsTimeout(t *testing.T) {
 	h := buildTestHub(t)
 	h.inkjoyRetry = NewInkJoySendRetry(h)

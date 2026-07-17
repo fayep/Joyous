@@ -242,6 +242,10 @@ func (r *InkJoySendRetry) onFailure(sendID, msgid, deviceID string) {
 	imageID := entry.imageID
 	attempts := entry.attempts
 	r.mu.Unlock()
+	// Frame aborted this msgid; a same-id replay would be skipped. Mint a new one next publish.
+	if r.hub.sendDelivery != nil {
+		r.hub.sendDelivery.UnbindInkJoy(sendID)
+	}
 	log.Printf("inkjoy send interrupted device=%s image=%s attempt=%d — will retry", devID, imageID, attempts)
 	r.notifySendComplete(protocol.SendCompletePayload{
 		SendID: sendID, DeviceID: devID, Success: true, Detail: "interrupted", Phase: "retrying",
