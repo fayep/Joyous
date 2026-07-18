@@ -701,25 +701,37 @@ func UniqueColors(img image.Image) int {
 //	C B A B C
 //	D C B C D
 func StuckiDither(img image.Image, palette [6][3]float64, opts stuckiOptions) [][]byte {
-	b := img.Bounds()
+	src := asRGBA(img)
+	b := src.Bounds()
 	h, w := b.Dy(), b.Dx()
 
 	buf := make([][]float64, h+4)
 	for y := range h + 4 {
 		buf[y] = make([]float64, (w+4)*3)
 	}
-	for y := range h {
-		for x := range w {
-			r, g, bv, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
-			base := (x + 2) * 3
-			buf[y+2][base] = float64(r >> 8)
-			buf[y+2][base+1] = float64(g >> 8)
-			buf[y+2][base+2] = float64(bv >> 8)
-		}
-	}
 	var lum [][]float64
 	if opts.EdgePreserve > 0 {
-		lum = buildLuminanceGrid(img, h, w)
+		lum = make([][]float64, h)
+		for y := range h {
+			lum[y] = make([]float64, w)
+		}
+	}
+	// One Pix pass: load error buffer (+ optional source luminance for edge preserve).
+	for y := range h {
+		row := src.Pix[src.PixOffset(b.Min.X, b.Min.Y+y):]
+		for x := range w {
+			i := x * 4
+			r := float64(row[i])
+			g := float64(row[i+1])
+			bv := float64(row[i+2])
+			base := (x + 2) * 3
+			buf[y+2][base] = r
+			buf[y+2][base+1] = g
+			buf[y+2][base+2] = bv
+			if lum != nil {
+				lum[y][x] = 0.2126*r + 0.7152*g + 0.0722*bv
+			}
+		}
 	}
 
 	out := make([][]byte, h)
@@ -813,12 +825,15 @@ func stuckiSpreadError(buf [][]float64, lum [][]float64, h, w, by, xc, cx, cy in
 }
 
 func buildLuminanceGrid(img image.Image, h, w int) [][]float64 {
-	b := img.Bounds()
+	src := asRGBA(img)
+	b := src.Bounds()
 	lum := make([][]float64, h)
 	for y := range h {
 		lum[y] = make([]float64, w)
+		row := src.Pix[src.PixOffset(b.Min.X, b.Min.Y+y):]
 		for x := range w {
-			lum[y][x] = pixelLuminance(img.At(b.Min.X+x, b.Min.Y+y))
+			i := x * 4
+			lum[y][x] = pixelLuminanceRGB(row[i], row[i+1], row[i+2])
 		}
 	}
 	return lum
@@ -826,7 +841,19 @@ func buildLuminanceGrid(img image.Image, h, w int) [][]float64 {
 
 func pixelLuminance(c color.Color) float64 {
 	r, g, b, _ := c.RGBA()
-	return 0.2126*float64(r>>8) + 0.7152*float64(g>>8) + 0.0722*float64(b>>8)
+	return pixelLuminanceRGB(uint8(r>>8), uint8(g>>8), uint8(b>>8))
+}
+
+func pixelLuminanceRGB(r, g, b uint8) float64 {
+	return 0.2126*float64(r) + 0.7152*float64(g) + 0.0722*float64(b)
+}
+
+// asRGBA returns img if it is already *image.RGBA; otherwise a drawn copy.
+func asRGBA(img image.Image) *image.RGBA {
+	if rgba, ok := img.(*image.RGBA); ok {
+		return rgba
+	}
+	return imageToRGBA(img)
 }
 
 // stuckiEdgeAttenuation scales error diffusion across an edge. Smooth neighbors
@@ -875,21 +902,37 @@ func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorP
 }
 
 func applyPreDitherNoise(img image.Image, strength float64) *image.RGBA {
-	b := img.Bounds()
+	src := asRGBA(img)
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
 	out := image.NewRGBA(b)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r8, g8, b8, a8 := img.At(x, y).RGBA()
-			w := preDitherGradientWeight(img, x, y)
-			r := float64(r8>>8) + preDitherNoiseSample(x, y, 0)*strength*w
-			g := float64(g8>>8) + preDitherNoiseSample(x, y, 1)*strength*w
-			bl := float64(b8>>8) + preDitherNoiseSample(x, y, 2)*strength*w
-			out.SetRGBA(x, y, color.RGBA{
-				R: uint8(clamp255(r)),
-				G: uint8(clamp255(g)),
-				B: uint8(clamp255(bl)),
-				A: uint8(a8 >> 8),
-			})
+
+	// Luminance once (Pix), then gradient weight is neighbor lookups in that grid.
+	lum := make([]float64, w*h)
+	for y := 0; y < h; y++ {
+		row := src.Pix[src.PixOffset(b.Min.X, b.Min.Y+y):]
+		base := y * w
+		for x := 0; x < w; x++ {
+			i := x * 4
+			lum[base+x] = pixelLuminanceRGB(row[i], row[i+1], row[i+2])
+		}
+	}
+
+	for y := 0; y < h; y++ {
+		srcRow := src.Pix[src.PixOffset(b.Min.X, b.Min.Y+y):]
+		dstRow := out.Pix[out.PixOffset(b.Min.X, b.Min.Y+y):]
+		py := b.Min.Y + y
+		for x := 0; x < w; x++ {
+			px := b.Min.X + x
+			i := x * 4
+			wt := preDitherGradientWeightLum(lum, w, h, x, y)
+			r := float64(srcRow[i]) + preDitherNoiseSample(px, py, 0)*strength*wt
+			g := float64(srcRow[i+1]) + preDitherNoiseSample(px, py, 1)*strength*wt
+			bl := float64(srcRow[i+2]) + preDitherNoiseSample(px, py, 2)*strength*wt
+			dstRow[i] = uint8(clamp255(r))
+			dstRow[i+1] = uint8(clamp255(g))
+			dstRow[i+2] = uint8(clamp255(bl))
+			dstRow[i+3] = srcRow[i+3]
 		}
 	}
 	return out
@@ -898,22 +941,39 @@ func applyPreDitherNoise(img image.Image, strength float64) *image.RGBA {
 // preDitherGradientWeight is 0 on flat regions and sharp edges, peaking on smooth
 // gradients where Stucki banding is most visible (sky, water, soft shadows).
 func preDitherGradientWeight(img image.Image, x, y int) float64 {
+	src := asRGBA(img)
+	b := src.Bounds()
+	// x,y are absolute image coords (same as historical At-based API).
+	lx, ly := x-b.Min.X, y-b.Min.Y
+	w, h := b.Dx(), b.Dy()
+	if lx < 0 || ly < 0 || lx >= w || ly >= h {
+		return 0
+	}
+	lum := make([]float64, w*h)
+	for yy := 0; yy < h; yy++ {
+		row := src.Pix[src.PixOffset(b.Min.X, b.Min.Y+yy):]
+		base := yy * w
+		for xx := 0; xx < w; xx++ {
+			i := xx * 4
+			lum[base+xx] = pixelLuminanceRGB(row[i], row[i+1], row[i+2])
+		}
+	}
+	return preDitherGradientWeightLum(lum, w, h, lx, ly)
+}
+
+func preDitherGradientWeightLum(lum []float64, w, h, x, y int) float64 {
 	const flatCutoff = 0.75
 	const fullGrad = 10.0
 	const edgeCutoff = 28.0
 
-	lum := func(px, py int) float64 {
-		return pixelLuminance(img.At(px, py))
-	}
-	c := lum(x, y)
-	b := img.Bounds()
+	c := lum[y*w+x]
 	var spread float64
 	for _, o := range [][2]int{{0, -1}, {0, 1}, {-1, 0}, {1, 0}} {
 		nx, ny := x+o[0], y+o[1]
-		if nx < b.Min.X || nx >= b.Max.X || ny < b.Min.Y || ny >= b.Max.Y {
+		if nx < 0 || nx >= w || ny < 0 || ny >= h {
 			continue
 		}
-		d := math.Abs(lum(nx, ny) - c)
+		d := math.Abs(lum[ny*w+nx] - c)
 		if d > spread {
 			spread = d
 		}
@@ -921,14 +981,14 @@ func preDitherGradientWeight(img image.Image, x, y int) float64 {
 	if spread <= flatCutoff || spread >= edgeCutoff {
 		return 0
 	}
-	w := (spread - flatCutoff) / (fullGrad - flatCutoff)
-	if w > 1 {
+	wt := (spread - flatCutoff) / (fullGrad - flatCutoff)
+	if wt > 1 {
 		return 1
 	}
-	if w < 0 {
+	if wt < 0 {
 		return 0
 	}
-	return w
+	return wt
 }
 
 func preDitherNoiseSample(x, y, c int) float64 {
