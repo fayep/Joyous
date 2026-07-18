@@ -90,16 +90,12 @@ func joyousMQTTNoisy(action string) bool {
 	return false
 }
 
-func inkjoyFrameMQTTNoisy(action string) bool {
-	switch action {
-	case "login", "heart", "login_ack", "heart_ack":
-		return true
-	}
-	return false
-}
-
 func (b *MQTTLogBuffer) push(list *[]MQTTLogEntry, entry MQTTLogEntry) {
-	b.pushWithEviction(list, entry, inkjoyFrameMQTTNoisy)
+	// Plain FIFO — the "hide login/heart noise" toggle already exists
+	// client-side for display filtering. Evicting noisy entries first here
+	// too meant they got silently dropped from the buffer regardless of
+	// that toggle, well before the user ever looked.
+	b.pushWithEviction(list, entry, nil)
 }
 
 func (b *MQTTLogBuffer) pushWithEviction(list *[]MQTTLogEntry, entry MQTTLogEntry, noisyFn func(string) bool) {

@@ -40,21 +40,27 @@ func TestMQTTLogSnapshotSides(t *testing.T) {
 	}
 }
 
-func TestMQTTLogBufferEvictsNoisyBeforePlay(t *testing.T) {
+func TestMQTTLogBufferFrameTrafficIsPlainFIFO(t *testing.T) {
+	// AddLocal/AddUpstream (frame↔hub traffic) must NOT preferentially evict
+	// login/heart — that used to happen unconditionally server-side,
+	// independent of the UI's "hide login/heart noise" toggle (which only
+	// filters what's already in the buffer for display). That meant login/
+	// heart got silently dropped from the buffer regardless of the toggle,
+	// well before a user checked. Plain FIFO here; the toggle is the only
+	// noise filter now.
 	b := NewMQTTLogBuffer(3)
 	b.AddLocal("bridge→frame", "/inkjoyap/AA", []byte(`{"action":"play"}`), "")
 	for i := 0; i < 5; i++ {
 		b.AddLocal("bridge→frame", "/inkjoyap/AA", []byte(`{"action":"heart"}`), "")
 	}
 	local, _ := b.Snapshot()
-	hasPlay := false
-	for _, e := range local {
-		if e.Action == "play" {
-			hasPlay = true
-		}
+	if len(local) != 3 {
+		t.Fatalf("len=%d want 3", len(local))
 	}
-	if !hasPlay {
-		t.Fatalf("play evicted by heart noise: %+v", local)
+	for _, e := range local {
+		if e.Action != "heart" {
+			t.Fatalf("expected only the 3 most recent (heart) entries, got: %+v", local)
+		}
 	}
 }
 

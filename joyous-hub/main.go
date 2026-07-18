@@ -120,7 +120,7 @@ func main() {
 	}
 
 	bridgeCoord := bridgehub.NewCoordinator(broker, devices)
-	joyousMQTTLog := NewMQTTLogBuffer(20)
+	joyousMQTTLog := NewMQTTLogBuffer(200)
 	_ = broker.AddHook(&bridgeHook{coord: bridgeCoord, log: joyousMQTTLog}, nil)
 
 	sendDelivery := NewSendDeliveryTracker()

@@ -92,7 +92,7 @@ func main() {
 		inkjoybridge.ParseAllowList(*intercept),
 	)
 	otaCapture := NewOTACapture(resolveOTADir(*otaDir, *dataDir))
-	mqttLog := NewMQTTLogBuffer(20)
+	mqttLog := NewMQTTLogBuffer(200)
 	sendDelivery := NewSendDeliveryTracker()
 
 	relayCacheDir := strings.TrimSpace(*hubDataDir)
