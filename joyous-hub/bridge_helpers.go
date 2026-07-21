@@ -16,6 +16,18 @@ func buildImageRefreshPayload(mac string) []byte {
 	return buildActionPayloadFor(mac, "image_refresh", nil)
 }
 
+// buildOTAPayload builds the "ota" push the real InkJoy cloud normally sends
+// (see project memory: {"action":"ota","data":{"host","port","path"}}), but
+// pointed at an arbitrary host/port/path so a locally-hosted, hand-patched
+// firmware image can be pushed through our own broker instead of the cloud's.
+func buildOTAPayload(mac, host string, port int, path string) []byte {
+	return buildActionPayloadFor(mac, "ota", map[string]any{
+		"host": host,
+		"port": port,
+		"path": path,
+	})
+}
+
 func buildWifiSleepPayloadFromBody(mac string, body json.RawMessage) []byte {
 	var req struct {
 		BeginTime string `json:"beginTime"`
