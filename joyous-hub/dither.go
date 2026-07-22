@@ -75,6 +75,11 @@ const inkjoyPortraitPreDitherNoise = 2.0
 // edges (lightning vs cloud, tonal steps in gray clouds). 0 = no attenuation.
 const stuckiEdgePreserve = 0.72
 
+// stuckiThresholdModStrength is Zhou–Fang-style threshold modulation in RGB units
+// at full midtone/ambiguity weight. Breaks long mono-ink runs (islands) without
+// changing the Stucki kernel or reducing spatial resolution.
+const stuckiThresholdModStrength = 12.0
+
 const (
 	stuckiEdgeSoft = 3.0  // below: full error diffusion
 	stuckiEdgeHard = 22.0 // above: minimum transfer across the edge
@@ -87,6 +92,7 @@ type stuckiOptions struct {
 	PreDither          bool
 	PreDitherStrength  float64
 	DynamicRange       bool
+	ThresholdMod       float64 // 0 = off; else Zhou–Fang midtone threshold jitter
 }
 
 func stuckiOptionsSamsung(pipe ColorPipeline) stuckiOptions {
@@ -95,11 +101,12 @@ func stuckiOptionsSamsung(pipe ColorPipeline) stuckiOptions {
 		EdgePreserve: stuckiEdgePreserve,
 		PreDither:    true,
 		DynamicRange: pipe.LABDynamicRangeEnabled,
+		ThresholdMod: stuckiThresholdModStrength,
 	}
 }
 
 // stuckiOptionsInkJoy matches Samsung's Stucki tuning (serpentine, edge preserve,
-// always-on pre-dither). Experiment: does that alone shrink InkJoy midtone islands?
+// always-on pre-dither, threshold modulation).
 func stuckiOptionsInkJoy(pipe ColorPipeline) stuckiOptions {
 	return stuckiOptionsSamsung(pipe)
 }
@@ -739,36 +746,26 @@ func StuckiDither(img image.Image, palette [6][3]float64, opts stuckiOptions) []
 		out[y] = make([]byte, w)
 		by := y + 2
 		rtl := opts.Serpentine && y&1 == 1
-		if rtl {
-			for x := w - 1; x >= 0; x-- {
-				bx := (x + 2) * 3
-				pr := clamp255(buf[by][bx])
-				pg := clamp255(buf[by][bx+1])
-				pb := clamp255(buf[by][bx+2])
-
-				idx := nearestColor([3]float64{pr, pg, pb}, palette)
-				out[y][x] = byte(idx)
-
-				er := pr - palette[idx][0]
-				eg := pg - palette[idx][1]
-				eb := pb - palette[idx][2]
-				stuckiSpreadError(buf, lum, h, w, by, x+2, x, y, er, eg, eb, true, opts.EdgePreserve)
-			}
-			continue
-		}
-		for x := range w {
+		step := func(x int) {
 			bx := (x + 2) * 3
 			pr := clamp255(buf[by][bx])
 			pg := clamp255(buf[by][bx+1])
 			pb := clamp255(buf[by][bx+2])
-
-			idx := nearestColor([3]float64{pr, pg, pb}, palette)
+			rgb := [3]float64{pr, pg, pb}
+			idx := nearestColorThresholdMod(rgb, palette, x, y, opts.ThresholdMod)
 			out[y][x] = byte(idx)
-
-			er := pr - palette[idx][0]
-			eg := pg - palette[idx][1]
-			eb := pb - palette[idx][2]
-			stuckiSpreadError(buf, lum, h, w, by, x+2, x, y, er, eg, eb, false, opts.EdgePreserve)
+			stuckiSpreadError(buf, lum, h, w, by, x+2, x, y,
+				pr-palette[idx][0], pg-palette[idx][1], pb-palette[idx][2],
+				rtl, opts.EdgePreserve)
+		}
+		if rtl {
+			for x := w - 1; x >= 0; x-- {
+				step(x)
+			}
+			continue
+		}
+		for x := range w {
+			step(x)
 		}
 	}
 	return out
@@ -1384,6 +1381,81 @@ func nearestColor(rgb [3]float64, palette [6][3]float64) int {
 		}
 	}
 	return best
+}
+
+// nearestColorThresholdMod is a multi-level Zhou–Fang threshold modulation:
+// choose between the two nearest inks by comparing the projection along their
+// RGB axis to a midtone-jittered threshold (0.5 ± noise). Diffusion error still
+// uses the unmodulated sample (caller responsibility).
+func nearestColorThresholdMod(rgb [3]float64, palette [6][3]float64, x, y int, strength float64) int {
+	if strength <= 0 {
+		return nearestColor(rgb, palette)
+	}
+	best, second := 0, -1
+	bestD, secondD := math.MaxFloat64, math.MaxFloat64
+	for i, c := range palette {
+		dr := rgb[0] - c[0]
+		dg := rgb[1] - c[1]
+		db := rgb[2] - c[2]
+		d := dr*dr + dg*dg + db*db
+		if d < bestD {
+			second, secondD = best, bestD
+			best, bestD = i, d
+			continue
+		}
+		if d < secondD {
+			second, secondD = i, d
+		}
+	}
+	if second < 0 || secondD >= math.MaxFloat64/2 {
+		return best
+	}
+	lum := 0.2126*rgb[0] + 0.7152*rgb[1] + 0.0722*rgb[2]
+	mid := stuckiMidtoneModWeight(lum)
+	if mid < 0.04 {
+		return best
+	}
+	b := palette[best]
+	s := palette[second]
+	vx, vy, vz := s[0]-b[0], s[1]-b[1], s[2]-b[2]
+	len2 := vx*vx + vy*vy + vz*vz
+	if len2 < 1 {
+		return best
+	}
+	// t = 0 at best ink, 1 at second-nearest.
+	t := ((rgb[0]-b[0])*vx + (rgb[1]-b[1])*vy + (rgb[2]-b[2])*vz) / len2
+	// strength is in percent-of-span units (12 → ±0.24 around 0.5 at full mid weight).
+	amp := (strength / 50.0) * mid
+	thr := 0.5 + preDitherNoiseSample(x, y, 3)*amp
+	if t < thr {
+		return best
+	}
+	return second
+}
+
+// stuckiMidtoneModWeight peaks in the midtone band where mono-ink islands form;
+// near black/white the decision is already stable and modulation would only add grain.
+func stuckiMidtoneModWeight(lum float64) float64 {
+	// Smooth bump: 0 at L≤20 / L≥235, ~1 around L=110–150.
+	if lum <= 20 || lum >= 235 {
+		return 0
+	}
+	var t float64
+	switch {
+	case lum < 110:
+		t = (lum - 20) / 90
+	case lum > 150:
+		t = (235 - lum) / 85
+	default:
+		return 1
+	}
+	if t < 0 {
+		return 0
+	}
+	if t > 1 {
+		return 1
+	}
+	return t * t * (3 - 2*t)
 }
 
 func clamp255(v float64) float64 {

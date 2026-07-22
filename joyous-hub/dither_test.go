@@ -476,10 +476,92 @@ func TestStuckiOptionsInkJoyMatchesSamsung(t *testing.T) {
 	if !ij.Serpentine || !ij.PreDither || ij.EdgePreserve <= 0 {
 		t.Fatalf("expected Samsung-style Stucki tuning, got %+v", ij)
 	}
+	if ij.ThresholdMod <= 0 {
+		t.Fatal("expected threshold modulation enabled by default")
+	}
 	dr := stuckiOptionsInkJoy(ColorPipeline{LABDynamicRangeEnabled: true})
 	if !dr.DynamicRange || !dr.Serpentine || !dr.PreDither {
 		t.Fatalf("dynamic range should ride on Samsung-style base, got %+v", dr)
 	}
+}
+
+func TestStuckiMidtoneModWeight(t *testing.T) {
+	if stuckiMidtoneModWeight(10) != 0 || stuckiMidtoneModWeight(240) != 0 {
+		t.Fatal("extremes should be zero")
+	}
+	if stuckiMidtoneModWeight(130) != 1 {
+		t.Fatalf("mid peak = %v, want 1", stuckiMidtoneModWeight(130))
+	}
+	if stuckiMidtoneModWeight(60) <= 0 || stuckiMidtoneModWeight(60) >= 1 {
+		t.Fatalf("ramp weight = %v", stuckiMidtoneModWeight(60))
+	}
+}
+
+func TestStuckiThresholdModChangesMidtoneGradient(t *testing.T) {
+	const w, h = 64, 32
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			t := float64(x) / float64(w-1)
+			img.Set(x, y, color.RGBA{
+				R: uint8(190 + 40*t),
+				G: uint8(140 + 30*t),
+				B: uint8(120 + 25*t),
+				A: 255,
+			})
+		}
+	}
+	off := stuckiOptions{ThresholdMod: 0}
+	on := stuckiOptions{ThresholdMod: stuckiThresholdModStrength}
+	plain := StuckiDither(img, PaletteInkJoyDisplay, off)
+	mod := StuckiDither(img, PaletteInkJoyDisplay, on)
+	if bytesEqualGrid(plain, mod) {
+		t.Fatal("threshold modulation should change midtone Stucki output")
+	}
+	// Sanity: still uses more than one ink on a peach gradient.
+	seen := map[byte]bool{}
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			seen[mod[y][x]] = true
+		}
+	}
+	if len(seen) < 2 {
+		t.Fatalf("modulated dither collapsed to one ink: %v", seen)
+	}
+}
+
+func TestNearestColorThresholdModCanDiffer(t *testing.T) {
+	// Mid peach — nearest is stable; modulation should flip some (x,y) samples.
+	rgb := [3]float64{210, 160, 140}
+	base := nearestColor(rgb, PaletteInkJoyDisplay)
+	flipped := 0
+	for y := 0; y < 32; y++ {
+		for x := 0; x < 32; x++ {
+			if nearestColorThresholdMod(rgb, PaletteInkJoyDisplay, x, y, stuckiThresholdModStrength) != base {
+				flipped++
+			}
+		}
+	}
+	if flipped == 0 {
+		t.Fatal("expected some threshold-mod flips on midtone peach")
+	}
+}
+
+func bytesEqualGrid(a, b [][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for y := range a {
+		if len(a[y]) != len(b[y]) {
+			return false
+		}
+		for x := range a[y] {
+			if a[y][x] != b[y][x] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func TestStuckiPreservesLuminanceStep(t *testing.T) {
