@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -150,7 +149,7 @@ func (h *Hub) handleSamsungCalibration(w http.ResponseWriter, r *http.Request, f
 	}
 	frameID = h.resolveSamsungFrameID(frameID)
 	dev := h.samsungDeviceByFrameID(frameID)
-	if dev == nil || dev.IP == "" {
+	if dev == nil {
 		http.Error(w, "frame not registered on hub", http.StatusNotFound)
 		return
 	}
@@ -163,6 +162,10 @@ func (h *Hub) handleSamsungCalibration(w http.ResponseWriter, r *http.Request, f
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if err := h.requireSamsungBridge(); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	var sendID string
 	if h.sendDelivery != nil {
 		if etag, _, ok := h.samsung.PNGInfo(frameID); ok {
@@ -172,19 +175,15 @@ func (h *Hub) handleSamsungCalibration(w http.ResponseWriter, r *http.Request, f
 			h.publishSendEvent(sendID)
 		}
 	}
-	if err := h.pushSamsungFrame(frameID, dev); err != nil {
+	if err := h.publishSamsungPushCmd(dev.ID, sendID); err != nil {
 		if sendID != "" {
 			h.sendDelivery.Fail(sendID)
 			h.publishSendEvent(sendID)
 		}
-		code := http.StatusBadGateway
-		if strings.Contains(err.Error(), "frame did not wake") {
-			code = http.StatusGatewayTimeout
-		}
-		http.Error(w, err.Error(), code)
+		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	out := map[string]any{"ok": true}
+	out := map[string]any{"ok": true, "delegated": "samsung-bridge"}
 	if sendID != "" {
 		out["send_id"] = sendID
 	}

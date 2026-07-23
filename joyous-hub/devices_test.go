@@ -322,9 +322,49 @@ func TestNoteSamsungDeepSlept(t *testing.T) {
 	if !d.DeepSleepActive {
 		t.Fatal("expected deep_sleep_active")
 	}
+	if d.IP != "" {
+		t.Fatalf("deep sleep should clear IP, got %q", d.IP)
+	}
 	ApplySamsungConnected(d)
 	if d.Connected {
 		t.Fatal("deep sleep should not mark frame active")
+	}
+}
+
+func TestNoteSamsungSleptKeepDeepSticky(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	if !reg.SetSamsungDeepSleep("192.168.1.108", true) {
+		t.Fatal("set deep sleep")
+	}
+	if !reg.NoteSamsungSleptKeepDeepSticky("192.168.1.108") {
+		t.Fatal("expected note to succeed")
+	}
+	got := reg.FindSamsungByIP("192.168.1.108")
+	if got == nil {
+		t.Fatal("missing device")
+	}
+	if got.LastAction != "mdc_sleep" {
+		t.Fatalf("LastAction=%q want mdc_sleep", got.LastAction)
+	}
+	if !got.DeepSleepActive {
+		t.Fatal("USB network sleep must not clear DeepSleepActive sticky")
+	}
+	if got.IP != "192.168.1.108" {
+		t.Fatalf("IP=%q want kept", got.IP)
+	}
+}
+
+func TestNoteSamsungNetworkSleepKeepsIP(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	reg.NoteSamsungSlept("192.168.1.108", false)
+	d, _ := reg.Get("samsung:192.168.1.108")
+	if d.IP != "192.168.1.108" {
+		t.Fatalf("network sleep should keep IP, got %q", d.IP)
+	}
+	if d.Connected {
+		t.Fatal("frame should be asleep after network sleep")
 	}
 }
 
@@ -332,14 +372,46 @@ func TestSetSamsungDeepSleepClearsLastAction(t *testing.T) {
 	reg := NewDeviceRegistry(t.TempDir())
 	reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
 	reg.NoteSamsungSlept("192.168.1.108", true)
-	if !reg.SetSamsungDeepSleep("192.168.1.108", false) {
-		t.Fatal("expected SetSamsungDeepSleep to succeed")
-	}
 	d, _ := reg.Get("samsung:192.168.1.108")
+	if !reg.SetSamsungDeepSleepByID(d.ID, false) {
+		t.Fatal("expected SetSamsungDeepSleepByID to succeed after IP cleared")
+	}
+	d, _ = reg.Get(d.ID)
 	if d.DeepSleepActive {
 		t.Fatal("expected deep_sleep_active cleared")
 	}
 	if d.LastAction != "mdc_sleep" {
 		t.Fatalf("LastAction: got %q want mdc_sleep", d.LastAction)
+	}
+}
+
+func TestSamsungLoadKeepsIPScrubsAwakeProof(t *testing.T) {
+	dir := t.TempDir()
+	reg := NewDeviceRegistry(dir)
+	d := reg.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	reg.TouchSamsung("192.168.1.108", "mdc_battery")
+	if err := reg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reg2 := NewDeviceRegistry(dir)
+	if err := reg2.Load(); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reg2.Get(d.ID)
+	if !ok {
+		t.Fatal("missing device after load")
+	}
+	if got.IP != "192.168.1.108" {
+		t.Fatalf("Load should keep last IP for wake, got %q", got.IP)
+	}
+	if got.LastIP != "192.168.1.108" {
+		t.Fatalf("Load should seed LastIP, got %q", got.LastIP)
+	}
+	if samsungActionProvesAwake(got.LastAction) {
+		t.Fatalf("Load should scrub awake LastAction, got %q", got.LastAction)
+	}
+	ApplySamsungConnected(got)
+	if got.Connected {
+		t.Fatal("loaded Samsung must not appear connected from scrubbed LastAction")
 	}
 }

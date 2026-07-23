@@ -14,6 +14,9 @@ func TestLongRunningBridgeCmd(t *testing.T) {
 	if !longRunningBridgeCmd(protocol.CmdSendImage) {
 		t.Fatal("send.image should be long-running")
 	}
+	if !longRunningBridgeCmd(protocol.CmdSamsungPush) {
+		t.Fatal("samsung.push should be long-running")
+	}
 	if longRunningBridgeCmd(protocol.CmdRefresh) {
 		t.Fatal("display.refresh should stay on MQTT thread")
 	}

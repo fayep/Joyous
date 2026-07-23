@@ -32,6 +32,10 @@ type Device struct {
 	Name       string     `json:"name,omitempty"`
 	MAC        string     `json:"mac,omitempty"`
 	IP         string     `json:"ip,omitempty"`
+	// LastIP is the most recent Samsung LAN address used for WoL/magic wake.
+	// Kept across network sleep, deep-sleep IP clear, and process Load — clearing
+	// live IP must not erase the only address wake can target.
+	LastIP     string     `json:"last_ip,omitempty"`
 	USN        string     `json:"usn,omitempty"`
 	Location   string     `json:"location,omitempty"`
 	Firmware   string     `json:"firmware,omitempty"`
@@ -151,8 +155,13 @@ func samsungActionProvesAwake(action string) bool {
 // (InkJoy unchanged). Rule of thumb: a successful push means the frame was on; if
 // the hub did not sleep it, treat it as on until NoteSamsungSlept (including the
 // idle-sleep mark scheduled from the frame's MDC sleep-time setting).
+// No live IP means not online — DHCP can move the frame after deep sleep / restart.
 func ApplySamsungConnected(d *Device) {
 	if d == nil || d.Type != DeviceTypeSamsung {
+		return
+	}
+	if d.IP == "" {
+		d.Connected = false
 		return
 	}
 	if d.LastAction == "mdc_sleep" || d.LastAction == "mdc_deep_sleep" {
@@ -325,14 +334,16 @@ func (r *DeviceRegistry) UpsertSamsung(found SSDPDevice) *Device {
 	if d == nil {
 		id := samsungProvisionalRegistryID(found.IP)
 		d = &Device{
-			ID:   id,
-			Type: DeviceTypeSamsung,
-			IP:   found.IP,
-			Name: found.DisplayName(),
+			ID:     id,
+			Type:   DeviceTypeSamsung,
+			IP:     found.IP,
+			LastIP: found.IP,
+			Name:   found.DisplayName(),
 		}
 		r.m[id] = d
 	}
 	d.IP = found.IP
+	d.LastIP = found.IP
 	d.USN = found.USN
 	d.Location = found.Location
 	applySamsungDisplayProfile(d, found.DisplayProfile())
@@ -369,6 +380,7 @@ func (r *DeviceRegistry) UpdateSamsungIP(id, ip string) bool {
 		return false
 	}
 	d.IP = ip
+	d.LastIP = ip
 	return true
 }
 
@@ -434,6 +446,15 @@ func (r *DeviceRegistry) MigrateSamsungToMAC(oldID, mac string) *Device {
 	if merged.IP == "" {
 		merged.IP = old.IP
 	}
+	if merged.LastIP == "" {
+		merged.LastIP = old.LastIP
+		if merged.LastIP == "" {
+			merged.LastIP = old.IP
+		}
+	}
+	if merged.IP != "" {
+		merged.LastIP = merged.IP
+	}
 	if merged.Name == "" {
 		merged.Name = old.Name
 	}
@@ -485,7 +506,20 @@ func (r *DeviceRegistry) SetMDCMAC(id, mac string) bool {
 
 // NoteSamsungSlept records a successful sleep command without marking the frame awake.
 // deep=true means overnight deep sleep (network standby off; button wake required).
+// Network sleep keeps the IP (lease usually stable for hours). Deep sleep clears IP —
+// the frame may get a new address when it returns to the LAN.
 func (r *DeviceRegistry) NoteSamsungSlept(ip string, deep bool) bool {
+	return r.noteSamsungSlept(ip, deep, !deep)
+}
+
+// NoteSamsungSleptKeepDeepSticky is network sleep on the frame while leaving
+// DeepSleepActive unchanged (USB: deep-sleep setting still applies later on battery;
+// only MDC network standby was forced on).
+func (r *DeviceRegistry) NoteSamsungSleptKeepDeepSticky(ip string) bool {
+	return r.noteSamsungSlept(ip, false, false)
+}
+
+func (r *DeviceRegistry) noteSamsungSlept(ip string, deep, clearDeepSticky bool) bool {
 	if ip == "" {
 		return false
 	}
@@ -498,9 +532,15 @@ func (r *DeviceRegistry) NoteSamsungSlept(ip string, deep bool) bool {
 	if deep {
 		d.LastAction = "mdc_deep_sleep"
 		d.DeepSleepActive = true
+		if d.IP != "" {
+			d.LastIP = d.IP
+		}
+		d.IP = ""
 	} else {
 		d.LastAction = "mdc_sleep"
-		d.DeepSleepActive = false
+		if clearDeepSticky {
+			d.DeepSleepActive = false
+		}
 	}
 	ApplySamsungConnected(d)
 	return true
@@ -517,6 +557,24 @@ func (r *DeviceRegistry) SetSamsungDeepSleep(ip string, active bool) bool {
 	if d == nil {
 		return false
 	}
+	return setSamsungDeepSleepLocked(d, active)
+}
+
+// SetSamsungDeepSleepByID updates deep-sleep flags when the frame IP may already be cleared.
+func (r *DeviceRegistry) SetSamsungDeepSleepByID(id string, active bool) bool {
+	if id == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok || d.Type != DeviceTypeSamsung {
+		return false
+	}
+	return setSamsungDeepSleepLocked(d, active)
+}
+
+func setSamsungDeepSleepLocked(d *Device, active bool) bool {
 	d.DeepSleepActive = active
 	if !active && d.LastAction == "mdc_deep_sleep" {
 		d.LastAction = "mdc_sleep"
@@ -648,6 +706,16 @@ func (r *DeviceRegistry) Load() error {
 	for _, d := range devs {
 		d.Connected = false
 		migrateDevice(d)
+		if d.Type == DeviceTypeSamsung {
+			// Scrub awake proof so the UI does not show phantom "active". Keep IP and
+			// LastIP: network-sleep wake needs an address for WoL/magic packet.
+			if samsungActionProvesAwake(d.LastAction) {
+				d.LastAction = ""
+			}
+			if d.LastIP == "" && d.IP != "" {
+				d.LastIP = d.IP
+			}
+		}
 		r.m[d.ID] = d
 	}
 	return nil

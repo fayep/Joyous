@@ -70,9 +70,26 @@ func (h *samsungBridgeHTTPHandler) ServeUIHTTP(method, path string, _ map[string
 	switch path {
 	case "/content-transfer-progress":
 		return h.serveContentTransferProgress(method, body)
+	case "/api/samsung/logs":
+		return h.serveSamsungLogs(method)
 	default:
 		return http.StatusNotFound, "text/plain", nil, []byte("not found")
 	}
+}
+
+func (h *samsungBridgeHTTPHandler) serveSamsungLogs(method string) (int, string, map[string]string, []byte) {
+	if method != http.MethodGet {
+		return http.StatusMethodNotAllowed, "text/plain", nil, []byte("method not allowed")
+	}
+	ents := samsungHandshakeLog.Snapshot()
+	if ents == nil {
+		ents = []SamsungLogEntry{}
+	}
+	b, err := json.Marshal(map[string]any{"entries": ents})
+	if err != nil {
+		return http.StatusInternalServerError, "text/plain", nil, []byte(err.Error())
+	}
+	return http.StatusOK, "application/json", nil, b
 }
 
 // serveContentTransferProgress acks the frame's transfer-progress callback so it completes

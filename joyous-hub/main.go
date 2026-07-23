@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log"
 	"net"
@@ -178,6 +179,33 @@ func main() {
 			}
 		}
 		hub.publishSendEvent(body.SendID)
+	})
+	bridgeCoord.SetEventHandler(func(bridgeID string, ev protocol.EventPayload) {
+		if ev.Name != protocol.EventNotify {
+			return
+		}
+		var n protocol.NotifyBody
+		if err := json.Unmarshal(ev.Body, &n); err != nil || n.Message == "" {
+			return
+		}
+		data := map[string]any{
+			"message":      n.Message,
+			"bridge_id":    bridgeID,
+			"auto_hide_ms": n.AutoHideMs,
+		}
+		if n.ID != "" {
+			data["id"] = n.ID
+		}
+		if n.Level != "" {
+			data["level"] = n.Level
+		}
+		if n.DeviceID != "" {
+			data["device_id"] = n.DeviceID
+		}
+		if n.Closable != nil {
+			data["closable"] = *n.Closable
+		}
+		hub.events.Publish(BroadcastSessionID, "notify", data)
 	})
 	bridgeCoord.SetBridgesChangedHandler(func() {
 		hub.events.Publish(BroadcastSessionID, "bridges", bridgeCoord.ListBridgeStatus())

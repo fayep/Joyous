@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+func TestIsHubSideCacheClientIP(t *testing.T) {
+	h := &Hub{hubIP: "192.168.51.7", serverAddr: "192.168.51.7:18080"}
+	if !h.isHubSideCacheClientIP("127.0.0.1") || !h.isHubSideCacheClientIP("192.168.51.7") {
+		t.Fatal("expected hub/loopback to be hub-side")
+	}
+	if h.isHubSideCacheClientIP("192.168.50.221") {
+		t.Fatal("frame IP must not be treated as hub-side")
+	}
+}
+
 func TestOutboundLocalIPForSameSubnet(t *testing.T) {
 	ip := outboundLocalIPFor("192.168.1.108")
 	if ip == nil {

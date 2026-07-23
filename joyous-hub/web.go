@@ -61,6 +61,21 @@ func (h *Hub) handleMQTTLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleSamsungLogs serves GET /api/samsung/logs — bridge discover/MDC/WoL ring buffer.
+// Proxies to samsung-bridge when online (that process owns LAN probes). Photos stay on hub HTTP.
+func (h *Hub) handleSamsungLogs(w http.ResponseWriter, r *http.Request) {
+	if h.bridgeCoord != nil && h.bridgeCoord.BridgeOnline(string(DeviceTypeSamsung)) {
+		h.proxyBridgeHTTP(w, r, string(DeviceTypeSamsung), "/api/samsung/logs")
+		return
+	}
+	ents := samsungHandshakeLog.Snapshot()
+	if ents == nil {
+		ents = []SamsungLogEntry{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"entries": ents})
+}
+
 // handleDevices serves GET /api/devices.
 func (h *Hub) handleDevices(w http.ResponseWriter, r *http.Request) {
 	devs := h.devices.List()
@@ -740,6 +755,11 @@ const indexHTML = `<!DOCTYPE html>
   .mqtt-entry .topic{font-family:monospace;font-size:.72rem;color:#666;word-break:break-all;margin-bottom:.25rem}
   .mqtt-entry pre{margin:0;white-space:pre-wrap;word-break:break-word;font-size:.72rem;line-height:1.35;background:#fff;border:1px solid #eee;border-radius:4px;padding:.4rem .5rem;user-select:text;-webkit-user-select:text;cursor:text}
   .mqtt-entry.clampable:not(.expanded) pre{display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden}
+  .samsung-log{max-height:40vh;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:.35rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.75rem}
+  .samsung-log-entry{border:1px solid #e0e0e0;border-radius:4px;padding:.35rem .55rem;background:#fafafa;word-break:break-word}
+  .samsung-log-entry .meta{color:#888;margin-right:.5rem}
+  .samsung-log-entry .phase{font-weight:600;color:#1a1a2e;margin-right:.4rem}
+  .samsung-log-entry .peer{color:#3949ab;margin-right:.4rem}
   .mqtt-expand-hint{font-size:.68rem;color:#888;margin-top:.2rem}
   .mqtt-copy{margin-left:auto;font-size:.68rem;padding:2px 8px;border:1px solid #ccc;border-radius:4px;background:#fff;cursor:pointer;color:#333}
   .mqtt-copy:hover{background:#f0f0f0}
@@ -1070,7 +1090,7 @@ const indexHTML = `<!DOCTYPE html>
           </div>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">With <strong>Sleep after send</strong> on, the usual cycle is wake → deliver image → sleep (after delay). With it off, a successful send means the frame is <strong>active</strong>; the hub reads the frame’s idle sleep setting and marks it asleep after that many minutes (each new send resets the countdown). Always-on leaves it active. WiFi MAC required for remote wake. Moon/power are for manual override only.</p>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">Set inactive begin and end to the <strong>same time</strong> (e.g. 00:00–00:00) to disable hub-managed network sleep — the frame keeps its current deep sleep or network standby mode.</p>
-          <p style="font-size:.8rem;color:#888;margin:.75rem 0 0"><strong>Overnight deep sleep:</strong> at inactive begin the hub wakes the frame, turns off network standby, and sleeps it (lower battery drain). A send during inactive hours needs a <strong>3s power-button wake</strong> and returns to deep sleep after; outside those hours the hub restores network standby for remote wake.</p>
+          <p style="font-size:.8rem;color:#888;margin:.75rem 0 0"><strong>Overnight deep sleep:</strong> at inactive begin the hub wakes the frame, turns off network standby, and sleeps it (lower battery drain). Skipped while the frame reports <strong>USB</strong> power — network sleep only, so remote wake still works. A send during inactive hours on battery needs a <strong>3s power-button wake</strong> and returns to deep sleep after; outside those hours the hub restores network standby for remote wake.</p>
           <p style="font-size:.8rem;color:#888;margin:.5rem 0 0"><strong>Daily refresh:</strong> the frame pre-refreshes a few minutes before the scheduled time, then refreshes at inactive end. While it is awake for that cycle, the hub tries to restore network standby from <em>10 minutes before</em> inactive end through inactive end (e.g. 8:50–9:00). Sync daily refresh to <em>inactive end</em>.</p>
         </div>
         <div class="card" style="border:1px solid #f5c6cb">
@@ -1079,6 +1099,11 @@ const indexHTML = `<!DOCTYPE html>
           <span style="margin-left:.75rem;font-size:.85rem;color:#888">Does not affect the display itself.</span>
         </div>
       </div>
+    </div>
+    <div class="card" style="margin-top:1.5rem">
+      <div class="section-label" style="margin-top:0">Handshake log</div>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .5rem">Live discover / reachability / MDC / WoL lines from the <strong>samsung-bridge</strong> (LAN probes), oldest → newest. Frame photo pulls stay on the hub HTTP cache and are not listed here.</p>
+      <div id="samsung-handshake-log" class="samsung-log"><p class="mqtt-empty">No messages yet.</p></div>
     </div>
   </div>
 </main>
@@ -1235,12 +1260,13 @@ function showTab(name,btn){
   stopTabRefresh();
   if(name==='inkjoy'){ loadInkjoyBridgeFrame(); }
   else if(name==='nixplay'){ loadNixplayBridgeFrame(); }
-  else if(name==='samsung') startTabRefresh(60000, refreshSamsungTab);
+  else if(name==='samsung'){ startTabRefresh(60000, refreshSamsungTab); startSamsungLogPoll(); }
   else if(name==='album') loadImages();
   else if(name==='overlays') loadOverlaysTab();
   else if(name==='color') loadColorTab();
   if(name==='mqtt') startMQTTLogPoll();
   else stopMQTTLogPoll();
+  if(name!=='samsung') stopSamsungLogPoll();
 }
 
 let mqttLogTimer=null;
@@ -1429,6 +1455,41 @@ async function loadMQTTLogs(){
     const data=await r.json();
     updateMQTTColumn('mqtt-local',filterMQTTEntries(data.local));
     updateMQTTColumn('mqtt-upstream',filterMQTTEntries(data.upstream));
+  }catch(_){}
+}
+
+let samsungLogTimer=null;
+function startSamsungLogPoll(){
+  if(samsungLogTimer) return;
+  loadSamsungLogs();
+  samsungLogTimer=setInterval(loadSamsungLogs, 1000);
+}
+function stopSamsungLogPoll(){
+  if(samsungLogTimer){ clearInterval(samsungLogTimer); samsungLogTimer=null; }
+}
+function samsungLogEntryHTML(e){
+  const peer=e.peer?'<span class="peer">'+esc(e.peer)+'</span>':'';
+  return '<div class="samsung-log-entry"><span class="meta">'+esc(e.time||'')+'</span><span class="phase">'+esc(e.phase||'')+'</span>'+peer+esc(e.text||'')+'</div>';
+}
+async function loadSamsungLogs(){
+  try{
+    const r=await fetch('/api/samsung/logs');
+    if(!r.ok) return;
+    const data=await r.json();
+    const el=document.getElementById('samsung-handshake-log');
+    if(!el) return;
+    // Oldest → newest (top → bottom), matching how the session actually ran.
+    const list=data.entries||[];
+    if(!list.length){
+      el.innerHTML='<p class="mqtt-empty">No messages yet.</p>';
+      return;
+    }
+    const sig=list.map(e=>(e.time||'')+'\0'+(e.text||'')).join('|');
+    if(el.dataset.samsungSig===sig) return;
+    const stickBottom=el.scrollHeight-el.scrollTop-el.clientHeight<40;
+    el.dataset.samsungSig=sig;
+    el.innerHTML=list.map(samsungLogEntryHTML).join('');
+    if(stickBottom) el.scrollTop=el.scrollHeight;
   }catch(_){}
 }
 
@@ -2498,6 +2559,19 @@ function applyErrorEvent(data){
   showToast('error-'+Date.now()+'-'+Math.random().toString(36).slice(2), data.message||'Something went wrong', {type:'error',closable:true,autoHideMs:10000});
 }
 
+// applyNotifyEvent shows a bridge→hub toast (protocol.EventNotify). Generic — any bridge can
+// publish; Samsung uses it when remote wake fails and the user must press the power button.
+function applyNotifyEvent(data){
+  if(!data||!data.message) return;
+  const id=data.id||('notify-'+Date.now()+'-'+Math.random().toString(36).slice(2));
+  const closable=data.closable===undefined?true:!!data.closable;
+  showToast(id, data.message, {
+    type: data.level||'',
+    closable: closable,
+    autoHideMs: data.auto_hide_ms||0
+  });
+}
+
 // applyImagesEvent reacts to a created/edited/deleted image or a reordered album (see
 // imagesEventPayload in event_bus.go) by re-fetching the currently-viewed album — replacing
 // the old fixed-interval Album tab poll and its /api/images/revision hash-compare entirely.
@@ -2532,6 +2606,7 @@ function connectJoyousEvents(){
       case 'bridges': applyBridgeStatus(msg.data); break;
       case 'send': onSendDiscoveryEvent(msg.data); break;
       case 'error': applyErrorEvent(msg.data); break;
+      case 'notify': applyNotifyEvent(msg.data); break;
       case 'revision': applyRevisionEvent(msg.data); break;
       case 'images': applyImagesEvent(msg.data); break;
     }
@@ -3093,6 +3168,9 @@ function applyDevicesSnapshot(newDevices){
   el.querySelectorAll('.card[data-device-id]').forEach(card=>{
     if(!seen.has(card.dataset.deviceId)) card.remove();
   });
+  // Album sends update last_image_id here; refresh Samsung "currently displayed"
+  // from hub PNG etag without waiting for the 60s tab poll.
+  if(activeTab==='samsung') loadSamsungFrames();
 }
 
 async function loadDevicesInner(){
@@ -3756,14 +3834,27 @@ function samsungBatteryHistoryHTML(history){
   }).join('');
 }
 
-function samsungPreviewSpec(s){
-  if(s&&s.has_image&&!s.locked) return 'img:'+(s.etag||'');
-  if(s&&s.locked) return 'locked';
+function samsungPreviewSpec(s, rec, d){
+  // Prefer live list etag (PNG on hub disk) over status cache — status is only
+  // fetched on open/reload and goes stale after album sends write a new PNG.
+  const etag=(rec&&rec.etag)||(s&&s.etag)||'';
+  const hasImage=(rec&&rec.has_image)||(s&&s.has_image);
+  const locked=(s&&s.locked)||(rec&&rec.locked);
+  if(d&&d.last_image_id){
+    return 'album:'+d.last_image_id+':'+(d.last_overlay_hash||'')+':'+etag;
+  }
+  if(hasImage&&!locked) return 'img:'+etag;
+  if(locked) return 'locked';
   return 'empty';
 }
 
-function samsungPreviewEmptyHTML(s){
-  return '<p style="color:#888;font-size:.9rem">'+(s&&s.locked?'Image locked.':'No image uploaded yet.')+'</p>';
+function samsungPreviewURL(frameId, key){
+  return '/api/samsung/'+encodeURIComponent(frameId)+'/preview?v='+encodeURIComponent(key||'');
+}
+
+function samsungPreviewEmptyHTML(s, rec){
+  const locked=(s&&s.locked)||(rec&&rec.locked);
+  return '<p style="color:#888;font-size:.9rem">'+(locked?'Image locked.':'No image uploaded yet.')+'</p>';
 }
 
 async function loadSamsungFrames(){
@@ -3796,9 +3887,9 @@ async function loadSamsungFrames(){
     samsungFrames.forEach(patchSamsungFrameListItem);
   }
   if(samsungCurrentId){
+    const d=samsungDeviceForFrame(samsungCurrentId);
     const rec=samsungFrameRecord(samsungCurrentId);
-    if(rec) updateSamsungEditorStatus(null,rec,samsungStatusCache);
-    else if(samsungStatusCache) updateSamsungEditorStatus(null,null,samsungStatusCache);
+    if(rec||samsungStatusCache) updateSamsungEditorStatus(d,rec,samsungStatusCache);
   }
 }
 
@@ -3867,6 +3958,8 @@ function renderSamsungEditor(d,s,rec){
 }
 
 function updateSamsungEditorStatus(d,rec,s){
+  if(!d&&samsungCurrentId) d=samsungDeviceForFrame(samsungCurrentId);
+  if(!rec&&samsungCurrentId) rec=samsungFrameRecord(samsungCurrentId);
   const label=(s&&s.name)||(rec&&rec.name)||(d&&d.name)||(rec&&rec.ip)||(d&&d.ip)||samsungCurrentId||'';
   document.getElementById('samsung-frame-title').textContent=label;
   const online=!!((d&&d.connected)||(rec&&rec.connected));
@@ -3896,32 +3989,37 @@ function updateSamsungEditorStatus(d,rec,s){
     '<span class="label">IP</span><span>'+ip+'</span>'+
     '<span class="label">Battery</span><span>'+samsungBatteryMeta(batteryObj)+'</span>'+
     (history&&history.length?('<span class="label">History</span><span>'+samsungBatteryHistoryHTML(history)+'</span>'):'')+
-    '<span class="label">Crop</span><span>'+((s&&s.crop_format)||(rec&&rec.crop_format)||'—')+((s&&s.display_width)?(' · '+s.display_width+'×'+s.display_height):'')+'</span>'+
+    '<span class="label">Crop</span><span>'+((s&&s.crop_format)||(rec&&rec.crop_format)||'—')+((s&&s.display_width)?(' · '+s.display_width+'×'+s.display_height):((rec&&rec.display_width)?(' · '+rec.display_width+'×'+rec.display_height):''))+'</span>'+
     '<span class="label">Poll</span><span>'+((s&&s.poll_interval_minutes)?(s.poll_interval_minutes+' min'):((rec&&rec.poll_interval_minutes)?(rec.poll_interval_minutes+' min'):'—'))+'</span>'+
     (s&&s.daily_refresh_time?('<span class="label">Daily refresh</span><span>'+s.daily_refresh_time+'</span>'):'')+
     '<span class="label">Last seen</span><span>'+ago+'</span>'+
     '<span class="label">Last action</span><span>'+lastAction+'</span>';
   const wrap=document.getElementById('samsung-preview-wrap');
-  const key=samsungPreviewSpec(s);
-  if(key.startsWith('img:')){
-    const url='/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/preview';
+  const key=samsungPreviewSpec(s,rec,d);
+  if(key.startsWith('img:')||key.startsWith('album:')){
+    const url=samsungPreviewURL(samsungCurrentId, key);
     const img=document.getElementById('samsung-preview');
     if(!img||img.parentElement!==wrap){
       wrap.innerHTML='<img class="last-image-preview" id="samsung-preview" src="'+url+'" alt="current image">';
       samsungPreviewKey=key;
     }else if(key!==samsungPreviewKey){
       samsungPreviewKey=key;
-      refreshSamsungPreview();
+      refreshSamsungPreview(url);
     }
   }else if(key!==samsungPreviewKey){
     samsungPreviewKey=key;
-    wrap.innerHTML=samsungPreviewEmptyHTML(s);
+    wrap.innerHTML=samsungPreviewEmptyHTML(s,rec);
   }
   const st=document.getElementById('samsung-status');
-  if(s){
-    st.textContent=(s.has_image?'Image etag '+s.etag:'No image yet')+(s.locked?' (locked)':'');
-    if(samsungInactiveScheduleEnabled(s.inactive_begin,s.inactive_end)) st.textContent+=' · inactive '+s.inactive_begin+'–'+s.inactive_end;
-    if(samsungDeepSleep(d,rec,samsungStatusCache)) st.textContent+=' · deep sleep (button wake)';
+  const etag=(s&&s.etag)||(rec&&rec.etag);
+  const hasImage=(s&&s.has_image)||(rec&&rec.has_image);
+  const locked=(s&&s.locked)||(rec&&rec.locked);
+  if(hasImage||s){
+    st.textContent=(hasImage?'Image etag '+(etag||''):'No image yet')+(locked?' (locked)':'');
+    if(samsungInactiveScheduleEnabled((s&&s.inactive_begin)||(rec&&rec.inactive_begin),(s&&s.inactive_end)||(rec&&rec.inactive_end))){
+      st.textContent+=' · inactive '+((s&&s.inactive_begin)||(rec&&rec.inactive_begin))+'–'+((s&&s.inactive_end)||(rec&&rec.inactive_end));
+    }
+    if(samsungDeepSleep(d,rec,s||samsungStatusCache)) st.textContent+=' · deep sleep (button wake)';
   }else{
     st.textContent='';
   }
@@ -4045,13 +4143,24 @@ async function samsungSyncDailyRefresh(){
 async function samsungWake(){
   if(!samsungCurrentId)return;
   const st=document.getElementById('samsung-status');
-  st.textContent='Waking display…';
+  st.textContent='Waking display (may take up to ~45s)…';
   try{
     const r=await fetch('/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/wake',{method:'POST'});
     if(!r.ok) throw new Error(await r.text());
-    await loadDevicesInner();
-    await reloadSamsungFrame();
-    st.textContent='Wake sent';
+    st.textContent='Wake requested — watch handshake log / status';
+    // Bridge runs wake async (WoL + MDC wait up to ~45s). Poll until active.
+    for(let i=0;i<16;i++){
+      await new Promise(res=>setTimeout(res,3000));
+      await loadDevicesInner();
+      await reloadSamsungFrame();
+      const d=samsungDeviceForFrame(samsungCurrentId);
+      const rec=samsungFrameRecord(samsungCurrentId);
+      if((d&&d.connected)||(rec&&rec.connected)){
+        st.textContent='Wake ok — active';
+        return;
+      }
+    }
+    st.textContent='Wake sent; frame still asleep — check WiFi MAC / Network Standby';
   }catch(e){
     alert('Wake failed: '+e.message);
     st.textContent='';
@@ -4381,10 +4490,10 @@ function refreshThumb(id){
   t.src=url;
 }
 
-function refreshSamsungPreview(){
+function refreshSamsungPreview(url){
   const t=document.getElementById('samsung-preview');
   if(!t||!samsungCurrentId) return;
-  const url='/api/samsung/'+encodeURIComponent(samsungCurrentId)+'/preview';
+  if(!url) url=samsungPreviewURL(samsungCurrentId, samsungPreviewKey);
   t.src='';
   t.src=url;
 }

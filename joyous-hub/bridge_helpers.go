@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -11,6 +12,34 @@ import (
 	"joyous-hub/inkjoybridge"
 	"joyous-hub/protocol"
 )
+
+// notifyBridgeDeviceContact tells the bridge that owns deviceID about hub-side
+// contact (frame pulled cache, etc.). Vendor LastSeen / IP / sleep logic lives
+// on the bridge — the hub only forwards action + observed client IP.
+func (h *Hub) notifyBridgeDeviceContact(deviceID, action, clientIP string) {
+	if deviceID == "" || action == "" || h.bridgeCoord == nil {
+		return
+	}
+	dev, ok := h.devices.Get(deviceID)
+	if !ok {
+		return
+	}
+	bridgeID := string(dev.Type)
+	if bridgeID == "" || !h.bridgeCoord.BridgeOnline(bridgeID) {
+		return
+	}
+	body, err := json.Marshal(protocol.DeviceTouchBody{Action: action, ClientIP: clientIP})
+	if err != nil {
+		return
+	}
+	if err := h.bridgeCoord.PublishCommand(bridgeID, protocol.CmdPayload{
+		Cmd:      protocol.CmdDeviceTouch,
+		DeviceID: deviceID,
+		Body:     body,
+	}); err != nil {
+		log.Printf("bridge device.touch notify bridge=%s device=%s: %v", bridgeID, deviceID, err)
+	}
+}
 
 func buildImageRefreshPayload(mac string) []byte {
 	return buildActionPayloadFor(mac, "image_refresh", nil)

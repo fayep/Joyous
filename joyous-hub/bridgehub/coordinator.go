@@ -57,7 +57,9 @@ type Coordinator struct {
 	uiState  map[string]protocol.UIStatePayload
 	pending          map[string]chan protocol.UIHTTPResponsePayload
 	onCmd            func(bridgeID string, cmd protocol.CmdPayload)
+	onCmdPublish     func(bridgeID string, cmd protocol.CmdPayload)
 	onSendComplete   func(body protocol.SendCompletePayload)
+	onEvent          func(bridgeID string, ev protocol.EventPayload)
 	onBridgesChanged func()
 	onDevicesChanged func()
 }
@@ -82,6 +84,11 @@ func (c *Coordinator) SetCommandHandler(fn func(bridgeID string, cmd protocol.Cm
 // SetSendCompleteHandler receives bridge send delivery reports.
 func (c *Coordinator) SetSendCompleteHandler(fn func(body protocol.SendCompletePayload)) {
 	c.onSendComplete = fn
+}
+
+// SetEventHandler receives ephemeral bridge→hub events (e.g. protocol.EventNotify).
+func (c *Coordinator) SetEventHandler(fn func(bridgeID string, ev protocol.EventPayload)) {
+	c.onEvent = fn
 }
 
 // SetBridgesChangedHandler is called after a bridge's presence/capabilities change (a Hello
@@ -217,6 +224,9 @@ func (c *Coordinator) handleBridgeTopic(topic string, payload []byte) {
 		case protocol.TypeEvent:
 			body, _ := protocol.DecodePayload[protocol.EventPayload](env)
 			log.Printf("bridgehub: event bridge=%s name=%s", bridgeID, body.Name)
+			if c.onEvent != nil && body.Name != "" {
+				c.onEvent(bridgeID, body)
+			}
 		case protocol.TypeSendComplete:
 			body, _ := protocol.DecodePayload[protocol.SendCompletePayload](env)
 			if c.onSendComplete != nil && body.SendID != "" {
@@ -240,6 +250,9 @@ func (c *Coordinator) deliverUIHTTPResponse(resp protocol.UIHTTPResponsePayload)
 
 // PublishCommand sends a command to a bridge via the hub broker.
 func (c *Coordinator) PublishCommand(bridgeID string, cmd protocol.CmdPayload) error {
+	if c.onCmdPublish != nil {
+		c.onCmdPublish(bridgeID, cmd)
+	}
 	payload, err := protocol.NewEnvelope(protocol.TypeCmd, bridgeID, cmd)
 	if err != nil {
 		return err
@@ -249,6 +262,11 @@ func (c *Coordinator) PublishCommand(bridgeID string, cmd protocol.CmdPayload) e
 		return c.broker.Publish(topic, payload, false, 1)
 	}
 	return nil
+}
+
+// SetCommandPublishObserver is invoked from PublishCommand before broker publish (tests).
+func (c *Coordinator) SetCommandPublishObserver(fn func(bridgeID string, cmd protocol.CmdPayload)) {
+	c.onCmdPublish = fn
 }
 
 // PublishUIAction forwards a UI action to a bridge.
@@ -563,7 +581,7 @@ func (c *Client) onCmdMessage(_ mqtt.Client, msg mqtt.Message) {
 
 func longRunningBridgeCmd(cmd string) bool {
 	switch cmd {
-	case protocol.CmdSendImage:
+	case protocol.CmdSendImage, protocol.CmdSamsungPush, protocol.CmdSamsungWake, protocol.CmdSamsungSleep:
 		return true
 	default:
 		return false
@@ -672,6 +690,33 @@ func (c *Client) PublishSendComplete(body protocol.SendCompletePayload) error {
 	tok := c.client.Publish(protocol.BridgeTopic(c.bridgeID, "event"), 1, false, payload)
 	tok.Wait()
 	return tok.Error()
+}
+
+// PublishEvent publishes an ephemeral bridge→hub event (protocol.TypeEvent).
+func (c *Client) PublishEvent(name string, body any) error {
+	var raw json.RawMessage
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		raw = b
+	}
+	payload, err := protocol.NewEnvelope(protocol.TypeEvent, c.bridgeID, protocol.EventPayload{
+		Name: name,
+		Body: raw,
+	})
+	if err != nil {
+		return err
+	}
+	tok := c.client.Publish(protocol.BridgeTopic(c.bridgeID, "event"), 1, false, payload)
+	tok.Wait()
+	return tok.Error()
+}
+
+// PublishNotify asks the hub UI to show a toast (protocol.EventNotify).
+func (c *Client) PublishNotify(n protocol.NotifyBody) error {
+	return c.PublishEvent(protocol.EventNotify, n)
 }
 
 // Disconnect closes the hub connection.

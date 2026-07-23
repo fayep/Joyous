@@ -117,6 +117,8 @@ func (r *DeviceRegistry) SyncBridgeDevices(bridgeID string, devices []protocol.B
 		lastSeen        time.Time
 		lastAction      string
 		deepSleepActive bool
+		ip              string
+		lastIP          string
 	}
 	preserved := make(map[string]contact)
 	for id, d := range r.m {
@@ -125,6 +127,8 @@ func (r *DeviceRegistry) SyncBridgeDevices(bridgeID string, devices []protocol.B
 				lastSeen:        d.LastSeen,
 				lastAction:      d.LastAction,
 				deepSleepActive: d.DeepSleepActive,
+				ip:              d.IP,
+				lastIP:          d.LastIP,
 			}
 		}
 		if d.bridgeID == bridgeID {
@@ -137,15 +141,28 @@ func (r *DeviceRegistry) SyncBridgeDevices(bridgeID string, devices []protocol.B
 		if d == nil || d.Type != DeviceTypeSamsung {
 			continue
 		}
-		if p, ok := preserved[bd.ID]; ok && p.lastSeen.After(d.LastSeen) {
-			d.LastSeen = p.lastSeen
-			if p.lastAction != "" {
-				d.LastAction = p.lastAction
+		if p, ok := preserved[bd.ID]; ok {
+			if p.lastSeen.After(d.LastSeen) {
+				d.LastSeen = p.lastSeen
+				if p.lastAction != "" {
+					d.LastAction = p.lastAction
+				}
+				// Hub cleared deep sleep after frame contact; don't let a stale bridge
+				// snapshot revive the sticky UI flag.
+				if !p.deepSleepActive {
+					d.DeepSleepActive = false
+				}
 			}
-			// Hub cleared deep sleep after frame contact; don't let a stale bridge
-			// snapshot revive the sticky UI flag.
-			if !p.deepSleepActive {
-				d.DeepSleepActive = false
+			// Don't let a wiped bridge snapshot erase the only WoL address we have.
+			if d.IP == "" && p.ip != "" {
+				d.IP = p.ip
+			}
+			if d.LastIP == "" {
+				if p.lastIP != "" {
+					d.LastIP = p.lastIP
+				} else if p.ip != "" {
+					d.LastIP = p.ip
+				}
 			}
 		}
 		ApplySamsungConnected(d)
@@ -178,7 +195,17 @@ func (r *DeviceRegistry) applyBridgeDeviceLocked(bridgeID string, bd protocol.Br
 	d.Type = DeviceType(bd.Type)
 	d.Name = bd.Name
 	d.MAC = bd.MAC
-	d.IP = bd.IP
+	if bd.IP != "" {
+		d.IP = bd.IP
+		d.LastIP = bd.IP
+	} else if bd.LastIP != "" && d.LastIP == "" {
+		d.LastIP = bd.LastIP
+	}
+	// Keep prior IP/LastIP when the bridge snapshot has neither (e.g. after a
+	// Load that scrubbed awake state but the address is still valid for WoL).
+	if d.IP == "" && d.LastIP != "" && bd.IP == "" {
+		// leave LastIP; live IP stays empty until wake/probe
+	}
 	d.USN = bd.USN
 	d.Firmware = bd.Firmware
 	d.Battery = bd.Battery
@@ -210,6 +237,7 @@ func deviceToBridge(d Device) protocol.BridgeDevice {
 		Name:              d.Name,
 		MAC:               d.MAC,
 		IP:                d.IP,
+		LastIP:            d.LastIP,
 		USN:               d.USN,
 		Firmware:          d.Firmware,
 		Battery:           d.Battery,

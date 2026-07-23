@@ -100,6 +100,26 @@ func TestSamsungRestoreNetworkStandbyOnPush(t *testing.T) {
 	}
 }
 
+func TestSamsungPushForcesStandbyRestoreOnUSB(t *testing.T) {
+	on := true
+	cfg := SamsungFrameConfig{
+		InactiveBegin:      "22:00",
+		InactiveEnd:        "07:00",
+		OvernightDeepSleep: &on,
+		DeepSleepActive:    true,
+	}
+	loc := time.Local
+	inside := time.Date(2026, 6, 22, 23, 0, 0, 0, loc)
+	restore, wantDeep := samsungPushUSBSleepPlan(cfg, "usb", inside)
+	if !restore || wantDeep {
+		t.Fatalf("usb inside inactive: restore=%v wantDeep=%v (want restore, not deep)", restore, wantDeep)
+	}
+	restore, wantDeep = samsungPushUSBSleepPlan(cfg, "ac", inside)
+	if restore || !wantDeep {
+		t.Fatalf("ac inside inactive: restore=%v wantDeep=%v (want deep, no restore)", restore, wantDeep)
+	}
+}
+
 func TestOvernightDeepSleepDisabledForEqualTimes(t *testing.T) {
 	on := true
 	cfg := SamsungFrameConfig{
@@ -114,5 +134,41 @@ func TestOvernightDeepSleepDisabledForEqualTimes(t *testing.T) {
 	now := time.Date(2026, 6, 22, 23, 0, 0, 0, loc)
 	if shouldTriggerOvernightDeepSleep(cfg, now) {
 		t.Fatal("should not trigger overnight deep sleep")
+	}
+}
+
+func TestOvernightDeepSleepSkippedWhenUSBKnown(t *testing.T) {
+	h := buildTestHub(t)
+	d := h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
+	h.applySamsungMAC("192.168.1.108", "B0F2F657D5CD")
+	frameID := "B0F2F657D5CD"
+	h.devices.UpdateSamsungBattery(d.IP, 100, "usb")
+	on := true
+	cfg := SamsungFrameConfig{
+		FrameID:            frameID,
+		InactiveBegin:      "00:00",
+		InactiveEnd:        "23:59",
+		OvernightDeepSleep: &on,
+	}
+	if err := h.samsung.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	oldDiscover := samsungDiscoverLAN
+	t.Cleanup(func() { samsungDiscoverLAN = oldDiscover })
+	samsungDiscoverLAN = func(timeout time.Duration) ([]SSDPDevice, int, error) {
+		t.Fatal("USB overnight skip must not rediscover")
+		return nil, 0, nil
+	}
+	h.runSamsungOvernightDeepSleep(frameID)
+	got, ok := h.devices.Get(samsungRegistryID("B0F2F657D5CD"))
+	if !ok {
+		t.Fatal("missing device")
+	}
+	if got.DeepSleepActive || got.LastAction == "mdc_deep_sleep" {
+		t.Fatalf("USB must not deep-sleep: action=%q deep=%v", got.LastAction, got.DeepSleepActive)
+	}
+	cfg2, _ := h.samsung.LoadConfig(frameID)
+	if cfg2.DeepSleepActive {
+		t.Fatal("config must not sticky deep-sleep on USB skip")
 	}
 }

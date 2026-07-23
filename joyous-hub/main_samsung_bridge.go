@@ -5,10 +5,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -41,7 +41,6 @@ func main() {
 	hubMQTT := flag.String("hub-mqtt", fileCfg.HubMQTT, "hub joyous MQTT broker")
 	bridgeID := flag.String("bridge-id", fileCfg.BridgeID, "bridge id announced to hub")
 	hubHTTP := flag.String("hub-http", fileCfg.HubHTTP, "Joyous hub HTTP base URL")
-	listenHTTP := flag.String("listen-http", ":18082", "HTTP listen (legacy direct routes; prefer hub cache)")
 	dataDir := flag.String("data-dir", fileCfg.DataDir, "bridge data directory")
 	hubDataDir := flag.String("hub-data-dir", fileCfg.HubDataDir, "hub data directory (frame PNG cache)")
 	serverAddr := flag.String("server-addr", fileCfg.ServerAddr, "public HTTP address for Samsung content URLs (hub :18080)")
@@ -125,10 +124,8 @@ func main() {
 		BridgeID: *bridgeID,
 		Kind:     protocol.KindSamsung,
 		Hello: protocol.HelloPayload{
-			Kind:       protocol.KindSamsung,
-			ListenHTTP: *listenHTTP,
-			// The physical frame calls this back believing it's the paired phone app's own
-			// embedded server root — see samsung_content_transfer.go.
+			Kind: protocol.KindSamsung,
+			// Frame POSTs progress to the hub host from content.json; hub tunnels here.
 			HTTPPaths: []string{"/content-transfer-progress"},
 		},
 		OnCommand: func(cmd protocol.CmdPayload) {
@@ -146,54 +143,17 @@ func main() {
 	uiHandler.client = hubClient
 	defer hubClient.Disconnect()
 
-	mux := http.NewServeMux()
-	registerSamsungBridgeHTTP(mux, hub)
-	httpServer := &http.Server{Addr: *listenHTTP, Handler: accessLogMiddleware(mux)}
-	go func() {
-		log.Printf("samsung-bridge HTTP on %s (legacy; frames should pull from hub %s)", *listenHTTP, hubPlayAddr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("HTTP: %v", err)
-		}
-	}()
+	log.Printf("samsung-bridge online (MDC/LAN); frame PNG pulls from hub %s", hubPlayAddr)
 
 	go samsungBridgeSyncLoop(ctx, hubClient, devices)
 	startSamsungOvernightScheduler(ctx, hub)
 
 	<-ctx.Done()
 	log.Println("samsung-bridge shutting down...")
-	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	httpServer.Shutdown(shutCtx)
 	devices.Save()
 	if err := samsungBattery.Save(); err != nil {
 		log.Printf("warn: save samsung battery history: %v", err)
 	}
-}
-
-func registerSamsungBridgeHTTP(mux *http.ServeMux, hub *Hub) {
-	mux.HandleFunc("GET /api/samsung", hub.handleSamsungList)
-	mux.HandleFunc("POST /api/samsung/poll", hub.handleSamsungPoll)
-	mux.HandleFunc("POST /api/samsung/{frameId}/sleep", func(w http.ResponseWriter, r *http.Request) {
-		hub.handleSamsungSleep(w, r, r.PathValue("frameId"))
-	})
-	mux.HandleFunc("POST /api/samsung/{frameId}/wake", func(w http.ResponseWriter, r *http.Request) {
-		hub.handleSamsungWake(w, r, r.PathValue("frameId"))
-	})
-	mux.HandleFunc("POST /api/samsung/{frameId}/push", func(w http.ResponseWriter, r *http.Request) {
-		hub.handleSamsungPush(w, r, r.PathValue("frameId"))
-	})
-	mux.HandleFunc("PUT /api/samsung/{frameId}/config", func(w http.ResponseWriter, r *http.Request) {
-		hub.handleSamsungConfigPut(w, r, r.PathValue("frameId"))
-	})
-	mux.HandleFunc("GET /samsung/{frameId}/content.json", func(w http.ResponseWriter, r *http.Request) {
-		hub.handleSamsungContentJSON(w, r, r.PathValue("frameId"))
-	})
-	mux.HandleFunc("GET /samsung/{frameId}/image", func(w http.ResponseWriter, r *http.Request) {
-		hub.handleSamsungImage(w, r, r.PathValue("frameId"))
-	})
-	mux.HandleFunc("GET /samsung/{frameId}/status", func(w http.ResponseWriter, r *http.Request) {
-		hub.handleSamsungStatus(w, r, r.PathValue("frameId"))
-	})
 }
 
 func samsungBridgeSyncLoop(ctx context.Context, client *bridgehub.Client, reg *DeviceRegistry) {
@@ -225,31 +185,9 @@ func handleSamsungBridgeCommand(ctx context.Context, hub *Hub, client *bridgehub
 		rec := &bridgeDiscoverRecorder{hub: hub, client: client}
 		rec.runDiscover()
 	case protocol.CmdDeviceTouch:
-		var body struct {
-			Action string `json:"action"`
-		}
+		var body protocol.DeviceTouchBody
 		_ = json.Unmarshal(cmd.Body, &body)
-		if body.Action == "" {
-			body.Action = "hub_contact"
-		}
-		dev, ok := hub.devices.Get(cmd.DeviceID)
-		if !ok || dev.Type != DeviceTypeSamsung || dev.IP == "" {
-			log.Printf("samsung-bridge device.touch: device %q not found", cmd.DeviceID)
-			return
-		}
-		switch body.Action {
-		case "mdc_sleep":
-			hub.devices.NoteSamsungSlept(dev.IP, false)
-		case "mdc_deep_sleep":
-			hub.devices.NoteSamsungSlept(dev.IP, true)
-		default:
-			hub.devices.TouchSamsung(dev.IP, body.Action)
-			if body.Action == "mdc_wake" || body.Action == "content.json" || body.Action == "png" ||
-				body.Action == "mdc_push" || body.Action == "mdc_session" {
-				hub.maybeClearSamsungDeepSleepOnFrameContact(SamsungFrameID(dev))
-			}
-		}
-		log.Printf("samsung-bridge device.touch device=%s action=%s", cmd.DeviceID, body.Action)
+		applySamsungDeviceTouch(hub, cmd.DeviceID, body)
 	case protocol.CmdSendImage:
 		var body protocol.SendImageBody
 		if err := json.Unmarshal(cmd.Body, &body); err != nil {
@@ -279,6 +217,53 @@ func handleSamsungBridgeCommand(ctx context.Context, hub *Hub, client *bridgehub
 					Detail:   err.Error(),
 				})
 			}
+		}
+	case protocol.CmdSamsungPush:
+		var body struct {
+			SendID string `json:"send_id,omitempty"`
+		}
+		_ = json.Unmarshal(cmd.Body, &body)
+		dev, ok := hub.devices.Get(cmd.DeviceID)
+		if !ok || dev.Type != DeviceTypeSamsung {
+			log.Printf("samsung-bridge samsung.push: device %q not found", cmd.DeviceID)
+			if body.SendID != "" && client != nil {
+				_ = client.PublishSendComplete(protocol.SendCompletePayload{
+					SendID:   body.SendID,
+					DeviceID: cmd.DeviceID,
+					Success:  false,
+					Detail:   "device not found on samsung-bridge",
+				})
+			}
+			return
+		}
+		if err := bridgePushExistingSamsungPNG(ctx, hub, client, dev, body.SendID); err != nil {
+			log.Printf("samsung-bridge samsung.push: %v", err)
+			if body.SendID != "" && client != nil {
+				_ = client.PublishSendComplete(protocol.SendCompletePayload{
+					SendID:   body.SendID,
+					DeviceID: dev.ID,
+					Success:  false,
+					Detail:   err.Error(),
+				})
+			}
+		}
+	case protocol.CmdSamsungWake:
+		dev, ok := hub.devices.Get(cmd.DeviceID)
+		if !ok || dev.Type != DeviceTypeSamsung {
+			log.Printf("samsung-bridge samsung.wake: device %q not found", cmd.DeviceID)
+			return
+		}
+		if err := bridgeWakeSamsung(hub, client, dev); err != nil {
+			log.Printf("samsung-bridge samsung.wake: %v", err)
+		}
+	case protocol.CmdSamsungSleep:
+		dev, ok := hub.devices.Get(cmd.DeviceID)
+		if !ok || dev.Type != DeviceTypeSamsung {
+			log.Printf("samsung-bridge samsung.sleep: device %q not found", cmd.DeviceID)
+			return
+		}
+		if err := bridgeSleepSamsung(hub, dev); err != nil {
+			log.Printf("samsung-bridge samsung.sleep: %v", err)
 		}
 	default:
 		log.Printf("samsung-bridge: unhandled cmd %q", cmd.Cmd)
@@ -313,19 +298,122 @@ func bridgeDeliverSamsungImage(ctx context.Context, hub *Hub, client *bridgehub.
 		}
 	}
 
+	if err := bridgeProbeAndPushSamsung(ctx, hub, client, dev, frameID, body.SendID, len(pngData)); err != nil {
+		return err
+	}
+	hub.devices.SetLastImage(dev.ID, body.ImageID, body.OverlayToken)
+	return nil
+}
+
+// bridgePushExistingSamsungPNG MDC-pushes a PNG already written to the hub disk cache
+// (UI push / calibration). Same InkJoy pattern: hub owns bytes; bridge owns LAN notify.
+func bridgePushExistingSamsungPNG(ctx context.Context, hub *Hub, client *bridgehub.Client, dev *Device, sendID string) error {
+	frameID := SamsungFrameID(dev)
+	etag, _, ok := hub.samsung.PNGInfo(frameID)
+	if !ok {
+		return fmt.Errorf("no image for frame %s", frameID)
+	}
+	pngBytes := 0
+	if fi, err := os.Stat(hub.samsung.pngPath(frameID)); err == nil {
+		pngBytes = int(fi.Size())
+	}
+	if sendID != "" && client != nil {
+		if err := client.PublishSendComplete(protocol.SendCompletePayload{
+			SendID:   sendID,
+			DeviceID: dev.ID,
+			Success:  true,
+			Phase:    "bound",
+			FrameID:  frameID,
+			ETag:     etag,
+		}); err != nil {
+			log.Printf("samsung-bridge send.complete bound: %v", err)
+		}
+	}
+	return bridgeProbeAndPushSamsung(ctx, hub, client, dev, frameID, sendID, pngBytes)
+}
+
+func bridgeProbeAndPushSamsung(ctx context.Context, hub *Hub, client *bridgehub.Client, dev *Device, frameID, sendID string, pngBytes int) error {
+	// Wake target keeps LastIP when MDC is down (network/deep sleep). Requiring a live
+	// probe here would rediscover, miss an asleep frame, and never reach PushSamsungContent's
+	// remote/manual wake — or the manual-wake notify.
+	target, err := hub.ensureSamsungWakeTarget(dev)
+	if err != nil {
+		publishSamsungManualWakeNotify(client, dev.ID)
+		return fmt.Errorf("reachability: %w", err)
+	}
+	dev = target
 	imgURL := samsungImageURL(hub.serverAddr, dev.IP, frameID)
 	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	err = ProbeSamsungHubURL(probeCtx, imgURL, int64(len(pngData)))
+	err = ProbeSamsungHubURL(probeCtx, imgURL, int64(pngBytes))
 	cancel()
 	if err != nil {
 		return fmt.Errorf("hub cache probe %s: %w", imgURL, err)
 	}
-	log.Printf("samsung-bridge hub cache probe ok frame=%s image=%s", frameID, body.ImageID)
+	log.Printf("samsung-bridge hub cache probe ok frame=%s url=%s", frameID, imgURL)
 
-	if err := pushSamsungFrameReportingProgress(hub, client, frameID, dev, body.SendID); err != nil {
+	if err := pushSamsungFrameReportingProgress(hub, client, frameID, dev, sendID); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
-	hub.devices.SetLastImage(dev.ID, body.ImageID, body.OverlayToken)
+	return nil
+}
+
+func bridgeWakeSamsung(hub *Hub, client *bridgehub.Client, dev *Device) error {
+	frameID := SamsungFrameID(dev)
+	mac := hub.samsungWakeMAC(frameID, dev)
+	if mac == "" {
+		return fmt.Errorf("wifi MAC required for wake")
+	}
+	target, err := hub.ensureSamsungWakeTarget(dev)
+	if err != nil {
+		publishSamsungManualWakeNotify(client, dev.ID)
+		return err
+	}
+	dev = target
+	ip := dev.IP
+	logOutbound("samsung.wake start id=%s ip=%s", dev.ID, ip)
+	if err := WakeSamsungDisplay(ip, dev.MDCPin, mac); err != nil {
+		if errors.Is(err, errMDCForeignHost) {
+			// Stale DHCP: host at last IP answered but isn't MDC — rediscover.
+			if reached, err2 := hub.ensureSamsungReachable(dev); err2 == nil && reached.IP != "" && reached.IP != ip {
+				logOutbound("samsung.wake retry id=%s ip=%s (was %s)", dev.ID, reached.IP, ip)
+				if err3 := WakeSamsungDisplay(reached.IP, reached.MDCPin, mac); err3 != nil {
+					publishSamsungManualWakeNotify(client, dev.ID)
+					return err3
+				}
+				dev = reached
+				ip = reached.IP
+			} else {
+				publishSamsungManualWakeNotify(client, dev.ID)
+				if err2 != nil {
+					return err2
+				}
+				return err
+			}
+		} else {
+			// Host still down after remote wake — need button, not rediscovery.
+			logOutbound("samsung.wake remote failed id=%s ip=%s — manual wake", dev.ID, ip)
+			publishSamsungManualWakeNotify(client, dev.ID)
+			return err
+		}
+	}
+	hub.devices.TouchSamsung(ip, "mdc_wake")
+	hub.maybeClearSamsungDeepSleepOnFrameContact(frameID)
+	_ = hub.devices.Save()
+	logOutbound("samsung.wake ok id=%s ip=%s", dev.ID, ip)
+	return nil
+}
+
+func bridgeSleepSamsung(hub *Hub, dev *Device) error {
+	logOutbound("samsung.sleep start id=%s", dev.ID)
+	reachable, err := hub.ensureSamsungReachable(dev)
+	if err != nil {
+		return err
+	}
+	dev = reachable
+	if err := hub.sleepSamsungDisplay(dev.IP, dev.MDCPin); err != nil {
+		return err
+	}
+	logOutbound("samsung.sleep ok id=%s ip=%s", dev.ID, dev.IP)
 	return nil
 }
 
@@ -333,9 +421,16 @@ func bridgeDeliverSamsungImage(ctx context.Context, hub *Hub, client *bridgehub.
 // attempts to the hub as non-terminal "retrying" SendCompletePayloads, so GET
 // /api/send/{sendId} reflects real progress (see send_delivery.go's IncrementRetry) while a
 // frame in deep sleep waits — up to mdcManualWakeTimeout (samsung_mdc.go, 5 minutes) — for
-// someone to hold its power button for ~3s.
+// someone to hold its power button for ~3s. When remote wake gives up and the manual phase
+// starts, also fires a one-shot protocol.EventNotify toast so the user sees the button hint
+// even if they aren't watching send progress.
 func pushSamsungFrameReportingProgress(hub *Hub, client *bridgehub.Client, frameID string, dev *Device, sendID string) error {
+	notifiedManual := false
 	return hub.pushSamsungFrameWithProgress(frameID, dev, func(phase string, attempt int) {
+		if phase == wakePhaseManual && !notifiedManual {
+			notifiedManual = true
+			publishSamsungManualWakeNotify(client, dev.ID)
+		}
 		if sendID == "" || client == nil {
 			return
 		}
@@ -355,22 +450,45 @@ func pushSamsungFrameReportingProgress(hub *Hub, client *bridgehub.Client, frame
 	})
 }
 
+const samsungManualWakeNotifyMsg = "Press power button on frame for 3s to wake frame"
+
+func publishSamsungManualWakeNotify(client *bridgehub.Client, deviceID string) {
+	if client == nil || deviceID == "" {
+		return
+	}
+	closable := true
+	if err := client.PublishNotify(protocol.NotifyBody{
+		ID:       "samsung-wake-" + deviceID,
+		Message:  samsungManualWakeNotifyMsg,
+		DeviceID: deviceID,
+		Closable: &closable,
+	}); err != nil {
+		log.Printf("samsung-bridge notify manual wake: %v", err)
+	}
+}
+
 type bridgeDiscoverRecorder struct {
 	hub    *Hub
 	client *bridgehub.Client
 }
 
 func (b *bridgeDiscoverRecorder) runDiscover() {
+	logOutbound("discover start subnets=%v", discoverSubnets)
 	frames, ssdpSeen, err := DiscoverPhotoFrames(0)
 	if err != nil {
 		log.Printf("discover: %v", err)
+		logOutbound("discover fail err=%v", err)
 		return
 	}
+	n := 0
 	for _, sd := range frames {
-		b.hub.devices.UpsertSamsung(sd)
+		if b.hub.ingestDiscoveredSamsung(sd) != nil {
+			n++
+		}
 	}
 	_ = b.hub.devices.Save()
-	log.Printf("discover: ssdp=%d frames=%d", ssdpSeen, len(frames))
+	log.Printf("discover: ssdp=%d frames=%d", ssdpSeen, n)
+	logOutbound("discover done ssdp=%d frames=%d", ssdpSeen, n)
 	if b.client != nil {
 		_ = b.client.PublishDevices(bridgeDevicesFromRegistry(b.hub.devices, DeviceTypeSamsung))
 	}

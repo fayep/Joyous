@@ -29,6 +29,63 @@ func requestClientIP(r *http.Request) string {
 	return host
 }
 
+// isLoopbackIP reports whether ip is a loopback address.
+func isLoopbackIP(ip string) bool {
+	ip = strings.TrimSpace(ip)
+	if ip == "" || strings.EqualFold(ip, "localhost") {
+		return true
+	}
+	parsed := net.ParseIP(ip)
+	return parsed != nil && parsed.IsLoopback()
+}
+
+// isLocalMachineIP reports whether ip belongs to this host (loopback or any up iface).
+func isLocalMachineIP(ip string) bool {
+	if isLoopbackIP(ip) {
+		return true
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok || ipnet.IP == nil {
+			continue
+		}
+		if ipnet.IP.Equal(parsed) {
+			return true
+		}
+	}
+	return false
+}
+
+// isHubSideCacheClientIP reports pulls that are not the frame (hub/bridge self-probe
+// of /samsung/… cache). Those must not teach the bridge a new frame IP.
+func (h *Hub) isHubSideCacheClientIP(ip string) bool {
+	ip = strings.TrimSpace(ip)
+	if ip == "" || isLocalMachineIP(ip) {
+		return true
+	}
+	if h != nil && h.hubIP != "" && ip == h.hubIP {
+		return true
+	}
+	if h != nil && h.serverAddr != "" {
+		host := h.serverAddr
+		if hst, _, err := net.SplitHostPort(h.serverAddr); err == nil {
+			host = hst
+		}
+		if host != "" && ip == host {
+			return true
+		}
+	}
+	return false
+}
+
 // tcpDialerFor returns a dialer that binds outbound TCP to the local interface
 // on the same subnet as target. Helps on multi-homed Macs and avoids wrong routes.
 func tcpDialerFor(target string, timeout time.Duration) *net.Dialer {
