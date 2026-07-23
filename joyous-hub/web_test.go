@@ -351,6 +351,9 @@ func TestWebBranding(t *testing.T) {
 	if strings.Contains(indexHTML, ".png?t=") {
 		t.Fatal("indexHTML should not cache-bust Samsung preview PNGs with ?t=")
 	}
+	if !strings.Contains(indexHTML, "samsungPreviewURL") {
+		t.Fatal("indexHTML should define samsungPreviewURL for etag/album cache busting")
+	}
 }
 
 // TestDeleteCropAPI: DELETE /api/images/{id}/crop?format=4:3 removes the stored crop.

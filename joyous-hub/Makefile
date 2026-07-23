@@ -1,4 +1,4 @@
-.PHONY: build test darwin-arm64 linux-arm linux-mips clean install build-release ldflags-linkmeta build-inkjoy-bridge build-samsung-bridge build-nixplay-bridge build-all
+.PHONY: build test darwin-arm64 linux-arm linux-mips clean install build-release ldflags-linkmeta build-inkjoy-bridge build-samsung-bridge build-nixplay-bridge build-all dither-swatches
 
 # A timestamp default (rather than a static "dev") ensures every build gets a distinct
 # linkmeta.Version even when the caller doesn't pass one — see ui_revision.go's uiRevision,
@@ -42,6 +42,10 @@ test:
 
 test-short:
 	go test -short ./...
+
+# Gradient swatch bake-off (Stucki variants vs Floyd/Atkinson) → testdata/dither_swatches.png
+dither-swatches:
+	WRITE_DITHER_SWATCHES=1 go test -count=1 -run TestWriteDitherSwatches -v .
 
 # Raspberry Pi (ARM32v7)
 linux-arm:

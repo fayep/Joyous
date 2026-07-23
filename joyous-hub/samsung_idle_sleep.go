@@ -150,6 +150,6 @@ func (h *Hub) markSamsungIdleSlept(ip string) {
 	_ = h.devices.Save()
 	logOutbound("mdc idle sleep mark applied ip=%s", ip)
 	if d := h.devices.FindSamsungByIP(ip); d != nil {
-		h.notifySamsungBridgeContact(d.ID, "mdc_sleep")
+		h.notifyBridgeDeviceContact(d.ID, "mdc_sleep", "")
 	}
 }

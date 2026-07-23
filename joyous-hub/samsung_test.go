@@ -347,9 +347,6 @@ func TestSamsungFrameSeenFromContentJSON(t *testing.T) {
 	h := buildTestHub(t)
 	frameID := "192-168-1-108"
 	h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
-	h.devices.mu.Lock()
-	h.devices.m["samsung:192.168.1.108"].LastSeen = time.Now().Add(-time.Hour)
-	h.devices.mu.Unlock()
 	if err := h.samsung.writePNGLocked(frameID, testPNG()); err != nil {
 		t.Fatal(err)
 	}
@@ -359,13 +356,13 @@ func TestSamsungFrameSeenFromContentJSON(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
+	// Hub cache pulls do not TouchSamsung — bridge owns LastSeen via device.touch.
 	d, ok := h.devices.Get("samsung:192.168.1.108")
-	if !ok || d.LastAction != "content.json" {
-		t.Fatalf("last action: ok=%v action=%q", ok, d.LastAction)
+	if !ok {
+		t.Fatal("device missing")
 	}
-	ApplySamsungConnected(d)
-	if !d.Connected {
-		t.Fatal("frame should be active after content.json fetch")
+	if d.LastAction == "content.json" {
+		t.Fatal("hub must not apply vendor LastAction on cache pull")
 	}
 }
 
@@ -373,9 +370,6 @@ func TestSamsungFrameSeenFromPNG304(t *testing.T) {
 	h := buildTestHub(t)
 	frameID := "192-168-1-108"
 	h.devices.UpsertSamsung(SSDPDevice{IP: "192.168.1.108", Server: "Samsung MDC"})
-	h.devices.mu.Lock()
-	h.devices.m["samsung:192.168.1.108"].LastSeen = time.Now().Add(-time.Hour)
-	h.devices.mu.Unlock()
 	if err := h.samsung.writePNGLocked(frameID, testPNG()); err != nil {
 		t.Fatal(err)
 	}
@@ -396,12 +390,11 @@ func TestSamsungFrameSeenFromPNG304(t *testing.T) {
 		t.Fatalf("expected 304, got %d", rec2.Code)
 	}
 	d, ok := h.devices.Get("samsung:192.168.1.108")
-	if !ok || d.LastAction != "png" {
-		t.Fatalf("last action: ok=%v action=%q", ok, d.LastAction)
+	if !ok {
+		t.Fatal("device missing")
 	}
-	ApplySamsungConnected(d)
-	if !d.Connected {
-		t.Fatal("304 revalidation should count as frame contact")
+	if d.LastAction == "png" {
+		t.Fatal("hub must not apply vendor LastAction on cache pull")
 	}
 }
 

@@ -463,53 +463,25 @@ type samsungStatusResponse struct {
 	DailyRefreshTime      string    `json:"daily_refresh_time,omitempty"`
 }
 
-func (h *Hub) noteSamsungFrameSeen(r *http.Request, frameID, action string) {
-	clientIP := requestClientIP(r)
+// noteSamsungCachePull notifies the owning bridge that a frame pulled hub cache.
+// Hub does not TouchSamsung / match IPs / clear deep-sleep — that is bridge-owned.
+// Hub/bridge self-probes of the cache are ignored so they cannot overwrite the frame IP.
+func (h *Hub) noteSamsungCachePull(r *http.Request, frameID, action string) {
 	frameID = h.resolveSamsungFrameID(frameID)
-	touched := false
 	dev := h.samsungDeviceByFrameID(frameID)
-	if dev != nil && dev.IP != "" {
-		if clientIP == dev.IP || frameIDIsMAC(frameID) {
-			touched = h.devices.TouchSamsung(dev.IP, action)
-		}
-	}
-	if !touched {
-		if ip := frameIDToIP(frameID); ip != "" && clientIP == ip {
-			touched = h.devices.TouchSamsung(ip, action)
-		}
-	}
-	if touched {
-		h.maybeClearSamsungDeepSleepOnFrameContact(frameID)
-		if dev := h.samsungDeviceByFrameID(frameID); dev != nil {
-			h.notifySamsungBridgeContact(dev.ID, action)
-		}
-	}
-}
-
-// notifySamsungBridgeContact tells samsung-bridge about hub-side frame contact so
-// devices.sync LastSeen/action match (wake, HTTP pulls, etc. happen on the hub).
-func (h *Hub) notifySamsungBridgeContact(deviceID, action string) {
-	if deviceID == "" || action == "" || h.bridgeCoord == nil {
+	if dev == nil {
 		return
 	}
-	if !h.bridgeCoord.BridgeOnline(string(DeviceTypeSamsung)) {
+	clientIP := requestClientIP(r)
+	if h.isHubSideCacheClientIP(clientIP) {
 		return
 	}
-	body, err := json.Marshal(map[string]string{"action": action})
-	if err != nil {
-		return
-	}
-	if err := h.bridgeCoord.PublishCommand(string(DeviceTypeSamsung), protocol.CmdPayload{
-		Cmd:      protocol.CmdDeviceTouch,
-		DeviceID: deviceID,
-		Body:     body,
-	}); err != nil {
-		log.Printf("samsung bridge contact notify device=%s: %v", deviceID, err)
-	}
+	h.notifyBridgeDeviceContact(dev.ID, action, clientIP)
 }
 
 // maybeClearSamsungDeepSleepOnFrameContact clears sticky deep-sleep when the frame
-// is HTTP-polling outside the inactive window (button wake; network is back).
+// is contacted outside the inactive window (button wake; network is back).
+// Called from samsung-bridge on device.touch / wake — not from hub cache handlers.
 func (h *Hub) maybeClearSamsungDeepSleepOnFrameContact(frameID string) {
 	if h.samsung == nil {
 		return
@@ -595,7 +567,7 @@ func (h *Hub) handleSamsungPNG(w http.ResponseWriter, r *http.Request, frameID s
 	}
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d", frameID, info.Size(), info.ModTime().UnixNano())))
 	etag := hex.EncodeToString(sum[:8])
-	h.noteSamsungFrameSeen(r, frameID, "png")
+	h.noteSamsungCachePull(r, frameID, "png")
 	if h.sendDelivery != nil && r.Method != http.MethodHead {
 		h.sendDelivery.CompleteSamsung(frameID, etag)
 	}
@@ -637,7 +609,7 @@ func (h *Hub) handleSamsungContentJSON(w http.ResponseWriter, r *http.Request, f
 		return
 	}
 	etag, _, _ := h.samsung.PNGInfo(frameID)
-	h.noteSamsungFrameSeen(r, frameID, "content.json")
+	h.noteSamsungCachePull(r, frameID, "content.json")
 	if h.sendDelivery != nil {
 		h.sendDelivery.MarkSamsungDownloading(frameID, etag)
 	}
@@ -846,29 +818,80 @@ func (h *Hub) recordSamsungBattery(ip string, percent int, powerSource, source s
 	_ = h.devices.Save()
 }
 
-// sleepSamsungDisplay reads battery and sends sleep-now on a single MDC session (with connect retries).
+// sleepSamsungDisplay reads battery and sends sleep-now (network sleep).
 func (h *Hub) sleepSamsungDisplay(ip, pin string) error {
 	return h.sleepSamsungDisplayDepth(ip, pin, false)
 }
 
-// sleepSamsungDeepDisplay sleeps after disabling network standby (overnight deep sleep).
+// sleepSamsungDeepDisplay turns network standby off then sleeps (deep sleep).
+// On USB, deep sleep is not applied: standby is forced on, then network sleep —
+// without clearing sticky DeepSleepActive / overnight settings.
 func (h *Hub) sleepSamsungDeepDisplay(ip, pin string) error {
 	return h.sleepSamsungDisplayDepth(ip, pin, true)
 }
 
 func (h *Hub) sleepSamsungDisplayDepth(ip, pin string, deep bool) error {
-	res, err := SendMDCSleepWithBatteryCheck(ip, pin)
-	if res.SessionOK {
-		if res.BatteryOK {
-			h.recordSamsungBattery(ip, res.Percent, res.PowerSource, samsungBatteryPreSleep)
+	if pin == "" {
+		pin = defaultMDCPin
+	}
+	// Frame may already have idled into network sleep before our timer fires.
+	// Host down → already asleep; do not burn sleep-connect retries.
+	switch samsungClassifyIP(ip, 800*time.Millisecond) {
+	case mdcTargetAbsent:
+		logOutbound("mdc sleep skip ip=%s — host down (already asleep)", ip)
+		h.devices.NoteSamsungSleptKeepDeepSticky(ip)
+		_ = h.devices.Save()
+		return nil
+	case mdcTargetForeign:
+		return fmt.Errorf("%w at %s", errMDCForeignHost, ip)
+	}
+	onUSB := false
+	bat, batErr := QueryMDCBatteryLevel(ip, pin)
+	if batErr == nil && bat.BatteryOK {
+		h.recordSamsungBattery(ip, bat.Percent, bat.PowerSource, samsungBatteryPreSleep)
+		onUSB = samsungOnUSBPower(bat.PowerSource)
+		if onUSB && deep {
+			logOutbound("mdc deep sleep not applied ip=%s — usb power (network standby on)", ip)
+			deep = false
+		}
+	} else if batErr == nil && bat.SessionOK {
+		h.devices.TouchSamsung(ip, "mdc_session")
+	} else if batErr != nil {
+		// Race: went down between classify and battery query.
+		if samsungClassifyIP(ip, 800*time.Millisecond) == mdcTargetAbsent {
+			logOutbound("mdc sleep skip ip=%s — host down after battery probe", ip)
+			h.devices.NoteSamsungSleptKeepDeepSticky(ip)
+			_ = h.devices.Save()
+			return nil
+		}
+		logOutbound("mdc pre-sleep battery ip=%s err=%v", ip, batErr)
+	}
+	if onUSB {
+		if err := SendMDCNetworkStandby(ip, pin, true); err != nil {
+			logOutbound("mdc network standby on fail ip=%s (usb before sleep): %v", ip, err)
 		} else {
-			h.devices.TouchSamsung(ip, "mdc_session")
+			logOutbound("mdc network standby on ok ip=%s (usb before sleep)", ip)
+		}
+	} else if deep {
+		if err := SendMDCNetworkStandby(ip, pin, false); err != nil {
+			return err
 		}
 	}
-	if err != nil {
+	if err := SendMDCSleepNow(ip, pin); err != nil {
+		if samsungClassifyIP(ip, 800*time.Millisecond) == mdcTargetAbsent {
+			logOutbound("mdc sleep ok ip=%s — host down after sleep cmd (already asleep)", ip)
+			h.devices.NoteSamsungSleptKeepDeepSticky(ip)
+			_ = h.devices.Save()
+			return nil
+		}
 		return err
 	}
-	h.devices.NoteSamsungSlept(ip, deep)
+	// USB: only the on-frame standby bit changes — never clear DeepSleepActive sticky.
+	if onUSB {
+		h.devices.NoteSamsungSleptKeepDeepSticky(ip)
+	} else {
+		h.devices.NoteSamsungSlept(ip, deep)
+	}
 	_ = h.devices.Save()
 	return nil
 }
@@ -880,17 +903,20 @@ func (h *Hub) handleSamsungSleep(w http.ResponseWriter, r *http.Request, frameID
 	}
 	frameID = h.resolveSamsungFrameID(frameID)
 	dev := h.samsungDeviceByFrameID(frameID)
-	if dev == nil || dev.IP == "" {
+	if dev == nil {
 		http.Error(w, "frame not registered on hub", http.StatusNotFound)
 		return
 	}
-	if err := h.sleepSamsungDisplay(dev.IP, dev.MDCPin); err != nil {
+	if err := h.requireSamsungBridge(); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	if err := h.publishSamsungFrameCmd(protocol.CmdSamsungSleep, dev.ID, nil); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	h.notifySamsungBridgeContact(dev.ID, "mdc_sleep")
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "delegated": "samsung-bridge"})
 }
 
 // pushSamsungFrame MDC-pushes the frame's current PNG (wake → content.json → optional sleep).
@@ -904,6 +930,18 @@ func (h *Hub) pushSamsungFrame(frameID string, dev *Device) error {
 // minutes) — the only way a caller (the samsung-bridge, to relay "retrying" status to the hub)
 // finds out a wake is in progress rather than stuck, from the very first attempt.
 func (h *Hub) pushSamsungFrameWithProgress(frameID string, dev *Device, onWakeAttempt func(phase string, attempt int)) error {
+	frameID = h.resolveSamsungFrameID(frameID)
+	if dev2 := h.samsungDeviceByFrameID(frameID); dev2 != nil {
+		dev = dev2
+	}
+	// Prefer last-known IP for WoL even when MDC is down; PushSamsungContent wakes
+	// (remote then manual). ensureSamsungReachable would rediscover and fail on an
+	// asleep frame before any wake attempt.
+	target, err := h.ensureSamsungWakeTarget(dev)
+	if err != nil {
+		return err
+	}
+	dev = target
 	h.ensureSamsungMAC(dev.IP, dev.MDCPin)
 	frameID = h.resolveSamsungFrameID(frameID)
 	if dev2 := h.samsungDeviceByFrameID(frameID); dev2 != nil {
@@ -923,23 +961,36 @@ func (h *Hub) pushSamsungFrameWithProgress(frameID string, dev *Device, onWakeAt
 	autoSleep := samsungAutoSleepAfterPush(cfg)
 	sleepAfter := samsungSleepAfterPushSec(cfg)
 	now := time.Now()
-	insideInactive := InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) && InInactiveWindow(now, cfg.InactiveBegin, cfg.InactiveEnd)
-	restoreStandby := samsungRestoreNetworkStandbyOnPush(cfg, now)
+	restoreStandby, wantDeep := samsungPushUSBSleepPlan(cfg, dev.PowerSource, now)
 	sleepFn := SamsungSleepFunc(h.sleepSamsungDisplay)
-	if cfg.DeepSleepActive && (!InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) || insideInactive) {
+	if wantDeep {
 		sleepFn = h.sleepSamsungDeepDisplay
 	}
-	err := PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, sleepFn, SamsungPushOptions{
-		DeepSleepActive: cfg.DeepSleepActive,
+	err = PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, sleepFn, SamsungPushOptions{
+		DeepSleepActive: wantDeep,
 		RestoreStandby:  restoreStandby,
 	}, onWakeAttempt)
+	if errors.Is(err, errMDCForeignHost) {
+		logOutbound("samsung push foreign ip=%s — rediscovering", dev.IP)
+		reached, err2 := h.ensureSamsungReachable(dev)
+		if err2 != nil {
+			return fmt.Errorf("%w (rediscover: %v)", err, err2)
+		}
+		dev = reached
+		contentURL = samsungMDCContentURL(addr, dev.IP, frameID)
+		logOutbound("samsung push retry frame=%s ip=%s content=%s", frameID, dev.IP, contentURL)
+		err = PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, sleepFn, SamsungPushOptions{
+			DeepSleepActive: wantDeep,
+			RestoreStandby:  restoreStandby,
+		}, onWakeAttempt)
+	}
 	if err == nil {
 		h.devices.TouchSamsung(dev.IP, "mdc_push")
 		h.querySamsungBatteryAfterPush(dev.IP, dev.MDCPin)
-		// Leaving the frame awake (restore standby after overnight, or sleep-after-send
-		// disabled) must clear the sticky deep-sleep flag so the UI does not keep
-		// showing asleep/deep sleep while the display is still on.
-		if restoreStandby || !autoSleep {
+		// Clear sticky deep-sleep only when the schedule says we've left the overnight
+		// window (or sleep-after-send is off). USB must not clear it — that setting still
+		// applies once the frame is on battery; we only change network standby on the frame.
+		if samsungRestoreNetworkStandbyOnPush(cfg, now) || !autoSleep {
 			h.clearSamsungDeepSleepAfterPush(frameID)
 		}
 		// Hub is not sleeping the frame; the Samsung app idle timer will. Query it and
@@ -953,6 +1004,7 @@ func (h *Hub) pushSamsungFrameWithProgress(frameID string, dev *Device, onWakeAt
 
 // querySamsungBatteryAfterPush reads battery right after a successful MDC content push,
 // independent of auto-sleep. Best-effort: push success is not affected by telemetry failure.
+// On USB, network standby is forced on the frame (remote wake) without touching settings.
 func (h *Hub) querySamsungBatteryAfterPush(ip, pin string) {
 	if ip == "" {
 		return
@@ -961,6 +1013,13 @@ func (h *Hub) querySamsungBatteryAfterPush(ip, pin string) {
 	if res.BatteryOK {
 		h.recordSamsungBattery(ip, res.Percent, res.PowerSource, samsungBatteryPostPush)
 		logOutbound("mdc post-push battery ip=%s pct=%d src=%s", ip, res.Percent, res.PowerSource)
+		if samsungOnUSBPower(res.PowerSource) {
+			if sbErr := SendMDCNetworkStandby(ip, pin, true); sbErr != nil {
+				logOutbound("mdc post-push network standby on fail ip=%s: %v", ip, sbErr)
+			} else {
+				logOutbound("mdc post-push network standby on ok ip=%s (usb)", ip)
+			}
+		}
 		return
 	}
 	if res.SessionOK {
@@ -971,6 +1030,30 @@ func (h *Hub) querySamsungBatteryAfterPush(ip, pin string) {
 	}
 }
 
+func (h *Hub) requireSamsungBridge() error {
+	if h.bridgeCoord == nil || !h.bridgeCoord.BridgeOnline(string(DeviceTypeSamsung)) {
+		return fmt.Errorf("samsung bridge offline")
+	}
+	return nil
+}
+
+func (h *Hub) publishSamsungFrameCmd(cmd, deviceID string, body any) error {
+	var raw json.RawMessage
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		raw = b
+	}
+	logOutbound("bridge cmd %s device=%s", cmd, deviceID)
+	return h.bridgeCoord.PublishCommand(string(DeviceTypeSamsung), protocol.CmdPayload{
+		Cmd:      cmd,
+		DeviceID: deviceID,
+		Body:     raw,
+	})
+}
+
 func (h *Hub) handleSamsungPush(w http.ResponseWriter, r *http.Request, frameID string) {
 	if !validFrameID(frameID) {
 		http.Error(w, "invalid frame id", http.StatusBadRequest)
@@ -978,8 +1061,16 @@ func (h *Hub) handleSamsungPush(w http.ResponseWriter, r *http.Request, frameID 
 	}
 	frameID = h.resolveSamsungFrameID(frameID)
 	dev := h.samsungDeviceByFrameID(frameID)
-	if dev == nil || dev.IP == "" {
+	if dev == nil {
 		http.Error(w, "frame not registered on hub", http.StatusNotFound)
+		return
+	}
+	if _, _, ok := h.samsung.PNGInfo(frameID); !ok {
+		http.Error(w, "no image for frame "+frameID, http.StatusNotFound)
+		return
+	}
+	if err := h.requireSamsungBridge(); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	var sendID string
@@ -991,28 +1082,25 @@ func (h *Hub) handleSamsungPush(w http.ResponseWriter, r *http.Request, frameID 
 			h.publishSendEvent(sendID)
 		}
 	}
-	if err := h.pushSamsungFrame(frameID, dev); err != nil {
+	if err := h.publishSamsungPushCmd(dev.ID, sendID); err != nil {
 		if sendID != "" {
 			h.sendDelivery.Fail(sendID)
 			h.publishSendEvent(sendID)
 		}
-		code := http.StatusBadGateway
-		if strings.Contains(err.Error(), "no image for frame") {
-			code = http.StatusNotFound
-		}
-		if strings.Contains(err.Error(), "frame did not wake") {
-			code = http.StatusGatewayTimeout
-		}
-		http.Error(w, err.Error(), code)
+		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	h.notifySamsungBridgeContact(dev.ID, "mdc_push")
-	out := map[string]any{"ok": true}
+	out := map[string]any{"ok": true, "delegated": "samsung-bridge"}
 	if sendID != "" {
 		out["send_id"] = sendID
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(out)
+}
+
+// publishSamsungPushCmd asks samsung-bridge to MDC-push the PNG already on hub disk.
+func (h *Hub) publishSamsungPushCmd(deviceID, sendID string) error {
+	return h.publishSamsungFrameCmd(protocol.CmdSamsungPush, deviceID, map[string]string{"send_id": sendID})
 }
 
 func (h *Hub) handleSamsungWake(w http.ResponseWriter, r *http.Request, frameID string) {
@@ -1022,25 +1110,24 @@ func (h *Hub) handleSamsungWake(w http.ResponseWriter, r *http.Request, frameID 
 	}
 	frameID = h.resolveSamsungFrameID(frameID)
 	dev := h.samsungDeviceByFrameID(frameID)
-	if dev == nil || dev.IP == "" {
+	if dev == nil {
 		http.Error(w, "frame not registered on hub", http.StatusNotFound)
 		return
 	}
-	mac := h.samsungWakeMAC(frameID, dev)
-	if mac == "" {
+	if h.samsungWakeMAC(frameID, dev) == "" {
 		http.Error(w, "wifi MAC required for wake — set it in Display settings", http.StatusBadRequest)
 		return
 	}
-	err := WakeSamsungDisplay(dev.IP, dev.MDCPin, mac)
-	if err != nil {
+	if err := h.requireSamsungBridge(); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	if err := h.publishSamsungFrameCmd(protocol.CmdSamsungWake, dev.ID, nil); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	h.devices.TouchSamsung(dev.IP, "mdc_wake")
-	h.maybeClearSamsungDeepSleepOnFrameContact(frameID)
-	h.notifySamsungBridgeContact(dev.ID, "mdc_wake")
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "delegated": "samsung-bridge"})
 }
 
 // syncSamsungDeviceName copies the saved Samsung friendly name into the device registry.
@@ -1107,6 +1194,10 @@ func (h *Hub) handleSamsungImageUpload(w http.ResponseWriter, r *http.Request, f
 	if storeErr != nil {
 		http.Error(w, storeErr.Error(), http.StatusBadRequest)
 		return
+	}
+	// Direct upload replaces album-tracked content; clear so UI keys preview off PNG etag.
+	if dev != nil {
+		h.devices.SetLastImage(dev.ID, "", "")
 	}
 	etag, _, _ := h.samsung.PNGInfo(frameID)
 	w.Header().Set("Content-Type", "application/json")

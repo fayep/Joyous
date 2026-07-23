@@ -118,6 +118,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	})
 	mux.HandleFunc("GET /api/mqtt/logs", hub.handleMQTTLogs)
 	mux.HandleFunc("GET /api/samsung", hub.handleSamsungList)
+	mux.HandleFunc("GET /api/samsung/logs", hub.handleSamsungLogs)
 	mux.HandleFunc("POST /api/samsung/poll", hub.handleSamsungPoll)
 	mux.HandleFunc("POST /api/samsung/{frameId}/sleep", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSamsungSleep(w, r, r.PathValue("frameId"))

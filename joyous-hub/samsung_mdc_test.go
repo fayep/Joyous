@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -39,6 +40,15 @@ func TestParseMDCBatteryResponse(t *testing.T) {
 	}
 	if src != "usb" {
 		t.Fatalf("power source: got %q want usb", src)
+	}
+}
+
+func TestSamsungOnUSBPower(t *testing.T) {
+	if !samsungOnUSBPower("usb") || !samsungOnUSBPower("USB") {
+		t.Fatal("expected usb to match")
+	}
+	if samsungOnUSBPower("ac") || samsungOnUSBPower("") || samsungOnUSBPower("wireless") {
+		t.Fatal("expected non-usb to be false")
 	}
 }
 
@@ -148,12 +158,15 @@ func TestWaitMDCAwakeReportsRemotePhaseFromFirstAttempt(t *testing.T) {
 	ip := closedLocalIP(t)
 	var attempts []int
 	var phases []string
-	ok := waitMDCAwake(ip, "", "", 35*time.Millisecond, func(phase string, attempt int) {
+	err := waitMDCAwake(ip, "", "", 35*time.Millisecond, func(phase string, attempt int) {
 		phases = append(phases, phase)
 		attempts = append(attempts, attempt)
 	})
-	if ok {
+	if err == nil {
 		t.Fatal("expected wake to fail: nothing is listening on this address")
+	}
+	if !errors.Is(err, errMDCForeignHost) {
+		t.Fatalf("refused :1515 must be foreign (rediscover), got %v", err)
 	}
 	if len(attempts) < 1 || attempts[0] != 1 {
 		t.Fatalf("expected first reported attempt to be 1, got %v", attempts)
@@ -167,9 +180,32 @@ func TestWaitMDCAwakeReportsRemotePhaseFromFirstAttempt(t *testing.T) {
 
 func TestWaitMDCAwakeNilCallbackIsSafe(t *testing.T) {
 	ip := closedLocalIP(t)
-	ok := waitMDCAwake(ip, "", "", 15*time.Millisecond, nil)
-	if ok {
+	err := waitMDCAwake(ip, "", "", 15*time.Millisecond, nil)
+	if err == nil {
 		t.Fatal("expected wake to fail: nothing is listening on this address")
+	}
+	if !errors.Is(err, errMDCForeignHost) {
+		t.Fatalf("want errMDCForeignHost, got %v", err)
+	}
+}
+
+func TestClassifyMDCTargetRefusedIsForeign(t *testing.T) {
+	ip := closedLocalIP(t)
+	if kind := classifyMDCTarget(ip, 200*time.Millisecond); kind != mdcTargetForeign {
+		t.Fatalf("kind=%v want foreign (connection refused on :1515)", kind)
+	}
+}
+
+func TestWakeSamsungDisplayForeignFailsFast(t *testing.T) {
+	ip := closedLocalIP(t)
+	start := time.Now()
+	err := WakeSamsungDisplayWithProgress(ip, "", "AABBCCDDEEFF", nil)
+	elapsed := time.Since(start)
+	if !errors.Is(err, errMDCForeignHost) {
+		t.Fatalf("want errMDCForeignHost, got %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("foreign host must fail fast, took %s", elapsed)
 	}
 }
 

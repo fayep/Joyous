@@ -104,6 +104,7 @@ type BridgeDevice struct {
 	Name            string    `json:"name,omitempty"`
 	MAC             string    `json:"mac,omitempty"`
 	IP              string    `json:"ip,omitempty"`
+	LastIP          string    `json:"last_ip,omitempty"` // Samsung: durable WoL target when ip cleared
 	USN             string    `json:"usn,omitempty"`
 	Firmware        string    `json:"firmware,omitempty"`
 	Battery         int       `json:"battery,omitempty"`
@@ -156,8 +157,16 @@ const (
 	CmdSamsungWake   = "samsung.wake"
 	CmdSamsungSleep  = "samsung.sleep"
 	CmdSamsungConfig = "samsung.config"
-	CmdDeviceTouch   = "device.touch" // hub → bridge: LastSeen/action from hub-side contact
+	CmdDeviceTouch   = "device.touch" // hub → bridge: cache pull / hub contact (see DeviceTouchBody)
 )
+
+// DeviceTouchBody is the body for CmdDeviceTouch. The hub reports that a device
+// contacted hub-owned resources (e.g. pulled frame cache); the owning bridge
+// applies vendor-specific LastSeen / IP / sleep handling.
+type DeviceTouchBody struct {
+	Action   string `json:"action"`
+	ClientIP string `json:"client_ip,omitempty"` // observed peer IP on the hub HTTP request
+}
 
 // CropRect is a normalized (0–1) rectangle within the source image.
 type CropRect struct {
@@ -230,10 +239,26 @@ type UIHTTPResponsePayload struct {
 	Body        []byte            `json:"body,omitempty"`
 }
 
-// EventPayload is an ephemeral bridge event.
+// EventPayload is an ephemeral bridge→hub event.
 type EventPayload struct {
 	Name string          `json:"name"`
 	Body json.RawMessage `json:"body,omitempty"`
+}
+
+// Well-known EventPayload.Name values.
+const (
+	// EventNotify asks the hub UI to show a toast (see NotifyBody).
+	EventNotify = "notify"
+)
+
+// NotifyBody is EventPayload.Body when Name is EventNotify.
+type NotifyBody struct {
+	ID         string `json:"id,omitempty"`          // toast id; repeats replace in place
+	Message    string `json:"message"`               // user-visible text
+	Level      string `json:"level,omitempty"`        // "", "success", "error"
+	DeviceID   string `json:"device_id,omitempty"`
+	Closable   *bool  `json:"closable,omitempty"`     // default true
+	AutoHideMs int    `json:"auto_hide_ms,omitempty"` // 0 = stay until dismiss/replace
 }
 
 // MQTTLogsPayload carries MQTT debug log entries for the InkJoy tab.

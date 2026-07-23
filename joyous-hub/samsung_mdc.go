@@ -6,9 +6,11 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -37,6 +39,67 @@ const (
 	mdcSleepConnectAttempts = 3
 	mdcSleepRetryDelay      = 2 * time.Second
 )
+
+// errMDCForeignHost means the stored IP is reachable but is not a Samsung MDC
+// endpoint (TCP :1515 refused or wrong service). That is a stale DHCP mapping —
+// rediscover, do not WoL-wait as if the frame were asleep.
+var errMDCForeignHost = errors.New("IP is up but not MDC")
+
+// errMDCHostDown means nothing answers at the stored IP (timeout / unreachable).
+// That is a sleeping frame (or offline) — manual/remote wake, not LAN rediscovery.
+var errMDCHostDown = errors.New("host not answering")
+
+type mdcTargetKind int
+
+const (
+	mdcTargetLive    mdcTargetKind = iota // MDC session works
+	mdcTargetAbsent                       // no TCP answer — frame may be asleep
+	mdcTargetForeign                      // host answered; :1515 closed or not MDC
+)
+
+func isTCPRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	var sysErr *os.SyscallError
+	if errors.As(err, &sysErr) && errors.Is(sysErr.Err, syscall.ECONNREFUSED) {
+		return true
+	}
+	// Some platforms wrap refused without syscall.ECONNREFUSED on the chain.
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection refused")
+}
+
+// classifyMDCTarget distinguishes "asleep/unreachable" (wake) from "wrong host
+// holding this IP" (rediscover). A sleeping frame does not refuse :1515 — it
+// does not answer. Refusal means something else is at that address.
+func classifyMDCTarget(ip string, timeout time.Duration) mdcTargetKind {
+	if ip == "" {
+		return mdcTargetAbsent
+	}
+	if timeout <= 0 {
+		timeout = 800 * time.Millisecond
+	}
+	d := tcpDialerFor(ip, timeout)
+	conn, err := d.Dial("tcp", net.JoinHostPort(ip, fmt.Sprintf("%d", mdcPort)))
+	if err != nil {
+		if isTCPRefused(err) {
+			return mdcTargetForeign
+		}
+		return mdcTargetAbsent
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	buf := make([]byte, 64)
+	n, readErr := conn.Read(buf)
+	if readErr == nil && n > 0 && !bytes.Contains(buf[:n], []byte("MDCSTART")) {
+		return mdcTargetForeign
+	}
+	return mdcTargetLive
+}
 
 // sleepAfterPushSeq cancels superseded delayed sleep-after-push jobs. A later push
 // (including one with auto-sleep off) bumps the sequence so an older timer cannot
@@ -264,8 +327,15 @@ func ensureMDCAwakeForPush(ip, pin, wifiMAC string, deepSleepActive bool, onWake
 	if pin == "" {
 		pin = defaultMDCPin
 	}
-	if mdcSessionOK(ip, pin) {
-		return nil
+	switch classifyMDCTarget(ip, 800*time.Millisecond) {
+	case mdcTargetLive:
+		if mdcSessionOK(ip, pin) {
+			return nil
+		}
+		// Port looked like MDC but session failed — fall through to wake/absent path.
+	case mdcTargetForeign:
+		logOutbound("mdc push foreign ip=%s — host up but not MDC; rediscover", ip)
+		return fmt.Errorf("%w at %s", errMDCForeignHost, ip)
 	}
 	if deepSleepActive {
 		logOutbound("mdc push deep sleep ip=%s — waiting for power button", ip)
@@ -274,6 +344,8 @@ func ensureMDCAwakeForPush(ip, pin, wifiMAC string, deepSleepActive bool, onWake
 	if wifiMAC != "" {
 		if err := WakeSamsungDisplayWithProgress(ip, pin, wifiMAC, onWakeAttempt); err == nil {
 			return nil
+		} else if errors.Is(err, errMDCForeignHost) {
+			return err
 		}
 		logOutbound("mdc push remote wake timed out ip=%s — waiting for power button", ip)
 	} else {
@@ -423,16 +495,25 @@ func WakeSamsungDisplayWithProgress(ip, pin, wifiMAC string, onWakeAttempt func(
 	if wifiMAC == "" {
 		return fmt.Errorf("wifi MAC required for remote wake")
 	}
+	switch classifyMDCTarget(ip, 800*time.Millisecond) {
+	case mdcTargetLive:
+		if mdcSessionOK(ip, pin) {
+			return nil
+		}
+	case mdcTargetForeign:
+		logOutbound("mdc wake skip ip=%s — host up but not MDC; rediscover", ip)
+		return fmt.Errorf("%w at %s", errMDCForeignHost, ip)
+	}
 	sendWoL(wifiMAC, ip)
 	if err := sendSamsungMagicWake(ip, wifiMAC); err != nil {
 		logOutbound("mdc magic wake fail ip=%s err=%v", ip, err)
 	}
 	time.Sleep(mdcWakeInitialDelay)
-	if waitMDCAwake(ip, pin, wifiMAC, mdcWakeTimeout, onWakeAttempt) {
-		logOutbound("mdc wake ok ip=%s", ip)
-		return nil
+	if err := waitMDCAwake(ip, pin, wifiMAC, mdcWakeTimeout, onWakeAttempt); err != nil {
+		return err
 	}
-	return fmt.Errorf("frame did not wake within %s (enable Network Standby in the E-Paper app — required for battery wake)", mdcWakeTimeout)
+	logOutbound("mdc wake ok ip=%s", ip)
+	return nil
 }
 
 func mdcSessionOK(ip, pin string) bool {
@@ -444,7 +525,7 @@ func mdcSessionOK(ip, pin string) bool {
 	return true
 }
 
-func waitMDCAwake(ip, pin, wifiMAC string, timeout time.Duration, onWakeAttempt func(phase string, attempt int)) bool {
+func waitMDCAwake(ip, pin, wifiMAC string, timeout time.Duration, onWakeAttempt func(phase string, attempt int)) error {
 	deadline := time.Now().Add(timeout)
 	nextMagic := time.Now().Add(mdcWakeMagicResend)
 	attempt := 0
@@ -452,6 +533,15 @@ func waitMDCAwake(ip, pin, wifiMAC string, timeout time.Duration, onWakeAttempt 
 		attempt++
 		if onWakeAttempt != nil {
 			onWakeAttempt(wakePhaseRemote, attempt)
+		}
+		switch classifyMDCTarget(ip, mdcWakeProbeTimeout) {
+		case mdcTargetLive:
+			if mdcSessionOK(ip, pin) {
+				return nil
+			}
+		case mdcTargetForeign:
+			logOutbound("mdc wake abort ip=%s attempt=%d — host up but not MDC; rediscover", ip, attempt)
+			return fmt.Errorf("%w at %s", errMDCForeignHost, ip)
 		}
 		if wifiMAC != "" && !nextMagic.After(time.Now()) {
 			sendWoL(wifiMAC, ip)
@@ -461,12 +551,9 @@ func waitMDCAwake(ip, pin, wifiMAC string, timeout time.Duration, onWakeAttempt 
 		} else if attempt == 1 || attempt%5 == 0 {
 			logOutbound("mdc wake probe ip=%s attempt=%d", ip, attempt)
 		}
-		if mdcSessionOK(ip, pin) {
-			return true
-		}
 		time.Sleep(mdcWakeProbeInterval)
 	}
-	return false
+	return fmt.Errorf("frame did not wake within %s (enable Network Standby in the E-Paper app — required for battery wake)", mdcWakeTimeout)
 }
 
 func samsungWakeMagicKey(wifiMAC string) string {
@@ -536,24 +623,42 @@ func SendMDCNetworkStandby(ip, pin string, on bool) error {
 }
 
 // EnterSamsungDeepSleep wakes the frame, disables network standby, then sleeps (deep sleep mode).
-func EnterSamsungDeepSleep(ip, pin, wifiMAC string, sleepFn SamsungSleepFunc) error {
+// If the frame is on USB power, it only does network sleep (standby left on) and returns
+// enteredDeep=false so callers do not sticky-flag deep sleep.
+func EnterSamsungDeepSleep(ip, pin, wifiMAC string, sleepFn SamsungSleepFunc) (enteredDeep bool, err error) {
 	if pin == "" {
 		pin = defaultMDCPin
 	}
 	if wifiMAC == "" {
-		return fmt.Errorf("wifi MAC required for overnight deep sleep")
+		return false, fmt.Errorf("wifi MAC required for overnight deep sleep")
 	}
 	logOutbound("mdc overnight deep sleep start ip=%s", ip)
 	if err := WakeSamsungDisplay(ip, pin, wifiMAC); err != nil {
-		return err
+		return false, err
+	}
+	if bat, batErr := QueryMDCBatteryLevel(ip, pin); batErr == nil && bat.BatteryOK && samsungOnUSBPower(bat.PowerSource) {
+		logOutbound("mdc overnight deep sleep skip ip=%s — usb power (network sleep only)", ip)
+		if err := SendMDCNetworkStandby(ip, pin, true); err != nil {
+			logOutbound("mdc network standby on fail ip=%s (usb overnight): %v", ip, err)
+		}
+		if sleepFn != nil {
+			return false, sleepFn(ip, pin)
+		}
+		return false, SendMDCSleepNow(ip, pin)
 	}
 	if err := SendMDCNetworkStandby(ip, pin, false); err != nil {
-		return err
+		return false, err
 	}
 	if sleepFn != nil {
-		return sleepFn(ip, pin)
+		if err := sleepFn(ip, pin); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	return SendMDCSleepNow(ip, pin)
+	if err := SendMDCSleepNow(ip, pin); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func transactMDCCommand(ip, pin string, pkt []byte, label, detail string) error {
@@ -845,6 +950,12 @@ func mdcPowerSourceName(b byte) string {
 	default:
 		return ""
 	}
+}
+
+// samsungOnUSBPower reports whether MDC battery telemetry says the frame is on USB.
+// When true, Joyous must not enter overnight deep sleep (network standby off).
+func samsungOnUSBPower(powerSource string) bool {
+	return strings.EqualFold(strings.TrimSpace(powerSource), "usb")
 }
 
 func parseMDCResponse(resp []byte) error {

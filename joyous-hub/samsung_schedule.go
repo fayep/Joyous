@@ -55,6 +55,22 @@ func samsungRestoreNetworkStandbyOnPush(cfg SamsungFrameConfig, now time.Time) b
 	return !InInactiveWindow(now, cfg.InactiveBegin, cfg.InactiveEnd)
 }
 
+// samsungPushUSBSleepPlan decides MDC restore/wantDeep for a content push.
+// On USB, restoreStandby is forced so the frame gets network-aware sleep; that does
+// not clear sticky DeepSleepActive / overnight settings — only the on-frame standby bit.
+func samsungPushUSBSleepPlan(cfg SamsungFrameConfig, powerSource string, now time.Time) (restoreStandby, wantDeep bool) {
+	restoreStandby = samsungRestoreNetworkStandbyOnPush(cfg, now)
+	onUSB := samsungOnUSBPower(powerSource)
+	if onUSB {
+		restoreStandby = true
+	}
+	insideInactive := InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) && InInactiveWindow(now, cfg.InactiveBegin, cfg.InactiveEnd)
+	wantDeep = cfg.DeepSleepActive &&
+		(!InactiveScheduleEnabled(cfg.InactiveBegin, cfg.InactiveEnd) || insideInactive) &&
+		!onUSB
+	return restoreStandby, wantDeep
+}
+
 func shouldTriggerOvernightDeepSleep(cfg SamsungFrameConfig, now time.Time) bool {
 	if !samsungOvernightDeepSleepEnabled(cfg) {
 		return false
@@ -93,10 +109,12 @@ func (h *Hub) setSamsungDeepSleepState(frameID string, active bool, ranAt time.T
 
 func (h *Hub) syncSamsungDeepSleepDevice(frameID string, active bool) {
 	dev := h.samsungDeviceByFrameID(frameID)
-	if dev == nil || dev.IP == "" {
+	if dev == nil {
 		return
 	}
-	h.devices.SetSamsungDeepSleep(dev.IP, active)
+	if !h.devices.SetSamsungDeepSleepByID(dev.ID, active) {
+		return
+	}
 	_ = h.devices.Save()
 }
 
@@ -106,7 +124,12 @@ func (h *Hub) runSamsungOvernightDeepSleep(frameID string) {
 		return
 	}
 	dev := h.samsungDeviceByFrameID(frameID)
-	if dev == nil || dev.IP == "" {
+	if dev == nil {
+		return
+	}
+	if samsungOnUSBPower(dev.PowerSource) {
+		log.Printf("samsung overnight: skip %s — usb power", frameID)
+		logOutbound("mdc overnight deep sleep skip id=%s — usb power", dev.ID)
 		return
 	}
 	mac := h.samsungWakeMAC(frameID, dev)
@@ -114,10 +137,30 @@ func (h *Hub) runSamsungOvernightDeepSleep(frameID string) {
 		log.Printf("samsung overnight: skip %s — wifi MAC required", frameID)
 		return
 	}
-	err = EnterSamsungDeepSleep(dev.IP, dev.MDCPin, mac, h.sleepSamsungDeepDisplay)
+	reachable, err := h.ensureSamsungReachable(dev)
+	if err != nil {
+		log.Printf("samsung overnight deep sleep %s: %v", frameID, err)
+		logOutbound("mdc overnight deep sleep fail id=%s err=%v", frameID, err)
+		return
+	}
+	dev = reachable
+	if samsungOnUSBPower(dev.PowerSource) {
+		log.Printf("samsung overnight: skip %s — usb power", frameID)
+		logOutbound("mdc overnight deep sleep skip id=%s — usb power", dev.ID)
+		return
+	}
+	enteredDeep, err := EnterSamsungDeepSleep(dev.IP, dev.MDCPin, mac, h.sleepSamsungDeepDisplay)
 	if err != nil {
 		log.Printf("samsung overnight deep sleep %s: %v", frameID, err)
 		logOutbound("mdc overnight deep sleep fail ip=%s err=%v", dev.IP, err)
+		return
+	}
+	if !enteredDeep {
+		// USB detected after wake: network sleep only; do not sticky deep-sleep.
+		h.devices.NoteSamsungSlept(dev.IP, false)
+		_ = h.devices.Save()
+		log.Printf("samsung overnight network sleep (usb): %s", frameID)
+		logOutbound("mdc overnight network sleep ok ip=%s (usb)", dev.IP)
 		return
 	}
 	h.setSamsungDeepSleepState(frameID, true, time.Now())

@@ -79,6 +79,7 @@ func (q *quietAccessLogger) shouldLog() bool {
 var devicesListAccessLog = newQuietAccessLogger(devicesListPollLogQuiet)
 var mqttLogsAccessLog = newQuietAccessLogger(devicesListPollLogQuiet)
 var samsungListAccessLog = newQuietAccessLogger(devicesListPollLogQuiet)
+var samsungLogsAccessLog = newQuietAccessLogger(devicesListPollLogQuiet)
 
 func isDevicesListPoll(r *http.Request) bool {
 	return r.Method == http.MethodGet && r.URL.Path == "/api/devices"
@@ -101,6 +102,10 @@ func isMQTTLogsPoll(r *http.Request) bool {
 
 func isSamsungListPoll(r *http.Request) bool {
 	return r.Method == http.MethodGet && r.URL.Path == "/api/samsung"
+}
+
+func isSamsungLogsPoll(r *http.Request) bool {
+	return r.Method == http.MethodGet && r.URL.Path == "/api/samsung/logs"
 }
 
 func isImageThumbOrPreview(r *http.Request) bool {
@@ -128,6 +133,9 @@ func shouldSkipAccessLog(r *http.Request, status int) bool {
 		return true
 	}
 	if isSamsungListPoll(r) && !samsungListAccessLog.shouldLog() {
+		return true
+	}
+	if isSamsungLogsPoll(r) && !samsungLogsAccessLog.shouldLog() {
 		return true
 	}
 	// UI reloads revalidate every cached thumb/png; 304 means nothing changed.
@@ -170,6 +178,7 @@ func clientAddr(r *http.Request) string {
 
 func logOutbound(format string, args ...any) {
 	log.Printf("outbound: "+format, args...)
+	recordSamsungOutbound(format, args)
 }
 
 type outboundHTTPTransport struct {

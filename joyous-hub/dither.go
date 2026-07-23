@@ -72,43 +72,77 @@ const stuckiPreDitherNoise = 3.0
 const inkjoyPortraitPreDitherNoise = 2.0
 
 // stuckiEdgePreserve limits how much quantization error crosses strong luminance
-// edges (lightning vs cloud, tonal steps in gray clouds). 0 = no attenuation.
-const stuckiEdgePreserve = 0.72
+// edges (lightning vs cloud). Kept moderate — high values posterize soft face
+// gradients into peach/teal islands with sharp borders.
+const stuckiEdgePreserve = 0.40
 
-// stuckiThresholdModStrength is Zhou–Fang-style threshold modulation in RGB units
-// at full midtone/ambiguity weight. Breaks long mono-ink runs (islands) without
-// changing the Stucki kernel or reducing spatial resolution.
+// stuckiThresholdModStrength is Zhou–Fang threshold amplitude in percent-of-span
+// units (12 → ±0.24 around 0.5 at full midtone weight).
 const stuckiThresholdModStrength = 12.0
 
+// stuckiPeachThresholdExtra adds extra threshold jitter on skin so peach
+// midtones mix at a finer spatial scale instead of locking into large
+// same-mix regions with harsh boundaries between them.
+const stuckiPeachThresholdExtra = 0.28
+
+// stuckiAntiRunBias is the max soft threshold nudge toward the second-nearest
+// ink when the causal neighborhood is dominated by the first-nearest.
+const stuckiAntiRunBias = 0.28
+
+// stuckiAntiRunRadius is how far (in pixels) already-written neighbors participate
+// in the anti-run tally — roughly a 5×5 causal window, not a resolution reduction.
+const stuckiAntiRunRadius = 3
+
+// stuckiMaxMonoRun: in peach/skin, after this many consecutive same-ink pixels
+// (image-space), prefer the alternate of {best, second}. Kept mild — aggressive
+// forcing created teal/peach vitiligo regions with sharp borders.
+const stuckiMaxMonoRun = 3
+
 const (
-	stuckiEdgeSoft = 3.0  // below: full error diffusion
-	stuckiEdgeHard = 22.0 // above: minimum transfer across the edge
+	stuckiEdgeSoft = 6.0  // below: full error diffusion (face soft gradients live here)
+	stuckiEdgeHard = 28.0 // above: minimum transfer across the edge
 )
 
-// stuckiOptions selects Stucki tuning; InkJoy uses the same diffusion quality as Samsung.
+// stuckiOptions selects error-diffusion tuning for StuckiTwoPalette.
 type stuckiOptions struct {
+	Kernel             ditherKernel
 	Serpentine         bool
 	EdgePreserve       float64
 	PreDither          bool
 	PreDitherStrength  float64
 	DynamicRange       bool
-	ThresholdMod       float64 // 0 = off; else Zhou–Fang midtone threshold jitter
+	ThresholdMod       float64 // 0 = off; else Zhou–Fang midtone threshold jitter (Stucki only)
+	AntiRunBias        float64 // 0 = off; else max thr shift when local ink dominates (Stucki only)
 }
+
+type ditherKernel int
+
+const (
+	ditherKernelStucki ditherKernel = iota
+	ditherKernelFloydSteinberg
+)
 
 func stuckiOptionsSamsung(pipe ColorPipeline) stuckiOptions {
 	return stuckiOptions{
+		Kernel:       ditherKernelStucki,
 		Serpentine:   true,
 		EdgePreserve: stuckiEdgePreserve,
 		PreDither:    true,
 		DynamicRange: pipe.LABDynamicRangeEnabled,
 		ThresholdMod: stuckiThresholdModStrength,
+		AntiRunBias:  stuckiAntiRunBias,
 	}
 }
 
-// stuckiOptionsInkJoy matches Samsung's Stucki tuning (serpentine, edge preserve,
-// always-on pre-dither, threshold modulation).
+// stuckiOptionsInkJoy trials Floyd–Steinberg on the same 6-ink display palette
+// (swatch bake-off preferred FS over Stucki+knobs for gradient continuity).
 func stuckiOptionsInkJoy(pipe ColorPipeline) stuckiOptions {
-	return stuckiOptionsSamsung(pipe)
+	return stuckiOptions{
+		Kernel:       ditherKernelFloydSteinberg,
+		Serpentine:   true,
+		PreDither:    true,
+		DynamicRange: pipe.LABDynamicRangeEnabled,
+	}
 }
 
 // hiBytes maps palette index 0-5 to the hi byte values used in the .bin format.
@@ -723,14 +757,17 @@ func StuckiDither(img image.Image, palette [6][3]float64, opts stuckiOptions) []
 			lum[y] = make([]float64, w)
 		}
 	}
-	// One Pix pass: load error buffer (+ optional source luminance for edge preserve).
+	// One Pix pass: load error buffer, source RGB for peach gating, optional luminance.
+	srcRGB := make([][][3]float64, h)
 	for y := range h {
+		srcRGB[y] = make([][3]float64, w)
 		row := src.Pix[src.PixOffset(b.Min.X, b.Min.Y+y):]
 		for x := range w {
 			i := x * 4
 			r := float64(row[i])
 			g := float64(row[i+1])
 			bv := float64(row[i+2])
+			srcRGB[y][x] = [3]float64{r, g, bv}
 			base := (x + 2) * 3
 			buf[y+2][base] = r
 			buf[y+2][base+1] = g
@@ -744,6 +781,9 @@ func StuckiDither(img image.Image, palette [6][3]float64, opts stuckiOptions) []
 	out := make([][]byte, h)
 	for y := range h {
 		out[y] = make([]byte, w)
+		for x := range w {
+			out[y][x] = 0xFF // not yet written (ink 0 is a real palette index)
+		}
 		by := y + 2
 		rtl := opts.Serpentine && y&1 == 1
 		step := func(x int) {
@@ -752,7 +792,7 @@ func StuckiDither(img image.Image, palette [6][3]float64, opts stuckiOptions) []
 			pg := clamp255(buf[by][bx+1])
 			pb := clamp255(buf[by][bx+2])
 			rgb := [3]float64{pr, pg, pb}
-			idx := nearestColorThresholdMod(rgb, palette, x, y, opts.ThresholdMod)
+			idx := nearestColorThresholdMod(rgb, srcRGB[y][x], palette, x, y, opts.ThresholdMod, out, rtl, opts.AntiRunBias)
 			out[y][x] = byte(idx)
 			stuckiSpreadError(buf, lum, h, w, by, x+2, x, y,
 				pr-palette[idx][0], pg-palette[idx][1], pb-palette[idx][2],
@@ -870,7 +910,8 @@ func stuckiEdgeAttenuation(lumA, lumB, preserve float64) float64 {
 	return 1 - preserve*t
 }
 
-// StuckiTwoPalette runs Stucki error diffusion in displayPalette (P2) space.
+// StuckiTwoPalette runs error diffusion in displayPalette (P2) space after shared
+// LAB/portrait/pre-dither preprocessing. Kernel is Stucki or Floyd–Steinberg.
 // Map indices to send values with RenderIndicesToRGB (Samsung P1) or indicesToHi (InkJoy).
 func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorPipeline, flatRGB bool, opts stuckiOptions) [][]byte {
 	src := img
@@ -895,7 +936,95 @@ func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorP
 			src = applyPreDitherNoise(src, noise)
 		}
 	}
-	return StuckiDither(src, displayPalette, opts)
+	switch opts.Kernel {
+	case ditherKernelFloydSteinberg:
+		return FloydSteinbergDither(src, displayPalette)
+	default:
+		return StuckiDither(src, displayPalette, opts)
+	}
+}
+
+// FloydSteinbergDither quantizes to palette with Floyd–Steinberg error diffusion
+// (serpentine). Same 6-ink palette as Stucki — kernel only.
+func FloydSteinbergDither(img image.Image, palette [6][3]float64) [][]byte {
+	return errorDiffuseDither(img, palette, true, []errTap{
+		{0, 1, 7 / 16.0},
+		{1, -1, 3 / 16.0},
+		{1, 0, 5 / 16.0},
+		{1, 1, 1 / 16.0},
+	})
+}
+
+// AtkinsonDither is a lighter-diffusion competitor (often grainier, less muddy).
+func AtkinsonDither(img image.Image, palette [6][3]float64) [][]byte {
+	return errorDiffuseDither(img, palette, true, []errTap{
+		{0, 1, 1 / 8.0},
+		{0, 2, 1 / 8.0},
+		{1, -1, 1 / 8.0},
+		{1, 0, 1 / 8.0},
+		{1, 1, 1 / 8.0},
+		{2, 0, 1 / 8.0},
+	})
+}
+
+type errTap struct {
+	dy, dx int
+	w      float64
+}
+
+func errorDiffuseDither(img image.Image, palette [6][3]float64, serpentine bool, taps []errTap) [][]byte {
+	src := asRGBA(img)
+	b := src.Bounds()
+	h, w := b.Dy(), b.Dx()
+	buf := make([][]float64, h)
+	for y := range h {
+		buf[y] = make([]float64, w*3)
+		row := src.Pix[src.PixOffset(b.Min.X, b.Min.Y+y):]
+		for x := range w {
+			i := x * 4
+			buf[y][x*3] = float64(row[i])
+			buf[y][x*3+1] = float64(row[i+1])
+			buf[y][x*3+2] = float64(row[i+2])
+		}
+	}
+	out := make([][]byte, h)
+	for y := range h {
+		out[y] = make([]byte, w)
+		rtl := serpentine && y&1 == 1
+		step := func(x int) {
+			i := x * 3
+			rgb := [3]float64{clamp255(buf[y][i]), clamp255(buf[y][i+1]), clamp255(buf[y][i+2])}
+			idx := nearestColor(rgb, palette)
+			out[y][x] = byte(idx)
+			er := rgb[0] - palette[idx][0]
+			eg := rgb[1] - palette[idx][1]
+			eb := rgb[2] - palette[idx][2]
+			for _, t := range taps {
+				nx := x + t.dx
+				if rtl {
+					nx = x - t.dx
+				}
+				ny := y + t.dy
+				if ny < 0 || ny >= h || nx < 0 || nx >= w {
+					continue
+				}
+				j := nx * 3
+				buf[ny][j] += er * t.w
+				buf[ny][j+1] += eg * t.w
+				buf[ny][j+2] += eb * t.w
+			}
+		}
+		if rtl {
+			for x := w - 1; x >= 0; x-- {
+				step(x)
+			}
+			continue
+		}
+		for x := range w {
+			step(x)
+		}
+	}
+	return out
 }
 
 func applyPreDitherNoise(img image.Image, strength float64) *image.RGBA {
@@ -1385,10 +1514,14 @@ func nearestColor(rgb [3]float64, palette [6][3]float64) int {
 
 // nearestColorThresholdMod is a multi-level Zhou–Fang threshold modulation:
 // choose between the two nearest inks by comparing the projection along their
-// RGB axis to a midtone-jittered threshold (0.5 ± noise). Diffusion error still
-// uses the unmodulated sample (caller responsibility).
-func nearestColorThresholdMod(rgb [3]float64, palette [6][3]float64, x, y int, strength float64) int {
-	if strength <= 0 {
+// RGB axis to a midtone-jittered threshold (0.5 ± noise). When antiRunBias > 0,
+// already-written neighbors further nudge toward the second ink, and a hard
+// run cap forces a break once a mono streak gets long. Peach/skin gating uses
+// srcRGB (original pixel), not the error-diffused sample — otherwise anti-run
+// disables itself inside yellow face blotches. Diffusion error still uses the
+// unmodulated sample (caller responsibility).
+func nearestColorThresholdMod(rgb, srcRGB [3]float64, palette [6][3]float64, x, y int, strength float64, out [][]byte, rtl bool, antiRunBias float64) int {
+	if strength <= 0 && antiRunBias <= 0 {
 		return nearestColor(rgb, palette)
 	}
 	best, second := 0, -1
@@ -1410,9 +1543,10 @@ func nearestColorThresholdMod(rgb [3]float64, palette [6][3]float64, x, y int, s
 	if second < 0 || secondD >= math.MaxFloat64/2 {
 		return best
 	}
-	lum := 0.2126*rgb[0] + 0.7152*rgb[1] + 0.0722*rgb[2]
-	mid := stuckiMidtoneModWeight(lum)
-	if mid < 0.04 {
+	srcLum := 0.2126*srcRGB[0] + 0.7152*srcRGB[1] + 0.0722*srcRGB[2]
+	mid := stuckiMidtoneModWeight(srcLum)
+	peach := stuckiPeachWeight(srcRGB)
+	if mid < 0.04 && antiRunBias <= 0 {
 		return best
 	}
 	b := palette[best]
@@ -1424,28 +1558,181 @@ func nearestColorThresholdMod(rgb [3]float64, palette [6][3]float64, x, y int, s
 	}
 	// t = 0 at best ink, 1 at second-nearest.
 	t := ((rgb[0]-b[0])*vx + (rgb[1]-b[1])*vy + (rgb[2]-b[2])*vz) / len2
-	// strength is in percent-of-span units (12 → ±0.24 around 0.5 at full mid weight).
-	amp := (strength / 50.0) * mid
-	thr := 0.5 + preDitherNoiseSample(x, y, 3)*amp
-	if t < thr {
-		return best
+
+	thr := 0.5
+	if strength > 0 && mid > 0 {
+		amp := (strength / 50.0) * mid
+		if peach > 0.02 {
+			amp += stuckiPeachThresholdExtra * peach
+		}
+		thr += preDitherNoiseSample(x, y, 3) * amp
 	}
-	return second
+	if antiRunBias > 0 && out != nil && peach > 0.02 {
+		dom := stuckiCausalInkDominance(out, x, y, best, stuckiAntiRunRadius, rtl)
+		run := stuckiScanMonoRun(out, x, y, best, rtl)
+		if v := stuckiVertMonoRun(out, x, y, best); v > run {
+			run = v
+		}
+		runFrac := float64(run) / float64(stuckiMaxMonoRun)
+		if runFrac > 1 {
+			runFrac = 1
+		}
+		push := dom
+		if runFrac > push {
+			push = runFrac
+		}
+		thr -= antiRunBias * push * peach
+		if thr < 0.2 {
+			thr = 0.2
+		}
+	}
+	cand := best
+	if t >= thr {
+		cand = second
+	}
+	// Mild hard break only for long mono runs of the nearest ink — soft bias
+	// handles most island pressure without carving teal/peach region borders.
+	if antiRunBias > 0 && out != nil && peach > 0.08 && cand == best {
+		run := stuckiImageMonoRun(out, x, y, best)
+		if run >= stuckiMaxMonoRun {
+			return second
+		}
+	}
+	return cand
 }
 
-// stuckiMidtoneModWeight peaks in the midtone band where mono-ink islands form;
-// near black/white the decision is already stable and modulation would only add grain.
+// stuckiImageMonoRun is the longer of: horizontal run across already-written
+// neighbors on this row (both directions — whichever side exists), and vertical
+// run above. This matches blotches as seen on the frame, not just scan order.
+func stuckiImageMonoRun(out [][]byte, x, y, ink int) int {
+	hRun := stuckiScanMonoRun(out, x, y, ink, false) // left
+	if r := stuckiScanMonoRun(out, x, y, ink, true); r > hRun {
+		hRun = r // right (written on RTL rows)
+	}
+	vRun := stuckiVertMonoRun(out, x, y, ink)
+	if vRun > hRun {
+		return vRun
+	}
+	return hRun
+}
+
+// stuckiScanMonoRun counts how many consecutive already-written pixels behind
+// the scan head match ink (horizontal only). 0xFF marks unwritten.
+func stuckiScanMonoRun(out [][]byte, x, y, ink int, rtl bool) int {
+	h := len(out)
+	if h == 0 || y < 0 || y >= h {
+		return 0
+	}
+	w := len(out[0])
+	run := 0
+	if rtl {
+		for nx := x + 1; nx < w; nx++ {
+			v := out[y][nx]
+			if v == 0xFF || int(v) != ink {
+				break
+			}
+			run++
+			if run >= stuckiMaxMonoRun+2 {
+				break
+			}
+		}
+		return run
+	}
+	for nx := x - 1; nx >= 0; nx-- {
+		v := out[y][nx]
+		if v == 0xFF || int(v) != ink {
+			break
+		}
+		run++
+		if run >= stuckiMaxMonoRun+2 {
+			break
+		}
+	}
+	return run
+}
+
+// stuckiVertMonoRun counts same-ink pixels directly above (always causal).
+func stuckiVertMonoRun(out [][]byte, x, y, ink int) int {
+	h := len(out)
+	if h == 0 || y <= 0 || x < 0 {
+		return 0
+	}
+	w := len(out[0])
+	if x >= w {
+		return 0
+	}
+	run := 0
+	for ny := y - 1; ny >= 0; ny-- {
+		v := out[ny][x]
+		if v == 0xFF || int(v) != ink {
+			break
+		}
+		run++
+		if run >= stuckiMaxMonoRun+2 {
+			break
+		}
+	}
+	return run
+}
+
+// stuckiCausalInkDominance is the fraction of already-written neighbors within
+// radius that match ink. Only causal pixels are counted (respects serpentine).
+func stuckiCausalInkDominance(out [][]byte, x, y, ink, radius int, rtl bool) float64 {
+	h := len(out)
+	if h == 0 || radius <= 0 {
+		return 0
+	}
+	w := len(out[0])
+	count, total := 0, 0
+	for dy := -radius; dy <= 0; dy++ {
+		ny := y + dy
+		if ny < 0 || ny >= h {
+			continue
+		}
+		for dx := -radius; dx <= radius; dx++ {
+			if dy == 0 {
+				if rtl {
+					// Serpentine RTL: higher x already written.
+					if dx <= 0 {
+						continue
+					}
+				} else if dx >= 0 {
+					// LTR: lower x already written.
+					continue
+				}
+			}
+			nx := x + dx
+			if nx < 0 || nx >= w {
+				continue
+			}
+			v := out[ny][nx]
+			if v == 0xFF {
+				continue
+			}
+			total++
+			if int(v) == ink {
+				count++
+			}
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	return float64(count) / float64(total)
+}
+
+// stuckiMidtoneModWeight peaks across midtones for mild Zhou–Fang jitter.
 func stuckiMidtoneModWeight(lum float64) float64 {
-	// Smooth bump: 0 at L≤20 / L≥235, ~1 around L=110–150.
-	if lum <= 20 || lum >= 235 {
+	// Smooth bump: 0 at L≤15 / L≥245, ~1 around L=90–185.
+	if lum <= 15 || lum >= 245 {
 		return 0
 	}
 	var t float64
 	switch {
-	case lum < 110:
-		t = (lum - 20) / 90
-	case lum > 150:
-		t = (235 - lum) / 85
+	case lum < 90:
+		t = (lum - 15) / 75
+	case lum > 185:
+		t = (245 - lum) / 60
 	default:
 		return 1
 	}
@@ -1456,6 +1743,32 @@ func stuckiMidtoneModWeight(lum float64) float64 {
 		return 1
 	}
 	return t * t * (3 - 2*t)
+}
+
+// Peach/skin locus center in LAB (approx RGB 210,160,140). Anti-run uses a
+// fairly wide neighborhood around that center so cheek/shadow/highlight peach
+// can join blends; weight still drops toward zero off the skin locus.
+const (
+	stuckiPeachL      = 68.0
+	stuckiPeachA      = 20.0
+	stuckiPeachB      = 22.0
+	stuckiPeachSigmaL = 24.0
+	stuckiPeachSigmaC = 20.0
+)
+
+// stuckiPeachWeight is ~1 on face peach and falls off as a wide Gaussian in LAB
+// so pixels away from the exact center still get blend permission.
+func stuckiPeachWeight(rgb [3]float64) float64 {
+	lab := srgbToLAB(paletteRGB01(rgb))
+	dL := (lab[0] - stuckiPeachL) / stuckiPeachSigmaL
+	da := (lab[1] - stuckiPeachA) / stuckiPeachSigmaC
+	db := (lab[2] - stuckiPeachB) / stuckiPeachSigmaC
+	r2 := dL*dL + da*da + db*db
+	w := math.Exp(-r2)
+	if w < 0.02 {
+		return 0
+	}
+	return w
 }
 
 func clamp255(v float64) float64 {

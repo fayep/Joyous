@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -139,45 +138,19 @@ func resolvedLANIP(addr string) string {
 	return host
 }
 
-// handleDiscover runs SSDP discovery and merges results into the device registry.
+// handleDiscover delegates Samsung LAN discovery to samsung-bridge. The hub never
+// probes the LAN for frames.
 func (h *Hub) handleDiscover(w http.ResponseWriter, r *http.Request) {
-	if h.bridgeCoord != nil && h.bridgeCoord.BridgeOnline(string(DeviceTypeSamsung)) {
-		if err := h.bridgeCoord.PublishCommand(string(DeviceTypeSamsung), protocol.CmdPayload{
-			Cmd: protocol.CmdDiscover,
-		}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"ok": true, "delegated": "samsung-bridge"})
+	if h.bridgeCoord == nil || !h.bridgeCoord.BridgeOnline(string(DeviceTypeSamsung)) {
+		http.Error(w, "samsung bridge offline", http.StatusServiceUnavailable)
 		return
 	}
-	logOutbound("discover start subnets=%v", discoverSubnets)
-	frames, ssdpSeen, err := DiscoverPhotoFrames(0)
-	if err != nil {
+	if err := h.bridgeCoord.PublishCommand(string(DeviceTypeSamsung), protocol.CmdPayload{
+		Cmd: protocol.CmdDiscover,
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	added := make([]Device, 0, len(frames))
-	for _, sd := range frames {
-		d := h.devices.UpsertSamsung(sd)
-		added = append(added, *d)
-	}
-	if err := h.devices.Save(); err != nil {
-		log.Printf("warn: save devices after discover: %v", err)
-	}
-	log.Printf("discover: ssdp=%d frames=%d", ssdpSeen, len(added))
-	for _, d := range added {
-		logOutbound("discover found type=%s id=%s ip=%s", d.Type, d.ID, d.IP)
-		ip := d.IP
-		pin := d.MDCPin
-		go h.ensureSamsungMAC(ip, pin)
-	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"ok":        true,
-		"found":     len(added),
-		"ssdp_seen": ssdpSeen,
-		"devices":   added,
-	})
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "delegated": "samsung-bridge"})
 }
