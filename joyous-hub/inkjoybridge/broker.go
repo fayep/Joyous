@@ -81,8 +81,37 @@ func ParseHeartPayload(payload []byte) (HeartInfo, error) {
 type LoginInfo struct {
 	ClientID       string
 	Firmware       string
+	HardwareModel  int // H from login ver "M H:%d F:..."; 0 if absent
 	SleepBeginTime string
 	SleepEndTime   string
+}
+
+// HardwareModelSeeed is the H value used by Seeed EE02 custom firmware.
+// These frames speak InkJoy MQTT locally but must not be published to InkJoy cloud.
+const HardwareModelSeeed = 9
+
+// LocalOnlyHardware reports whether this model must stay on the local bridge
+// (never open an upstream cloud session / forward frame→cloud traffic).
+func LocalOnlyHardware(model int) bool {
+	return model == HardwareModelSeeed
+}
+
+// HardwareModelFromVer parses H from an InkJoy login ver string ("M H:%d F:...").
+func HardwareModelFromVer(ver string) int {
+	const prefix = "H:"
+	i := strings.Index(ver, prefix)
+	if i < 0 {
+		return 0
+	}
+	rest := ver[i+len(prefix):]
+	n := 0
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
 
 // ParseLoginPayload extracts login info from a login MQTT payload.
@@ -101,6 +130,7 @@ func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 	return LoginInfo{
 		ClientID:       msg.Data.ClientID,
 		Firmware:       msg.Data.Ver,
+		HardwareModel:  HardwareModelFromVer(msg.Data.Ver),
 		SleepBeginTime: msg.Data.SleepBeginTime,
 		SleepEndTime:   msg.Data.SleepEndTime,
 	}, nil
