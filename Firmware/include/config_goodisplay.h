@@ -41,6 +41,22 @@
 // canvas, right side up.
 #define PANEL_ROTATION 1
 
+// Per-panel calibration register overrides for Seeed_GFX's T133A01 driver
+// (vendored in Firmware/lib/Seeed_GFX/ -- see T133A01_Defines.h). Seeed's
+// EE02 and this board are the same driver silicon (T133A01 == GDEP133C02)
+// but different vendor calibration profiles -- these are GooDisplay's own
+// values from their GDEP133C02.c reference (GooDisplay/docs/
+// vendor_code_example_usb_variant/GDEP133C02.c), not Seeed's. Currently
+// UNTESTED on real hardware with Seeed_GFX (only ever tested in the
+// now-parked custom driver, panel_goodisplay.cpp, where they worked) --
+// worth a real render to confirm before trusting over Seeed's defaults,
+// which are also confirmed-working on this exact panel (see
+// GooDisplay/docs/firmware_disassembly_dc_pin.md).
+#define T133A01_CDI_V     { 0xF7 }
+#define T133A01_BTST_P_V  { 0xE8, 0x28 }
+#define T133A01_BTST_N_V  { 0xE8, 0x28 }
+#define T133A01_AN_TM_V   { 0xC0, 0x1E, 0x1E, 0xCE, 0xCE, 0xCE, 0x15, 0x15, 0x55 }
+
 #define INKJOY_BIN_WIDTH  1600
 #define INKJOY_BIN_HEIGHT 1200
 

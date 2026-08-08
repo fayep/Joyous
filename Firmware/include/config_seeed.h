@@ -9,6 +9,18 @@
 // comes out upside down or mirrored.
 #define PANEL_ROTATION 1
 
+// Per-panel calibration register overrides for Seeed_GFX's T133A01 driver
+// (vendored in Firmware/lib/Seeed_GFX/ -- see T133A01_Defines.h). These are
+// Seeed's own original values, unchanged -- listed explicitly here (rather
+// than relying on T133A01_Defines.h's own defaults) so the per-board
+// override mechanism is symmetric and visible on both boards, not implicit
+// on one. See config_goodisplay.h for GooDisplay's different values (same
+// driver silicon, different vendor calibration profile).
+#define T133A01_CDI_V     { 0x37 }
+#define T133A01_BTST_P_V  { 0xE0, 0x20 }
+#define T133A01_BTST_N_V  { 0xE0, 0x20 }
+#define T133A01_AN_TM_V   { 0x00, 0x0C, 0x0C, 0xD9, 0xDD, 0xDD, 0x15, 0x15, 0x55 }
+
 // EE02 battery sense: A0 (GPIO1) via onboard ÷2 divider, gated by D5 (GPIO6).
 // No fuel-gauge IC — heart.battery is a Li-ion voltage-curve estimate.
 // Enable the divider only while sampling (see Power::batteryPercent).
