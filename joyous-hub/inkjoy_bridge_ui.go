@@ -123,8 +123,7 @@ func (ui *inkjoyBridgeUI) inkjoyDevices() []Device {
 	out := make([]Device, 0)
 	for _, d := range all {
 		if d.Type == DeviceTypeInkJoy {
-			d.SleepBeginTime = utcHHMMToLocal(d.SleepBeginTime)
-			d.SleepEndTime = utcHHMMToLocal(d.SleepEndTime)
+			d.SleepBeginTime, d.SleepEndTime = sleepWindowToLocal(d.SleepBeginTime, d.SleepEndTime)
 			if ui.cache != nil {
 				if imageID, overlayToken, ok := ui.cache.LatestImageID(d.MAC); ok {
 					d.LastImageID = imageID

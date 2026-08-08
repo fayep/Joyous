@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -63,8 +64,9 @@ type Device struct {
 	LastOverlayHash   string    `json:"last_overlay_hash,omitempty"`
 	DisplayPreviewAt  time.Time `json:"display_preview_at,omitempty"`
 	HubIP          string `json:"hub_ip,omitempty"`   // hub's LAN IP as seen via this frame's MQTT socket
-	Portrait       bool   `json:"portrait,omitempty"` // user-set: frame is in portrait orientation
-	Orientation    int    `json:"orientation"`        // raw accelerometer value from heart (unreliable)
+	Portrait       bool   `json:"portrait,omitempty"` // frame orientation preference (UI and/or Seeed KEY1)
+	Orientation    int    `json:"orientation"`        // heart orientation (0/90/180/270); accel unreliable on real frames
+	HardwareModel  int    `json:"hardware_model,omitempty"` // H from login ver; see inkjoybridge.HardwareModelSeeed
 	DeepSleepActive bool  `json:"deep_sleep_active,omitempty"` // samsung: overnight deep sleep (button wake)
 	// ColorOverride is a per-device snapshot of the 6 ink RGB values, captured at
 	// save time. nil means "use the bridge's current InkJoy display palette."
@@ -236,7 +238,6 @@ func (r *DeviceRegistry) MarkShutdown(mac string, info inkjoybridge.SleepInfo) {
 // UpdateHeart applies telemetry from a heart message.
 func (r *DeviceRegistry) UpdateHeart(mac string, info inkjoybridge.HeartInfo) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	d := r.getOrCreateInkJoy(mac)
 	d.Battery = info.Battery
 	d.RSSI = info.RSSI
@@ -244,26 +245,91 @@ func (r *DeviceRegistry) UpdateHeart(mac string, info inkjoybridge.HeartInfo) {
 	if info.Firmware != "" {
 		d.Firmware = info.Firmware
 	}
+	// Seeed EE02 reports a deliberate preference via KEY1 → heart.orientation
+	// (0=portrait, 90=landscape). Real InkJoy accel values are unreliable, so we
+	// only mirror orientation into Portrait for that hardware model.
+	portraitChanged := false
+	if d.HardwareModel == inkjoybridge.HardwareModelSeeed {
+		switch info.Orientation {
+		case 0, 180:
+			if !d.Portrait {
+				d.Portrait = true
+				portraitChanged = true
+			}
+		case 90, 270:
+			if d.Portrait {
+				d.Portrait = false
+				portraitChanged = true
+			}
+		}
+	}
 	d.LastSeen = time.Now()
 	d.LastAction = "heart"
+	r.mu.Unlock()
+	if portraitChanged {
+		_ = r.Save()
+	}
 }
 
-// UpdateLogin applies login info.
-func (r *DeviceRegistry) UpdateLogin(mac string, info inkjoybridge.LoginInfo) {
+// LoginSleepMismatch is returned by UpdateLogin when a frame's self-reported
+// sleep window doesn't match what the hub already has configured for it —
+// a sign the frame's RTC-held schedule was reset (reflash, brownout, full
+// power loss) and needs a corrective wifi_sleep republish. BeginTime/EndTime
+// are the hub's own (authoritative) values to republish.
+type LoginSleepMismatch struct {
+	BeginTime string
+	EndTime   string
+}
+
+// UpdateLogin applies telemetry from a login message. The hub's already-
+// configured sleep window is authoritative and is never overwritten by what
+// the frame echoes back — except on a device's very first-ever login, where
+// there's nothing configured yet to defend, so the frame's report (e.g. its
+// NVS/RTC default) is adopted as a starting point. Any other mismatch is
+// reported back via the return value so the caller can republish wifi_sleep
+// to correct the frame (see inkjoyDeviceAdapter.UpdateLogin).
+func (r *DeviceRegistry) UpdateLogin(mac string, info inkjoybridge.LoginInfo) *LoginSleepMismatch {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := r.getOrCreateInkJoy(mac)
 	if info.Firmware != "" {
 		d.Firmware = info.Firmware
 	}
-	if info.SleepBeginTime != "" {
-		d.SleepBeginTime = info.SleepBeginTime
+	if info.HardwareModel > 0 {
+		d.HardwareModel = info.HardwareModel
 	}
-	if info.SleepEndTime != "" {
+	var mismatch *LoginSleepMismatch
+	if d.SleepBeginTime == "" && d.SleepEndTime == "" {
+		d.SleepBeginTime = info.SleepBeginTime
 		d.SleepEndTime = info.SleepEndTime
+	} else if !sameHHMM(d.SleepBeginTime, info.SleepBeginTime) || !sameHHMM(d.SleepEndTime, info.SleepEndTime) {
+		mismatch = &LoginSleepMismatch{BeginTime: d.SleepBeginTime, EndTime: d.SleepEndTime}
 	}
 	d.LastSeen = time.Now()
 	d.LastAction = "login"
+	return mismatch
+}
+
+// sameHHMM compares two HH:MM strings by value in minutes-since-midnight, so
+// the frame's unpadded "H:MM" (see the firmware's minToHHMM) and the hub's
+// zero-padded "HH:MM" compare equal when they mean the same time.
+func sameHHMM(a, b string) bool {
+	am, aok := parseHHMMMinutes(a)
+	bm, bok := parseHHMMMinutes(b)
+	return aok && bok && am == bm
+}
+
+func parseHHMMMinutes(s string) (int, bool) {
+	h, m, ok := strings.Cut(s, ":")
+	if !ok {
+		return 0, false
+	}
+	hh, err1 := strconv.Atoi(h)
+	mm, err2 := strconv.Atoi(m)
+	if err1 != nil || err2 != nil || hh < 0 || hh > 23 || mm < 0 || mm > 59 {
+		return 0, false
+	}
+	return hh*60 + mm, true
 }
 
 // SetLastImage records the most recently sent image for a device.

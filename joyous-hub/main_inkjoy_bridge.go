@@ -128,6 +128,7 @@ func main() {
 		displayPreview: displayPreview,
 		images:         imageStore,
 	}}
+	deviceEvents := &inkjoyDeviceAdapter{reg: devices}
 	srv := inkjoybridge.NewServer(inkjoybridge.Config{
 		ListenMQTT:      *listenMQTT,
 		Upstream:        *upstream,
@@ -136,12 +137,13 @@ func main() {
 		UpstreamAllow:   inkjoybridge.ParseAllowList(*upstreamAllow),
 		DownstreamAllow: inkjoybridge.ParseAllowList(*downstreamAllow),
 		Intercept:       inkjoybridge.ParseAllowList(*intercept),
-		Devices:         &inkjoyDeviceAdapter{reg: devices},
+		Devices:         deviceEvents,
 		PlayRelay:       relay,
 		Capture:         &captureAdapter{c: capture},
 		OTA:             &otaAdapter{o: otaCapture},
 		MQTTLog:         &mqttLogAdapter{l: mqttLog},
 	})
+	deviceEvents.srv = srv
 	inkjoyRetry := NewInkJoySendRetry(&Hub{
 		devices: devices, sendDelivery: sendDelivery, publisher: srvPublisher{srv: srv},
 		// overlay/images/color are wired so a hub-mode retry (r.resend unset)
@@ -149,6 +151,7 @@ func main() {
 		// hard-errors on a nil h.overlay when the entry's overlayToken is set.
 		overlay: overlayStore, images: imageStore, color: colorStore,
 	})
+	deviceEvents.retry = inkjoyRetry
 	srv.SetInjectedPlayCheck(isInjectedPlay, func(ackMsgid string, result int) {
 		inkjoyRetry.OnPlayAck(ackMsgid, result)
 	})
@@ -199,10 +202,11 @@ func main() {
 			return fmt.Errorf("device %q not found", entry.deviceID)
 		}
 		return bridgeDeliverInkJoyImage(bridgeCtx, srv, encodeHub, sendDelivery, inkjoyRetry, hubInkjoyCache, dev, protocol.SendImageBody{
-			ImageID:      entry.imageID,
-			OverlayToken: entry.overlayToken,
-			SendID:       entry.sendID,
-			HubBaseURL:   entry.hubBaseURL,
+			ImageID:       entry.imageID,
+			OverlayToken:  entry.overlayToken,
+			SendID:        entry.sendID,
+			HubBaseURL:    entry.hubBaseURL,
+			ColorOverride: entry.colorOverride,
 		})
 	})
 
@@ -368,7 +372,7 @@ func bridgeDeliverInkJoyImage(
 	if body.SendID != "" && sendDelivery != nil {
 		sendDelivery.BindInkJoy(body.SendID, msgid)
 		if inkjoyRetry != nil {
-			inkjoyRetry.TrackFromBridge(body.SendID, dev.ID, body.ImageID, body.OverlayToken, body.HubBaseURL)
+			inkjoyRetry.TrackFromBridge(body.SendID, dev.ID, body.ImageID, body.OverlayToken, body.HubBaseURL, body.ColorOverride)
 		}
 	}
 	registerInjectedPlay(msgid)
