@@ -31,21 +31,27 @@
 #define TFT_MOSI 41  // SPI_Data0
 #define TFT_CS   18  // EPD_CS0 / vendor's SPI_CS0 -- drives the panel's "M" (main) half
 #define TFT_CS1  17  // EPD_CS1 / vendor's SPI_CS1 -- drives the panel's "S" (sub) half
-// TFT_DC: the board actually has a real, dedicated DC/X breakout on the
-// panel connector (H1) -- traced by hand (2026-08-08) from H1's DC/X pad
-// through a via near U6, to the back of the board, across to the opposite
-// side of the ESP32-S3-WROOM-1 module, landing on the 3rd pin down the
-// right-hand column from the antenna/keepout end. Cross-referenced against
-// Espressif's real WROOM-1 datasheet (Figure 3-1, Table 3-1): that column,
-// top to bottom, is pin40/GND, pin39/IO1, pin38/IO2, pin37/TXD0(GPIO43),
-// pin36/RXD0(GPIO44) -- and confirmed against which of those positions
-// actually have a routed pad on this board (2nd and 3rd do, 4th and 5th
-// don't, matching TXD0/RXD0 being used internally for the onboard
-// USB-serial bridge instead of broken out separately) -- so DC/X is GPIO2.
-// A real traced pin beats both prior guesses (TFT_RST, which was the
-// original DC/RST aliasing bug, and SPI_Data3, a real panel pin but reused
-// on unverified "should be a no-op" reasoning rather than confirmed as the
-// board's actual DC/X route).
+// TFT_DC = GPIO2, confirmed two independent ways (2026-08-08):
+// 1. Hand-traced from H1's real DC/X pad through a via near U6, to the back
+//    of the board, across to the ESP32-S3-WROOM-1 module's 3rd pin down the
+//    right-hand column from the antenna end -- cross-referenced against
+//    Espressif's real WROOM-1 datasheet (Figure 3-1/Table 3-1) as GPIO2,
+//    and confirmed against which nearby pad positions are actually routed
+//    on this board (ruling out TXD0/RXD0, used internally for the onboard
+//    USB-serial bridge instead).
+// 2. Disassembly of this exact unit's own dumped vendor firmware
+//    (GooDisplay/docs/firmware_disassembly_dc_pin.md) found its real
+//    writecommand()-equivalent unconditionally calling
+//    gpio_set_level(pin=2, value=0) immediately before every SPI command
+//    byte write -- i.e. the vendor's own compiled code toggles this exact
+//    pin as DC. Same doc also has the reasoning for why this panel's SPI
+//    protocol still works correctly without ever driving DC ourselves
+//    (Standard 4-wire SPI mode, DC ignored by the panel) despite the
+//    vendor toggling it -- likely generic/defensive code shared across
+//    board variants.
+// Beats both prior guesses: TFT_RST (the original DC/RST aliasing bug) and
+// SPI_Data3 (a real panel pin, but reused on "should be a no-op" reasoning
+// rather than confirmed as the actual DC/X route).
 #define TFT_DC   2
 #define TFT_BUSY 7   // EPD_BUSY
 #define TFT_RST  6   // EPD_RST
