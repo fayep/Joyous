@@ -1,4 +1,5 @@
 #include "mqtt_hub.h"
+#include "config.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
@@ -24,6 +25,8 @@ volatile bool g_connected = false;
 
 String g_uri;
 String g_clientId;
+String g_username;
+String g_password;
 String g_subTopic;
 String g_reportTopic;
 ConnectedHandler g_onConnected;
@@ -50,14 +53,28 @@ static void handleEvent(void * /*arg*/, esp_event_base_t /*base*/, int32_t event
     auto *event = static_cast<esp_mqtt_event_handle_t>(event_data);
     switch (static_cast<esp_mqtt_event_id_t>(event_id)) {
         case MQTT_EVENT_CONNECTED:
+            Serial.println("mqtt: connected");
             g_connected = true;
             if (g_subTopic.length()) {
-                esp_mqtt_client_subscribe(g_client, g_subTopic.c_str(), 0);
+                // QoS1: broker retries play/wifi_sleep if we miss the first delivery.
+                // Defer login until SUBACK — otherwise the bridge's local-only
+                // login_ack (QoS0) can publish before we subscribe and is lost,
+                // so we never send the first heart.
+                esp_mqtt_client_subscribe(g_client, g_subTopic.c_str(), 1);
+            } else {
+                xEventGroupSetBits(g_events, kBitConnected);
             }
+            break;
+        case MQTT_EVENT_SUBSCRIBED:
             xEventGroupSetBits(g_events, kBitConnected);
             break;
         case MQTT_EVENT_DISCONNECTED:
+            Serial.println("mqtt: disconnected");
             g_connected = false;
+            break;
+        case MQTT_EVENT_ERROR:
+            Serial.printf("mqtt: error type=%d\n",
+                          event->error_handle ? event->error_handle->error_type : -1);
             break;
         case MQTT_EVENT_DATA: {
             if (event->current_data_offset == 0) {
@@ -82,13 +99,16 @@ static void handleEvent(void * /*arg*/, esp_event_base_t /*base*/, int32_t event
 
 }  // namespace
 
-bool begin(const char *host, int port, const char *clientId, const char *subTopic) {
+bool begin(const char *host, int port, const char *clientId, const char *subTopic,
+           const char *username, const char *password) {
     if (!g_events) g_events = xEventGroupCreate();
     if (!g_queue) g_queue = xQueueCreate(kQueueDepth, sizeof(QueuedMsg));
     if (!g_events || !g_queue) return false;
 
     g_clientId = clientId;
     g_subTopic = subTopic;
+    g_username = username ? username : "";
+    g_password = password ? password : "";
     g_uri = String("mqtt://") + host + ":" + String(port);
 
     if (g_client) {
@@ -103,10 +123,16 @@ bool begin(const char *host, int port, const char *clientId, const char *subTopi
     esp_mqtt_client_config_t cfg = {};
     cfg.uri = g_uri.c_str();
     cfg.client_id = g_clientId.c_str();
+    if (g_username.length()) {
+        cfg.username = g_username.c_str();
+        cfg.password = g_password.c_str();
+    }
     cfg.disable_clean_session = true;
-    cfg.keepalive = 120;
+    cfg.keepalive = (int)MQTT_KEEPALIVE_SEC;
     cfg.buffer_size = kMaxPayload;
     cfg.out_buffer_size = kMaxPayload;
+
+    Serial.printf("mqtt: connecting to %s as %s\n", g_uri.c_str(), g_clientId.c_str());
 
     g_client = esp_mqtt_client_init(&cfg);
     if (!g_client) return false;
@@ -136,6 +162,8 @@ bool publish(const char *payload, int len) {
 bool publish(const String &payload) { return publish(payload.c_str(), (int)payload.length()); }
 
 bool connected() { return g_connected; }
+
+bool started() { return g_client != nullptr; }
 
 void loopWait(uint32_t timeoutMs, const MessageHandler &handler) {
     if (!g_events || !g_queue) {

@@ -12,7 +12,8 @@ namespace MqttHub {
 using MessageHandler = std::function<void(const char *payload, int len)>;
 using ConnectedHandler = std::function<void()>;
 
-bool begin(const char *host, int port, const char *clientId, const char *subTopic);
+bool begin(const char *host, int port, const char *clientId, const char *subTopic,
+           const char *username = nullptr, const char *password = nullptr);
 void stop();
 
 void setReportTopic(const char *topic);
@@ -21,6 +22,8 @@ void setConnectedHandler(ConnectedHandler handler);
 bool publish(const char *payload, int len);
 bool publish(const String &payload);
 bool connected();
+// True after begin() until stop()/destroy — even while temporarily disconnected.
+bool started();
 
 void loopWait(uint32_t timeoutMs, const MessageHandler &handler);
 

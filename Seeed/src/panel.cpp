@@ -2,8 +2,20 @@
 #include "config.h"
 #include <TFT_eSPI.h>
 #include <HTTPClient.h>
+#include <SD.h>
+// FreeSansBold24pt7b / FreeSans12pt7b come from TFT_eSPI.h -> gfxfont.h,
+// which #includes all 48 GFXFF fonts unconditionally when LOAD_GFXFF is set.
 
 extern EPaper epaper; // owned by main.cpp
+
+// GT32L32S0140 font-chip footprint on the schematic (U6, SPI1) is present but
+// unpopulated on this board rev (no pull-up, no decoupling cap, no MOSI trace
+// fitted) -- confirmed against the physical unit, so there's no on-board
+// glyph ROM to draw from. These GFXFF vector fonts (already compiled in via
+// LOAD_GFXFF/SMOOTH_FONT in Setup510_...) are the best available quality:
+// real glyphs at their point size instead of setTextSize()-scaled GLCD font.
+static void titleFont() { epaper.setFreeFont(&FreeSansBold24pt7b); }
+static void bodyFont() { epaper.setFreeFont(&FreeSans12pt7b); }
 
 namespace Panel {
 
@@ -28,23 +40,95 @@ void begin() {
 }
 
 void showProvisioning(const String &clientId) {
-    epaper.fillScreen(TFT_WHITE);
+    // fillSprite, not fillScreen: with setRotation(1) on a 4bpp EPaper sprite,
+    // fillScreen uses unswapped TFT _width/_height and only clears 1200×1200 of
+    // the 1200×1600 buffer — bottom quarter keeps the previous image.
+    epaper.fillSprite(TFT_WHITE);
     epaper.setTextColor(TFT_BLACK, TFT_WHITE);
 
-    epaper.setTextSize(3);
-    epaper.setCursor(40, 80);
-    epaper.println("Setup mode");
+    titleFont();
+    epaper.drawString("Setup mode", 40, 100);
 
-    epaper.setTextSize(2);
-    epaper.setCursor(40, 160);
-    epaper.println("Adopt this frame from the hub:");
-    epaper.setCursor(40, 200);
-    epaper.println("look for BLE name");
+    bodyFont();
+    epaper.drawString("Adopt this frame from the hub:", 40, 220);
+    epaper.drawString("look for BLE name", 40, 260);
 
-    epaper.setTextSize(3);
-    epaper.setCursor(40, 250);
-    epaper.println("IJ_" + clientId);
+    titleFont();
+    epaper.drawString("IJ_" + clientId, 40, 360);
 
+    epaper.setFreeFont(nullptr);
+    epaper.update();
+}
+
+void showOrientation(bool portrait) {
+    // Toast only — hub Portrait crop updates on the next encoded send.
+    // Portrait text is drawn in native portrait coords (90° from PANEL_ROTATION)
+    // so it reads upright when the frame is hung tall; mount rotation restored after.
+    if (portrait) {
+        epaper.setRotation(0); // flip to 2 if this reads upside down
+    }
+    const int16_t w = epaper.width();
+    const int16_t h = epaper.height();
+    epaper.fillSprite(TFT_WHITE);
+    epaper.setTextColor(TFT_BLACK, TFT_WHITE);
+    epaper.setTextDatum(MC_DATUM);
+    titleFont();
+    epaper.drawString(portrait ? "Portrait" : "Landscape", w / 2, h / 2 - 60);
+    bodyFont();
+    epaper.drawString("Hub crop preference saved", w / 2, h / 2 + 60);
+    epaper.drawString("Next send uses this crop", w / 2, h / 2 + 110);
+    epaper.setTextDatum(TL_DATUM);
+    epaper.setFreeFont(nullptr);
+    epaper.update();
+    if (portrait) {
+        epaper.setRotation(PANEL_ROTATION);
+    }
+}
+
+void showFactoryReset() {
+    const int16_t w = epaper.width();
+    const int16_t h = epaper.height();
+    epaper.fillSprite(TFT_WHITE);
+    epaper.setTextColor(TFT_BLACK, TFT_WHITE);
+    epaper.setTextDatum(MC_DATUM);
+    titleFont();
+    epaper.drawString("Factory reset", w / 2, h / 2 - 60);
+    bodyFont();
+    epaper.drawString("Credentials cleared", w / 2, h / 2 + 60);
+    epaper.drawString("Rebooting to setup mode", w / 2, h / 2 + 110);
+    epaper.setTextDatum(TL_DATUM);
+    epaper.setFreeFont(nullptr);
+    epaper.update();
+}
+
+void showConnected() {
+    const int16_t w = epaper.width();
+    const int16_t h = epaper.height();
+    epaper.fillSprite(TFT_WHITE);
+    epaper.setTextColor(TFT_BLACK, TFT_WHITE);
+    epaper.setTextDatum(MC_DATUM);
+    titleFont();
+    epaper.drawString("Connected", w / 2, h / 2 - 60);
+    bodyFont();
+    epaper.drawString("Ready to receive images", w / 2, h / 2 + 60);
+    epaper.drawString("from Joyous Hub", w / 2, h / 2 + 110);
+    epaper.setTextDatum(TL_DATUM);
+    epaper.setFreeFont(nullptr);
+    epaper.update();
+}
+
+void showLowBattery() {
+    const int16_t w = epaper.width();
+    const int16_t h = epaper.height();
+    epaper.fillSprite(TFT_WHITE);
+    epaper.setTextColor(TFT_BLACK, TFT_WHITE);
+    epaper.setTextDatum(MC_DATUM);
+    titleFont();
+    epaper.drawString("Critical Low Battery", w / 2, h / 2 - 60);
+    bodyFont();
+    epaper.drawString("Connect USB to power supply", w / 2, h / 2 + 60);
+    epaper.setTextDatum(TL_DATUM);
+    epaper.setFreeFont(nullptr);
     epaper.update();
 }
 
@@ -87,6 +171,36 @@ bool renderBinFromHttp(const String &host, int port, const String &path, void (*
     }
 
     http.end();
+    epaper.update();
+    return true;
+}
+
+bool renderBinFromFile(const String &path) {
+    File f = SD.open(path, FILE_READ);
+    if (!f) return false;
+
+    const int W = INKJOY_BIN_WIDTH;
+    const int H = INKJOY_BIN_HEIGHT;
+    static uint8_t rowBuf[INKJOY_BIN_WIDTH * 2];
+
+    for (int fileRow = 0; fileRow < H; fileRow++) {
+        int got = 0;
+        while (got < W * 2) {
+            int n = f.read(rowBuf + got, W * 2 - got);
+            if (n <= 0) {
+                f.close();
+                return false;
+            }
+            got += n;
+        }
+        int imageY = H - 1 - fileRow; // bin rows are stored bottom-to-top
+        for (int col = 0; col < W; col++) {
+            uint8_t hi = rowBuf[col * 2];
+            epaper.drawPixel(col, imageY, hiByteToColor(hi));
+        }
+    }
+
+    f.close();
     epaper.update();
     return true;
 }
