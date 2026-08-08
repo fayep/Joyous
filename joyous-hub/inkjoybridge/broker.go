@@ -94,10 +94,15 @@ type LoginInfo struct {
 // These frames speak InkJoy MQTT locally but must not be published to InkJoy cloud.
 const HardwareModelSeeed = 9
 
+// HardwareModelGooDisplay is the H value used by GooDisplay ESP32-133C02
+// custom firmware — same local-only situation as Seeed, distinct model so
+// the hub can tell the two clone hardware types apart (e.g. P2 pre-fill).
+const HardwareModelGooDisplay = 10
+
 // LocalOnlyHardware reports whether this model must stay on the local bridge
 // (never open an upstream cloud session / forward frame→cloud traffic).
 func LocalOnlyHardware(model int) bool {
-	return model == HardwareModelSeeed
+	return model == HardwareModelSeeed || model == HardwareModelGooDisplay
 }
 
 // HardwareModelFromVer parses H from an InkJoy login ver string ("M H:%d F:...").
