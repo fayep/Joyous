@@ -187,7 +187,17 @@ type SendImageBody struct {
 	Overlay      *OverlaySendInfo    `json:"overlay,omitempty"`
 	SendID       string              `json:"send_id,omitempty"`
 	HubBaseURL   string              `json:"hub_base_url"`
+	// ColorOverride is the device's per-device ink/color palette override, if
+	// any (hub-owned — see the hub's Device.ColorOverride), resolved by the hub
+	// at send time and handed to the bridge for this one encode. The bridge
+	// itself never stores or manages this; it only ever sees whatever the hub
+	// includes here, so bridges stay bridge-specific-config-free.
+	ColorOverride *[6]RGB `json:"color_override,omitempty"`
 }
+
+// RGB is a wire-safe 0-255 color triple (device-agnostic — used for any
+// per-device display palette override the hub resolves before a send).
+type RGB [3]int
 
 // OverlaySendInfo carries overlay config and weather snapshot from the hub so
 // the bridge can composite the same overlay the hub previewed.

@@ -26,6 +26,12 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("PUT /api/devices/{id}/schedule", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleScheduledSendPut(w, r, r.PathValue("id"))
 	})
+	mux.HandleFunc("GET /api/devices/{id}/color", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleDeviceColorGet(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("PUT /api/devices/{id}/color", func(w http.ResponseWriter, r *http.Request) {
+		hub.handleDeviceColorPut(w, r, r.PathValue("id"))
+	})
 	mux.HandleFunc("GET /api/ui/revision", hub.handleUIRevision)
 	mux.HandleFunc("GET /api/tags", hub.handleTagsList)
 	mux.HandleFunc("GET /api/albums", hub.handleAlbumsList)

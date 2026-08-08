@@ -66,6 +66,11 @@ type Device struct {
 	Portrait       bool   `json:"portrait,omitempty"` // user-set: frame is in portrait orientation
 	Orientation    int    `json:"orientation"`        // raw accelerometer value from heart (unreliable)
 	DeepSleepActive bool  `json:"deep_sleep_active,omitempty"` // samsung: overnight deep sleep (button wake)
+	// ColorOverride is a per-device snapshot of the 6 ink RGB values, captured at
+	// save time. nil means "use the bridge's current InkJoy display palette."
+	// Unlike the bridge-wide ColorConfig, this does not track later bridge edits —
+	// re-save (or reset) to pick up a new bridge default.
+	ColorOverride *[6]PaletteRGB `json:"color_override,omitempty"`
 	bridgeID        string `json:"-"` // owning bridge when synced via joyous protocol
 }
 
@@ -323,6 +328,19 @@ func (r *DeviceRegistry) SetPortrait(id string, portrait bool) bool {
 		return false
 	}
 	d.Portrait = portrait
+	return true
+}
+
+// SetColorOverride stores (or, if palette is nil, clears) a per-device ink
+// palette snapshot. Returns false if the device isn't registered.
+func (r *DeviceRegistry) SetColorOverride(id string, palette *[6]PaletteRGB) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok {
+		return false
+	}
+	d.ColorOverride = palette
 	return true
 }
 

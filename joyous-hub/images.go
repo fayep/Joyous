@@ -121,6 +121,39 @@ func (s *ImageStore) colorPipelineForID(id string) ColorPipeline {
 	return s.colorPipelineForMeta(meta)
 }
 
+// colorPipelineForMetaOverride is colorPipelineForMeta with a device's InkJoy ink
+// palette substituted in, if override is non-nil (see Device.ColorOverride).
+func (s *ImageStore) colorPipelineForMetaOverride(meta ImageMeta, override *[6]PaletteRGB) ColorPipeline {
+	pipe := s.colorPipelineForMeta(meta)
+	if override != nil {
+		pipe.InkJoyDisplay = paletteFromRGB(*override)
+	}
+	return pipe
+}
+
+// ClearDeviceBinCache removes cached .bin renders for one device's palette
+// override (both plain and overlay-tokened variants — see the "~dev-<suffix>"
+// cache key in ServeBinOrientationForDevice / ServeBinOrientationOverlayForDevice),
+// so a saved or reset calibration re-encodes on the next send instead of
+// serving a render made under the old ink values.
+func (s *ImageStore) ClearDeviceBinCache(deviceID string) error {
+	suffix := "~dev-" + sanitizeCacheKey(deviceID)
+	entries, err := os.ReadDir(s.cacheDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.Contains(e.Name(), suffix) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(s.cacheDir(), e.Name()))
+	}
+	return nil
+}
+
 // ClearBinCache removes converted .bin cache files (e.g. after color pipeline changes).
 func (s *ImageStore) ClearBinCache() error {
 	entries, err := os.ReadDir(s.cacheDir())
@@ -191,9 +224,22 @@ func (s *ImageStore) ServeBin(id string) ([]byte, error) {
 }
 
 func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, error) {
+	return s.ServeBinOrientationForDevice(id, portrait, nil, "")
+}
+
+// ServeBinOrientationForDevice is ServeBinOrientation with an optional per-device
+// ink palette override (see Device.ColorOverride). Devices without an override
+// (colorOverride == nil) share the plain image-keyed cache entry exactly as
+// before; an override gets its own cache entry keyed by cacheKeySuffix (the
+// device ID) so different devices' calibrations don't collide or overwrite
+// each other's cached renders of the same image.
+func (s *ImageStore) ServeBinOrientationForDevice(id string, portrait bool, colorOverride *[6]PaletteRGB, cacheKeySuffix string) ([]byte, error) {
 	cacheFile := s.cachePath(id)
+	if colorOverride != nil && cacheKeySuffix != "" {
+		cacheFile = s.cachePath(id) + "~dev-" + sanitizeCacheKey(cacheKeySuffix)
+	}
 	if portrait {
-		cacheFile = s.cachePath(id) + ".portrait"
+		cacheFile += ".portrait"
 	}
 	meta, _ := s.readMeta(id)
 	// Calibration charts always re-encode so the fixed vertical-sweep wipe is applied.
@@ -205,7 +251,7 @@ func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, erro
 	}
 
 	// Cache miss — convert (or flat calibration refresh).
-	bin, err := s.convertToBinOrientation(id, portrait)
+	bin, err := s.convertToBinOrientationForDevice(id, portrait, colorOverride)
 	if err != nil {
 		return nil, err
 	}
@@ -217,6 +263,12 @@ func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, erro
 
 	s.applyWipeIfConverted(id, bin)
 	return bin, nil
+}
+
+// sanitizeCacheKey keeps device-ID-derived cache filenames path-safe (device
+// IDs are usually a bare MAC, but this guards against any separator characters).
+func sanitizeCacheKey(s string) string {
+	return strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(s)
 }
 
 func (s *ImageStore) inkjoyWipeSelection() string {
@@ -1025,6 +1077,10 @@ func (s *ImageStore) readMeta(id string) (ImageMeta, error) {
 }
 
 func (s *ImageStore) convertToBinOrientation(id string, portrait bool) ([]byte, error) {
+	return s.convertToBinOrientationForDevice(id, portrait, nil)
+}
+
+func (s *ImageStore) convertToBinOrientationForDevice(id string, portrait bool, colorOverride *[6]PaletteRGB) ([]byte, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return nil, err
@@ -1046,7 +1102,7 @@ func (s *ImageStore) convertToBinOrientation(id string, portrait bool) ([]byte, 
 		return nil, err
 	}
 	wipe := flatCalibrationWipeGrid(meta.Name)
-	return encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipelineForMeta(meta), wipe, s.inkjoyWipeSelection())
+	return encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipelineForMetaOverride(meta, colorOverride), wipe, s.inkjoyWipeSelection())
 }
 
 func (s *ImageStore) overlayCacheFile(id, token string, portrait bool) string {
@@ -1061,7 +1117,16 @@ type overlayFrameMutator func(img image.Image, flatRGB bool) (image.Image, error
 
 // ServeBinOrientationOverlay converts the album image, applies mutate, caches under token.
 func (s *ImageStore) ServeBinOrientationOverlay(id string, portrait bool, token string, mutate overlayFrameMutator) ([]byte, error) {
+	return s.ServeBinOrientationOverlayForDevice(id, portrait, token, mutate, nil, "")
+}
+
+// ServeBinOrientationOverlayForDevice is ServeBinOrientationOverlay with an
+// optional per-device ink palette override — see ServeBinOrientationForDevice.
+func (s *ImageStore) ServeBinOrientationOverlayForDevice(id string, portrait bool, token string, mutate overlayFrameMutator, colorOverride *[6]PaletteRGB, cacheKeySuffix string) ([]byte, error) {
 	cacheFile := s.overlayCacheFile(id, token, portrait)
+	if colorOverride != nil && cacheKeySuffix != "" {
+		cacheFile += "~dev-" + sanitizeCacheKey(cacheKeySuffix)
+	}
 	if bin, err := os.ReadFile(cacheFile); err == nil {
 		return bin, nil
 	}
@@ -1074,7 +1139,7 @@ func (s *ImageStore) ServeBinOrientationOverlay(id string, portrait bool, token 
 		return nil, err
 	}
 	wipe := flatCalibrationWipeGrid(meta.Name)
-	bin, err := encodeInkJoyBinWithOverlay(rgba, flatRGB, s.colorPipelineForMeta(meta), wipe, s.inkjoyWipeSelection(), mutate)
+	bin, err := encodeInkJoyBinWithOverlay(rgba, flatRGB, s.colorPipelineForMetaOverride(meta, colorOverride), wipe, s.inkjoyWipeSelection(), mutate)
 	if err != nil {
 		return nil, err
 	}
