@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -930,6 +931,13 @@ func (h *Hub) pushSamsungFrame(frameID string, dev *Device) error {
 // minutes) — the only way a caller (the samsung-bridge, to relay "retrying" status to the hub)
 // finds out a wake is in progress rather than stuck, from the very first attempt.
 func (h *Hub) pushSamsungFrameWithProgress(frameID string, dev *Device, onWakeAttempt func(phase string, attempt int)) error {
+	return h.pushSamsungFrameWithProgressCtx(context.Background(), frameID, dev, onWakeAttempt)
+}
+
+func (h *Hub) pushSamsungFrameWithProgressCtx(ctx context.Context, frameID string, dev *Device, onWakeAttempt func(phase string, attempt int)) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	frameID = h.resolveSamsungFrameID(frameID)
 	if dev2 := h.samsungDeviceByFrameID(frameID); dev2 != nil {
 		dev = dev2
@@ -966,7 +974,7 @@ func (h *Hub) pushSamsungFrameWithProgress(frameID string, dev *Device, onWakeAt
 	if wantDeep {
 		sleepFn = h.sleepSamsungDeepDisplay
 	}
-	err = PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, sleepFn, SamsungPushOptions{
+	err = PushSamsungContent(ctx, dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, sleepFn, SamsungPushOptions{
 		DeepSleepActive: wantDeep,
 		RestoreStandby:  restoreStandby,
 	}, onWakeAttempt)
@@ -979,7 +987,7 @@ func (h *Hub) pushSamsungFrameWithProgress(frameID string, dev *Device, onWakeAt
 		dev = reached
 		contentURL = samsungMDCContentURL(addr, dev.IP, frameID)
 		logOutbound("samsung push retry frame=%s ip=%s content=%s", frameID, dev.IP, contentURL)
-		err = PushSamsungContent(dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, sleepFn, SamsungPushOptions{
+		err = PushSamsungContent(ctx, dev.IP, contentURL, dev.MDCPin, wifiMAC, autoSleep, sleepAfter, sleepFn, SamsungPushOptions{
 			DeepSleepActive: wantDeep,
 			RestoreStandby:  restoreStandby,
 		}, onWakeAttempt)

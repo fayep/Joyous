@@ -165,6 +165,10 @@ func (h *Hub) sendImageToDevice(deviceID, imageID, overlayToken string, overlayC
 		h.sendDelivery = NewSendDeliveryTracker()
 	}
 	send := h.sendDelivery.RegisterWithSession(deviceID, imageID, sessionID)
+	superseded := h.sendDelivery.FailOthersForDevice(deviceID, send.ID, "superseded by a newer send")
+	for _, id := range superseded {
+		h.publishSendEvent(id)
+	}
 	h.publishSendEvent(send.ID)
 	var err error
 	switch dev.Type {

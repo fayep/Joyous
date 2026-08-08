@@ -12,6 +12,13 @@ import (
 
 const sendDeliveryTTL = 10 * time.Minute
 
+// sendActiveAdvertiseMaxAge is how long an idle in-flight send stays in ActiveSends /
+// SSE handshake snapshots. Matches the UI's SEND_DELIVERY_TIMEOUT_MS (~3m): after that the
+// browser has already given up watching, and re-advertising the same "downloading" send on
+// every EventSource reconnect would resurrect a stuck "Downloading…" toast. Retrying sends
+// (LastTouch refreshed by IncrementRetry) stay visible past this age.
+const sendActiveAdvertiseMaxAge = 3 * time.Minute
+
 type sendStatus string
 
 const (
@@ -32,6 +39,7 @@ type sendDelivery struct {
 	ImageID        string
 	Status         sendStatus
 	Created        time.Time
+	LastTouch      time.Time // register / download / retry — drives ActiveSends advertise window
 	DeliveredAt    time.Time
 	RetryAttempts  int    // bumped by IncrementRetry; any bridge can report progress this way
 	LastError      string // most recent retry/failure detail (SendCompletePayload.Detail)
@@ -83,12 +91,14 @@ func (t *SendDeliveryTracker) Register(deviceID, imageID string) *sendDelivery {
 // RegisterWithSession is Register, attributing the send to sessionID so its "send" events are
 // unicast to just that browser session instead of broadcast to everyone.
 func (t *SendDeliveryTracker) RegisterWithSession(deviceID, imageID, sessionID string) *sendDelivery {
+	now := time.Now()
 	d := &sendDelivery{
 		ID:        newSendID(),
 		DeviceID:  deviceID,
 		ImageID:   imageID,
 		Status:    sendStatusPending,
-		Created:   time.Now(),
+		Created:   now,
+		LastTouch: now,
 		SessionID: sessionID,
 		done:      make(chan struct{}),
 	}
@@ -200,12 +210,45 @@ func (t *SendDeliveryTracker) finish(d *sendDelivery, status sendStatus) bool {
 	if status == sendStatusDelivered {
 		d.DeliveredAt = time.Now()
 	}
-	close(d.done)
+	closeSendDone(d)
 	return true
 }
 
 func (t *SendDeliveryTracker) Fail(sendID string) {
 	t.CompleteSend(sendID, false)
+}
+
+// FailOthersForDevice marks every other in-flight send for deviceID as failed so a newer
+// send is the only one the UI watches. Returns the failed send IDs (caller should publish
+// send events). keepSendID is left untouched.
+func (t *SendDeliveryTracker) FailOthersForDevice(deviceID, keepSendID, detail string) []string {
+	if t == nil || deviceID == "" {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var failed []string
+	for _, d := range t.byID {
+		if d.DeviceID != deviceID || d.ID == keepSendID {
+			continue
+		}
+		if d.Status != sendStatusPending && d.Status != sendStatusDownloading {
+			continue
+		}
+		if detail != "" {
+			d.LastError = detail
+		}
+		if d.inkjoyMsgID != "" {
+			delete(t.inkjoyByMsgID, d.inkjoyMsgID)
+		}
+		if d.samsungFrameID != "" {
+			delete(t.samsungByFrame, d.samsungFrameID)
+		}
+		if t.finish(d, sendStatusFailed) {
+			failed = append(failed, d.ID)
+		}
+	}
+	return failed
 }
 
 // CompleteSend marks a hub send as delivered or failed by send id.
@@ -250,6 +293,7 @@ func (t *SendDeliveryTracker) IncrementRetry(sendID, detail string) {
 		return
 	}
 	d.RetryAttempts++
+	d.LastTouch = time.Now()
 	if detail != "" {
 		d.LastError = detail
 	}
@@ -286,6 +330,7 @@ func (t *SendDeliveryTracker) MarkInkJoyDownloading(sendID string) {
 		return
 	}
 	d.Status = sendStatusDownloading
+	d.LastTouch = time.Now()
 }
 
 func (t *SendDeliveryTracker) MarkSamsungDownloading(frameID, etag string) {
@@ -303,6 +348,7 @@ func (t *SendDeliveryTracker) MarkSamsungDownloading(frameID, etag string) {
 		return
 	}
 	d.Status = sendStatusDownloading
+	d.LastTouch = time.Now()
 }
 
 func (t *SendDeliveryTracker) CompleteSamsung(frameID, etag string) {
@@ -356,6 +402,17 @@ func (t *SendDeliveryTracker) Wait(sendID string, timeout time.Duration) sendSta
 	return sendStatusFailed
 }
 
+func closeSendDone(d *sendDelivery) {
+	if d == nil || d.done == nil {
+		return
+	}
+	select {
+	case <-d.done:
+	default:
+		close(d.done)
+	}
+}
+
 func (t *SendDeliveryTracker) remove(sendID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -369,7 +426,25 @@ func (t *SendDeliveryTracker) remove(sendID string) {
 	if d.samsungFrameID != "" {
 		delete(t.samsungByFrame, d.samsungFrameID)
 	}
+	closeSendDone(d) // wake long-pollers if finish() never ran
 	delete(t.byID, sendID)
+}
+
+// sendStillAdvertise reports whether an in-flight send should appear in ActiveSends /
+// SSE handshakes. Idle pending/downloading past sendActiveAdvertiseMaxAge are omitted so a
+// browser that already timed out doesn't get a fresh "Downloading…" toast on reconnect.
+func sendStillAdvertise(d *sendDelivery, now time.Time) bool {
+	if d == nil {
+		return false
+	}
+	if d.Status != sendStatusPending && d.Status != sendStatusDownloading {
+		return false
+	}
+	touch := d.LastTouch
+	if touch.IsZero() {
+		touch = d.Created
+	}
+	return now.Sub(touch) <= sendActiveAdvertiseMaxAge
 }
 
 // ActiveSendsFor returns full status payloads (see sendStatusPayload) for every in-flight send
@@ -379,9 +454,10 @@ func (t *SendDeliveryTracker) remove(sendID string) {
 func (t *SendDeliveryTracker) ActiveSendsFor(sessionID string) []map[string]any {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := time.Now()
 	var out []map[string]any
 	for _, d := range t.byID {
-		if d.Status != sendStatusPending && d.Status != sendStatusDownloading {
+		if !sendStillAdvertise(d, now) {
 			continue
 		}
 		if d.SessionID != sessionID && d.SessionID != BroadcastSessionID {
@@ -406,11 +482,13 @@ type ActiveSendInfo struct {
 func (t *SendDeliveryTracker) ActiveSends() []ActiveSendInfo {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := time.Now()
 	out := make([]ActiveSendInfo, 0, len(t.byID))
 	for _, d := range t.byID {
-		if d.Status == sendStatusPending || d.Status == sendStatusDownloading {
-			out = append(out, ActiveSendInfo{SendID: d.ID, DeviceID: d.DeviceID, ImageID: d.ImageID})
+		if !sendStillAdvertise(d, now) {
+			continue
 		}
+		out = append(out, ActiveSendInfo{SendID: d.ID, DeviceID: d.DeviceID, ImageID: d.ImageID})
 	}
 	return out
 }

@@ -232,6 +232,49 @@ func TestActiveSendsOnlyIncludesInFlight(t *testing.T) {
 	}
 }
 
+func TestActiveSendsOmitsStaleInFlight(t *testing.T) {
+	tr := NewSendDeliveryTracker()
+	stale := tr.Register("dev1", "img1")
+	tr.MarkInkJoyDownloading(stale.ID)
+	tr.mu.Lock()
+	tr.byID[stale.ID].LastTouch = time.Now().Add(-sendActiveAdvertiseMaxAge - time.Second)
+	tr.mu.Unlock()
+
+	fresh := tr.Register("dev2", "img2")
+	retrying := tr.Register("dev3", "img3")
+	tr.IncrementRetry(retrying.ID, "waiting for frame to wake")
+	tr.mu.Lock()
+	tr.byID[retrying.ID].LastTouch = time.Now().Add(-sendActiveAdvertiseMaxAge - time.Second)
+	// Retrying sends stay advertised via LastTouch refresh on IncrementRetry; age them only
+	// after that bump so a mid-wake retry older than the window still drops once idle.
+	tr.mu.Unlock()
+
+	active := tr.ActiveSends()
+	got := map[string]bool{}
+	for _, a := range active {
+		got[a.SendID] = true
+	}
+	if got[stale.ID] {
+		t.Fatalf("stale downloading send still advertised: %+v", active)
+	}
+	if !got[fresh.ID] {
+		t.Fatalf("fresh pending missing: %+v", active)
+	}
+	if got[retrying.ID] {
+		t.Fatalf("idle retrying send past advertise window should drop: %+v", active)
+	}
+
+	tr.IncrementRetry(retrying.ID, "waiting for frame to wake")
+	active = tr.ActiveSends()
+	got = map[string]bool{}
+	for _, a := range active {
+		got[a.SendID] = true
+	}
+	if !got[retrying.ID] {
+		t.Fatalf("IncrementRetry should refresh advertise window: %+v", active)
+	}
+}
+
 // TestHandleActiveSendsIncludesDeviceType covers a browser tab that didn't itself trigger a
 // send (e.g. a scheduled send fired while it was open) discovering the send and the device
 // type needed for the Samsung "press power button" hint, without depending on its own
