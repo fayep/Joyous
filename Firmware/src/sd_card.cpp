@@ -1,5 +1,6 @@
-#include "sd_card.h"
 #include "config.h"
+#if ENABLE_SD_CACHE
+#include "sd_card.h"
 #include <SPI.h>
 #include <SD.h>
 
@@ -30,3 +31,4 @@ uint64_t totalBytes() { return g_present ? SD.totalBytes() : 0; }
 uint64_t usedBytes() { return g_present ? SD.usedBytes() : 0; }
 
 } // namespace SdCard
+#endif // ENABLE_SD_CACHE

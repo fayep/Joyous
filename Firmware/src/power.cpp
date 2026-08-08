@@ -1,15 +1,13 @@
 #include "power.h"
 #include "config.h"
 #include "secrets.h"
+#include "panel.h"
 #include <WiFi.h>
 #include <time.h>
 #include <sys/time.h>
 #include <esp_sleep.h>
 #include <esp_wifi.h>
 #include <driver/gpio.h>
-#include <TFT_eSPI.h>
-
-extern EPaper epaper;
 
 namespace Power {
 
@@ -41,7 +39,11 @@ int percentFromMv(int mv) {
 }
 
 bool buttonHeld() {
+#if BTN_ORIENT_PIN >= 0 && BTN_RESET_PIN >= 0
     return digitalRead(BTN_ORIENT_PIN) == LOW || digitalRead(BTN_RESET_PIN) == LOW;
+#else
+    return false;  // no button GPIOs known for this board yet
+#endif
 }
 
 }  // namespace
@@ -138,7 +140,9 @@ void lightSleepMs(uint32_t ms) {
 
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     esp_sleep_enable_timer_wakeup((uint64_t)ms * 1000ULL);
+#if BTN_ORIENT_PIN >= 0 && BTN_RESET_PIN >= 0
     esp_sleep_enable_ext1_wakeup(BTN_WAKE_MASK, ESP_EXT1_WAKEUP_ANY_LOW);
+#endif
     // Keep MQTT reachable: WiFi DTIM / RX can wake the CPU from light sleep.
     esp_sleep_enable_wifi_wakeup();
     esp_light_sleep_start();
@@ -150,7 +154,7 @@ namespace {
 // KEY1/KEY3 wake unconditionally (deepSleepSeconds also wants it as an early
 // exit; deepSleepUntilButton relies on it being the *only* wake source).
 void prepareForDeepSleep() {
-    epaper.sleep();
+    Panel::sleep();
 
 #if PANEL_ENABLE_PIN >= 0
     pinMode(PANEL_ENABLE_PIN, OUTPUT);
@@ -167,7 +171,9 @@ void prepareForDeepSleep() {
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     // KEY1/KEY3 can also cut the overnight window (or a low-battery recheck
     // sleep) short if needed.
+#if BTN_ORIENT_PIN >= 0 && BTN_RESET_PIN >= 0
     esp_sleep_enable_ext1_wakeup(BTN_WAKE_MASK, ESP_EXT1_WAKEUP_ANY_LOW);
+#endif
 }
 
 } // namespace

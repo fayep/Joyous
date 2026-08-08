@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
-#include <TFT_eSPI.h>
 #include <Preferences.h>
 #include <esp_wifi.h>
 #include <string.h>
@@ -13,12 +12,20 @@
 #include "power.h"
 #include "ble_provision.h"
 #include "mqtt_hub.h"
+#if ENABLE_SD_CACHE
 #include "sd_card.h"
 #include "playlist.h"
+#endif
 
+#if defined(BOARD_SEEED) || defined(BOARD_GOODISPLAY)
+#include <TFT_eSPI.h>
 // EPaper is Seeed_Arduino_LCD's e-paper sprite/driver class (Extensions/EPaper.cpp);
-// panel.cpp owns init/render, this file just needs the instance to exist.
+// panel_tftespi.cpp owns init/render for both boards, this file just needs
+// the instance to exist (Seeed's EE02 and GooDisplay's ESP32-133C02 are the
+// same underlying T133A01/GDEP133C02 driver silicon -- see
+// panel_tftespi.cpp).
 EPaper epaper;
+#endif
 
 static String clientId;    // MAC without colons — also the frame's clientID/stamac
 static String reportTopic; // /device/report/{MAC} — we publish here
@@ -31,7 +38,9 @@ RTC_DATA_ATTR int savedSleepBeginMin = -1;
 RTC_DATA_ATTR int savedSleepEndMin = -1;
 
 static unsigned long lastHeartMs = 0;
+#if ENABLE_SD_CACHE
 static unsigned long lastPlaylistRenderMs = 0;
+#endif
 static String g_currentPlayAckMsgId;
 
 // millis() readings at the moment login/heart were published — paired with
@@ -247,6 +256,7 @@ static void toggleOrientation() {
 }
 
 static void pollOrientationButton() {
+#if BTN_ORIENT_PIN >= 0
     // KEY1 is active-low with internal pull-up.
     bool down = digitalRead(BTN_ORIENT_PIN) == LOW;
     uint32_t now = millis();
@@ -258,6 +268,7 @@ static void pollOrientationButton() {
         g_orientBtnDown = false;
         g_orientBtnAt = now;
     }
+#endif
 }
 
 static void factoryReset() {
@@ -270,6 +281,7 @@ static void factoryReset() {
 }
 
 static void pollResetButton() {
+#if BTN_RESET_PIN >= 0
     // KEY3 long-press (active-low) clears adoption NVS and reboots to setup.
     bool down = digitalRead(BTN_RESET_PIN) == LOW;
     uint32_t now = millis();
@@ -286,6 +298,7 @@ static void pollResetButton() {
         g_resetBtnDown = false;
         g_resetFired = false;
     }
+#endif
 }
 
 static void onPlayProgress(int pct) {
@@ -471,16 +484,41 @@ void setup() {
     digitalWrite(LED_BUILTIN, HIGH);
 #endif
 
+#if BTN_ORIENT_PIN >= 0
     pinMode(BTN_ORIENT_PIN, INPUT_PULLUP);
+#endif
+#if BTN_RESET_PIN >= 0
     pinMode(BTN_RESET_PIN, INPUT_PULLUP);
+#endif
     loadOrientation();
 
     Serial.println("panel: begin");
     Panel::begin();
     Serial.println("panel: ready");
 
+// No test-function auto-run here on purpose. An earlier test
+// (colorCycleTest, cycling through 6 colors) was wired into setup() for one
+// bring-up session (2026-08-07) and very likely caused a brownout-reset
+// loop on real hardware -- refreshing two real EPD driver ICs draws real
+// current, and running it unconditionally on every boot meant ANY reset
+// re-triggered it immediately with no real gap. A SECOND real refresh loop
+// was then also observed from a totally normal boot path (Panel::begin() +
+// the one showProvisioning() refresh, no test function involved), so the
+// trigger was never conclusively pinned to any one test specifically --
+// treat any wired-in real-hardware refresh as carrying that same risk.
+//
+// GooDisplay's panel driver went through a full bring-up (2026-08-07/08):
+// a from-scratch ESP-IDF driver (panel_goodisplay.cpp, kept in the tree but
+// excluded from the build) confirmed the panel works over single-line SPI
+// with a left/right CS0/CS1 column split, then Seeed_GFX (same underlying
+// T133A01/GDEP133C02 silicon) was retried with its earlier TFT_DC/TFT_RST
+// pin-aliasing bug fixed and became the real implementation -- see
+// panel_tftespi.cpp and tft_setup_goodisplay.h.
+
+#if ENABLE_SD_CACHE
     SdCard::begin();  // logs its own mount result; absence is non-fatal
     Playlist::begin();  // logs its own result; no card/playlist.json is non-fatal
+#endif
 
     WiFi.mode(WIFI_STA);
     clientId = WiFi.macAddress();
@@ -575,6 +613,7 @@ void loop() {
         lastHeartMs = millis();
     }
 
+#if ENABLE_SD_CACHE
     // SD-card playlist.json cycling — independent of MQTT play, matching
     // the real InkJoy firmware's own local slideshow behavior when no
     // cloud content is pushed. Renders the first frame immediately on
@@ -591,6 +630,7 @@ void loop() {
         }
         lastPlaylistRenderMs = millis();
     }
+#endif
 
     int nowMin = Power::nowMinutesSinceMidnight();
     if (millis() >= g_loginSettleUntilMs &&

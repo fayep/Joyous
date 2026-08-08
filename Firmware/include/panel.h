@@ -5,6 +5,11 @@ namespace Panel {
 
 void begin();
 
+// Puts the panel controller into its own low-power sleep state before deep
+// sleep. Board-specific: Seeed's EPaper class has its own sleep(); GooDisplay
+// sends the driver's POF (power-off) sequence.
+void sleep();
+
 // Draws a plain-text setup screen showing the frame's BLE provisioning name
 // ("IJ_<clientId>") so whoever is running the hub's scan/adopt tooling can
 // tell this physical unit apart from any other frame in provisioning mode.

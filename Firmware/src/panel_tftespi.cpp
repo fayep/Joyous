@@ -1,5 +1,17 @@
-#include "panel.h"
 #include "config.h"
+#if defined(BOARD_SEEED) || defined(BOARD_GOODISPLAY)
+// Shared TFT_eSPI/Seeed_GFX implementation for both boards -- Seeed's EE02
+// (T133A01_DRIVER) and GooDisplay's ESP32-133C02 (GDEP133C02, wired via
+// tft_setup_goodisplay.h) are the same underlying driver silicon, confirmed
+// by an identical register map (2026-08-08). GooDisplay's board first got a
+// from-scratch ESP-IDF driver (panel_goodisplay.cpp, kept in the tree but
+// excluded from the build -- see platformio.ini's goodisplay_c02
+// build_src_filter) while a Seeed_GFX attempt was blocked by a TFT_DC/
+// TFT_RST pin-aliasing bug; once that was fixed and a real DC/X pin traced
+// from the board (see tft_setup_goodisplay.h), Seeed_GFX worked immediately
+// with correct rotation and no manual transform math, so it became the real
+// implementation for GooDisplay too.
+#include "panel.h"
 #include <TFT_eSPI.h>
 #include <HTTPClient.h>
 #include <SD.h>
@@ -8,12 +20,14 @@
 
 extern EPaper epaper; // owned by main.cpp
 
-// GT32L32S0140 font-chip footprint on the schematic (U6, SPI1) is present but
-// unpopulated on this board rev (no pull-up, no decoupling cap, no MOSI trace
-// fitted) -- confirmed against the physical unit, so there's no on-board
-// glyph ROM to draw from. These GFXFF vector fonts (already compiled in via
-// LOAD_GFXFF/SMOOTH_FONT in Setup510_...) are the best available quality:
-// real glyphs at their point size instead of setTextSize()-scaled GLCD font.
+// GT32L32S0140 font-chip footprint on Seeed's schematic (U6, SPI1) is
+// present but unpopulated on that board rev -- confirmed against the
+// physical unit, so there's no on-board glyph ROM to draw from there.
+// GooDisplay's board isn't known to have an equivalent font chip either.
+// These GFXFF vector fonts (already compiled in via LOAD_GFXFF/SMOOTH_FONT
+// in Setup510_.../tft_setup_goodisplay.h) are the best available quality on
+// either board: real glyphs at their point size instead of a
+// setTextSize()-scaled GLCD font.
 static void titleFont() { epaper.setFreeFont(&FreeSansBold24pt7b); }
 static void bodyFont() { epaper.setFreeFont(&FreeSans12pt7b); }
 
@@ -37,6 +51,10 @@ static uint8_t hiByteToColor(uint8_t hi) {
 void begin() {
     epaper.begin();
     epaper.setRotation(PANEL_ROTATION);
+}
+
+void sleep() {
+    epaper.sleep();
 }
 
 void showProvisioning(const String &clientId) {
@@ -176,6 +194,7 @@ bool renderBinFromHttp(const String &host, int port, const String &path, void (*
 }
 
 bool renderBinFromFile(const String &path) {
+#if ENABLE_SD_CACHE
     File f = SD.open(path, FILE_READ);
     if (!f) return false;
 
@@ -203,6 +222,11 @@ bool renderBinFromFile(const String &path) {
     f.close();
     epaper.update();
     return true;
+#else
+    (void)path;
+    return false;  // no SD support on this board yet
+#endif
 }
 
 } // namespace Panel
+#endif // BOARD_SEEED || BOARD_GOODISPLAY

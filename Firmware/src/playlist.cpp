@@ -1,3 +1,5 @@
+#include "config.h"
+#if ENABLE_SD_CACHE
 #include "playlist.h"
 #include "sd_card.h"
 #include <ArduinoJson.h>
@@ -171,3 +173,4 @@ void advance() {
 }
 
 } // namespace Playlist
+#endif // ENABLE_SD_CACHE

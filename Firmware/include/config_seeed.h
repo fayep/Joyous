@@ -79,6 +79,7 @@
 // from whether SD.begin() succeeds. That means "no addon board" and "no
 // card" read identically for now -- a real CD pin would need a hardware
 // rev with a spare GPIO.
+#define ENABLE_SD_CACHE 1
 #define SD_SPI_SCLK_PIN 11
 #define SD_SPI_MISO_PIN 12
 #define SD_SPI_MOSI_PIN 13
