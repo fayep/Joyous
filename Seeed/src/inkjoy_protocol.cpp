@@ -17,7 +17,7 @@ int progressResult(int percent) {
 String nowMsgId() {
     time_t now;
     time(&now);
-    if (now > 1700000000) { // sane post-2023 epoch => NTP has synced
+    if (now > 1700000000) { // sane post-2023 epoch => clock has synced
         uint64_t ms = (uint64_t)now * 1000ULL + (millis() % 1000UL);
         char buf[24];
         snprintf(buf, sizeof(buf), "%llu", (unsigned long long)ms);
@@ -26,7 +26,14 @@ String nowMsgId() {
     return String(millis());
 }
 
-String buildLogin(const String &clientId, const String &sleepBegin, const String &sleepEnd) {
+uint64_t parseMsgIdMs(JsonDocument &doc) {
+    const char *s = doc["msgid"] | "";
+    if (!s || !*s) return 0;
+    return strtoull(s, nullptr, 10);
+}
+
+String buildLogin(const String &clientId, const String &sleepBegin, const String &sleepEnd,
+                   const P2Ink p2cal[6]) {
     JsonDocument doc;
     doc["action"] = "login";
     doc["clientid"] = clientId;
@@ -41,12 +48,20 @@ String buildLogin(const String &clientId, const String &sleepBegin, const String
     data["sleep_mode"] = 2;
     data["sleep_begin_time"] = sleepBegin;
     data["sleep_end_time"] = sleepEnd;
+    JsonArray p2 = data["p2"].to<JsonArray>();
+    for (int i = 0; i < 6; i++) {
+        JsonArray ink = p2.add<JsonArray>();
+        ink.add(p2cal[i].r);
+        ink.add(p2cal[i].g);
+        ink.add(p2cal[i].b);
+    }
     String out;
     serializeJson(doc, out);
     return out;
 }
 
-String buildHeart(const String &clientId, int batteryPct, int rssi, const String &wifiName) {
+String buildHeart(const String &clientId, int batteryPct, int rssi,
+                  const String &wifiName, int orientation) {
     JsonDocument doc;
     doc["action"] = "heart";
     doc["clientid"] = clientId;
@@ -61,7 +76,7 @@ String buildHeart(const String &clientId, int batteryPct, int rssi, const String
     data["tf"] = "absent";
     data["tfsize"] = 0;
     data["tfused"] = 0;
-    data["orientation"] = 0;
+    data["orientation"] = orientation;
     data["battery"] = batteryPct;
     data["wifi_listen_iv"] = 50;
     data["wifi_rssi"] = rssi;

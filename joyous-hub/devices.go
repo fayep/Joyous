@@ -73,6 +73,13 @@ type Device struct {
 	// Unlike the bridge-wide ColorConfig, this does not track later bridge edits —
 	// re-save (or reset) to pick up a new bridge default.
 	ColorOverride *[6]PaletteRGB `json:"color_override,omitempty"`
+	// DeviceReportedP2 is the device's own factory/NVS P2 calibration, reported
+	// at login (see inkjoybridge.LoginInfo.P2). Distinct from ColorOverride
+	// (a human-saved override via the calibration UI) — this is what the UI
+	// pre-fills with before any human override exists, so a Seeed clone (or
+	// other non-real-InkJoy panel) starts from a value tuned for its own panel
+	// instead of the real-InkJoy-panel bridge default.
+	DeviceReportedP2 *[6]PaletteRGB `json:"device_reported_p2,omitempty"`
 	bridgeID        string `json:"-"` // owning bridge when synced via joyous protocol
 }
 
@@ -297,6 +304,13 @@ func (r *DeviceRegistry) UpdateLogin(mac string, info inkjoybridge.LoginInfo) *L
 	}
 	if info.HardwareModel > 0 {
 		d.HardwareModel = info.HardwareModel
+	}
+	if info.P2 != nil {
+		p := [6]PaletteRGB{}
+		for i, rgb := range info.P2 {
+			p[i] = PaletteRGB{rgb[0], rgb[1], rgb[2]}
+		}
+		d.DeviceReportedP2 = &p
 	}
 	var mismatch *LoginSleepMismatch
 	if d.SleepBeginTime == "" && d.SleepEndTime == "" {

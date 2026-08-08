@@ -22,6 +22,11 @@ func (h *Hub) handleDeviceColorGet(w http.ResponseWriter, r *http.Request, id st
 	bridgeDefault := pipe.InkJoyDisplay
 	if dev.Type == DeviceTypeSamsung {
 		bridgeDefault = pipe.SamsungDisplay
+	} else if dev.DeviceReportedP2 != nil {
+		// Non-Samsung device that reported its own P2 at login (e.g. a Seeed
+		// clone, whose panel doesn't match the real-InkJoy-panel default) —
+		// pre-fill from that instead of the generic InkJoy display palette.
+		bridgeDefault = paletteFromRGB(*dev.DeviceReportedP2)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{

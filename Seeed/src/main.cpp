@@ -166,7 +166,9 @@ static void publish(const String &payload) { MqttHub::publish(payload); }
 
 static void sendLogin() {
     g_loginSentMs = millis();
-    publish(InkJoy::buildLogin(clientId, minToHHMM(savedSleepBeginMin), minToHHMM(savedSleepEndMin)));
+    P2Ink p2cal[6];
+    loadP2Calibration(p2cal);
+    publish(InkJoy::buildLogin(clientId, minToHHMM(savedSleepBeginMin), minToHHMM(savedSleepEndMin), p2cal));
 }
 
 // Returns the battery percent sent with this heart, or -1 if the heart

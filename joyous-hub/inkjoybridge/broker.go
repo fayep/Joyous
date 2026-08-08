@@ -84,6 +84,10 @@ type LoginInfo struct {
 	HardwareModel  int // H from login ver "M H:%d F:..."; 0 if absent
 	SleepBeginTime string
 	SleepEndTime   string
+	// P2 is the device's own factory/NVS-stored P2 dither-target calibration
+	// (login's "p2": [[r,g,b]x6]), if this firmware reports one. nil for
+	// firmware that doesn't send it (older builds, real InkJoy hardware).
+	P2 *[6][3]int
 }
 
 // HardwareModelSeeed is the H value used by Seeed EE02 custom firmware.
@@ -118,10 +122,11 @@ func HardwareModelFromVer(ver string) int {
 func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 	var msg struct {
 		Data struct {
-			ClientID       string `json:"clientid"`
-			Ver            string `json:"ver"`
-			SleepBeginTime string `json:"sleep_begin_time"`
-			SleepEndTime   string `json:"sleep_end_time"`
+			ClientID       string     `json:"clientid"`
+			Ver            string     `json:"ver"`
+			SleepBeginTime string     `json:"sleep_begin_time"`
+			SleepEndTime   string     `json:"sleep_end_time"`
+			P2             *[6][3]int `json:"p2"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
@@ -131,6 +136,7 @@ func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 		ClientID:       msg.Data.ClientID,
 		Firmware:       msg.Data.Ver,
 		HardwareModel:  HardwareModelFromVer(msg.Data.Ver),
+		P2:             msg.Data.P2,
 		SleepBeginTime: msg.Data.SleepBeginTime,
 		SleepEndTime:   msg.Data.SleepEndTime,
 	}, nil
