@@ -46,12 +46,10 @@
 // EE02 and this board are the same driver silicon (T133A01 == GDEP133C02)
 // but different vendor calibration profiles -- these are GooDisplay's own
 // values from their GDEP133C02.c reference (GooDisplay/docs/
-// vendor_code_example_usb_variant/GDEP133C02.c), not Seeed's. Currently
-// UNTESTED on real hardware with Seeed_GFX (only ever tested in the
-// now-parked custom driver, panel_goodisplay.cpp, where they worked) --
-// worth a real render to confirm before trusting over Seeed's defaults,
-// which are also confirmed-working on this exact panel (see
-// GooDisplay/docs/firmware_disassembly_dc_pin.md).
+// vendor_code_example_usb_variant/GDEP133C02.c), not Seeed's. Confirmed
+// working on real hardware with Seeed_GFX (2026-08-08) -- no visible
+// difference from Seeed's own (also confirmed-working) defaults, but this
+// board now runs its own vendor-matched tuning rather than borrowed values.
 #define T133A01_CDI_V     { 0xF7 }
 #define T133A01_BTST_P_V  { 0xE8, 0x28 }
 #define T133A01_BTST_N_V  { 0xE8, 0x28 }
