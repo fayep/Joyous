@@ -118,6 +118,17 @@ input[type=text],input[type=password],input[type=time]{padding:.35rem .5rem;bord
         <button class="btn btn-sm" style="background:#6c757d;color:#fff" onclick="clearSleep()">Clear (always on)</button>
       </div>
     </div>
+    <div class="card" style="border-color:#ffe69c">
+      <div class="section-label" style="margin-top:0;color:#997404">Custom OTA (dev)</div>
+      <p style="font-size:.8rem;color:#888;margin:.25rem 0 .5rem">Points the frame at a locally-hosted firmware.bin instead of InkJoy's cloud. Frame self-flashes and self-reboots — watch the MQTT traffic panel below for ota_ack, or tail hub logs.</p>
+      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+        <input id="ota-host" placeholder="host (LAN IP)" style="width:11rem">
+        <input id="ota-port" placeholder="port" type="number" style="width:6rem" value="8090">
+        <input id="ota-path" placeholder="/path/to/firmware.bin" style="flex:1;min-width:14rem">
+        <button class="btn btn-sm" style="background:#997404;color:#fff" onclick="pushOTA()">Push OTA</button>
+      </div>
+      <p id="ota-status" style="font-size:.8rem;color:#888;margin:.5rem 0 0"></p>
+    </div>
     <div class="card" style="border-color:#f5c6cb">
       <div class="section-label" style="margin-top:0;color:#dc3545">Danger zone</div>
       <button class="btn btn-sm" style="background:#dc3545;color:#fff" onclick="deleteDevice()">Remove frame from hub</button>
@@ -255,6 +266,20 @@ async function clearSleep(){
   document.getElementById('sleep-begin').value='00:00';
   document.getElementById('sleep-end').value='00:00';
   await saveSleep();
+}
+async function pushOTA(){
+  if(!currentId) return;
+  const host=document.getElementById('ota-host').value.trim();
+  const path=document.getElementById('ota-path').value.trim();
+  const port=parseInt(document.getElementById('ota-port').value,10)||8090;
+  const st=document.getElementById('ota-status');
+  if(!host||!path){ st.textContent='host and path are required.'; return; }
+  if(!confirm('Push '+host+':'+port+path+' to this frame? It will fetch, flash, and self-reboot.')) return;
+  st.textContent='Publishing ota push…';
+  try{
+    const r=await fetch('/inkjoy/api/devices/'+encodeURIComponent(currentId)+'/ota',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host,port,path})});
+    st.textContent=r.ok?'Sent. Watch MQTT traffic below for ota_ack.':'Failed: '+(await r.text());
+  }catch(e){ st.textContent='Failed: '+e.message; }
 }
 async function deleteDevice(){
   if(!currentId||!confirm('Remove this frame from the hub?')) return;

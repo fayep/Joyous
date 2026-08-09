@@ -442,6 +442,15 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		if h.devices != nil {
 			h.devices.MarkShutdown(mac, info)
 		}
+	case "ota_ack":
+		// Frame's response to a pushed "ota" pointer (see buildOTAPayload /
+		// handleOTA) — surfaced explicitly rather than falling into the
+		// generic default case, since this is the signal that tells us
+		// whether a hand-patched firmware image was actually fetched.
+		log.Printf("[%s] ota_ack: %s", mac, string(payload))
+		if h.devices != nil {
+			h.devices.MarkConnected(mac)
+		}
 	default:
 		if h.devices != nil {
 			h.devices.MarkConnected(mac)
