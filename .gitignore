@@ -32,6 +32,11 @@ fpga-*
 ISFR-lite.exe
 InkJoy/spiffs_extracted/
 Samsung/epaper-decompiled
+# GooDisplay vendor firmware dumps/binaries + re-downloaded vendor example
+# archive (large, reproducible from the vendor's own downloads; keep local)
+GooDisplay/dumps/
+GooDisplay/docs/GDEP133C02-ESP32_code_example.zip
+GooDisplay/docs/vendor_code_example_full/
 # Nixplay captures / dumps (docs stay tracked)
 Nixplay/captures/
 Nixplay/db/
