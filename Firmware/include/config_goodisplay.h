@@ -64,21 +64,42 @@
 #define HW_MODEL 10
 #define FW_VERSION "1.0.0"
 
-// No known SD hardware on this firmware slice — the SD-variant board (and
-// its real GPIO pin mapping) hasn't arrived yet. See GooDisplay/README.md.
-#define ENABLE_SD_CACHE 0
+// SD card pinout confirmed from GooDisplay's own official board spec
+// (GooDisplay/docs/esp32_133c02_specification.pdf, Section 3.2 "SD card")
+// -- this board does have a populated SD slot despite an earlier, wrong
+// assumption in this file that it didn't (2026-08-11).
+#define ENABLE_SD_CACHE 1
+#define SD_SPI_SCLK_PIN 8
+#define SD_SPI_MISO_PIN 5
+#define SD_SPI_MOSI_PIN 3
+#define SD_CS_PIN 15
 
-// Battery ADC and button pins are not yet traced for this board (no
-// schematic beyond the panel/SD-slot region examined so far). -1 sentinels
-// (matching the existing PANEL_ENABLE_PIN/BATTERY_ADC_PIN convention in
-// power.cpp) disable the corresponding code paths at compile time rather
-// than guessing pin numbers — buttonHeld()/pollOrientationButton()/
-// pollResetButton() become no-ops, batteryMillivolts() returns -1, and
-// handleBatteryLevel() already treats a negative percent as "unknown, don't
-// act on it."
-#define BTN_ORIENT_PIN -1
-#define BTN_RESET_PIN -1
+// Buttons: vendor spec (Section 3.1) documents 3 function buttons
+// (SW2=IO12, SW3=IO13, SW4=IO14) but not which does what -- assigned here
+// to mirror Seeed's own 2-button pattern (config_seeed.h: KEY1=orient,
+// KEY3=reset), SW3 left unused.
+//
+// BTN_ACTIVE_HIGH=1: per the same vendor spec, "All three buttons are
+// triggered by a high level" -- opposite polarity from Seeed's active-low
+// KEY1/KEY3. Confirmed the hard way on real hardware (2026-08-11): using
+// the inherited active-low assumption (INPUT_PULLUP, wake-on-LOW) left
+// these pins in an underdetermined, noise-susceptible idle state that
+// fired both orientation and factory-reset actions at random -- a real
+// safety issue (spurious factory reset wipes WiFi/hub adoption
+// unprompted), not just a minor bug. Fixed by making button polarity a
+// per-board macro (main.cpp/power.cpp) rather than hardcoding Seeed's
+// assumption into the shared code.
+#define BTN_ORIENT_PIN 12  // SW2
+#define BTN_RESET_PIN  14  // SW4
 #define BTN_RESET_HOLD_MS 3000
+#define BTN_ACTIVE_HIGH 1
+#define BTN_WAKE_MASK ((1ULL << BTN_ORIENT_PIN) | (1ULL << BTN_RESET_PIN))
+
+// Battery ADC pin is not yet traced for this board -- -1 sentinel (matching
+// the existing PANEL_ENABLE_PIN convention in power.cpp) disables the code
+// path at compile time rather than guessing a pin number.
+// batteryMillivolts() returns -1, and handleBatteryLevel() already treats
+// a negative percent as "unknown, don't act on it."
 #define PANEL_ENABLE_PIN -1
 #define BATTERY_ADC_PIN -1
 #define BATTERY_ADC_EN_PIN -1

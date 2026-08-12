@@ -257,8 +257,13 @@ static void toggleOrientation() {
 
 static void pollOrientationButton() {
 #if BTN_ORIENT_PIN >= 0
-    // KEY1 is active-low with internal pull-up.
-    bool down = digitalRead(BTN_ORIENT_PIN) == LOW;
+    // Polarity is per-board: Seeed's KEY1 is active-low with internal
+    // pull-up (BTN_ACTIVE_HIGH=0); GooDisplay's SW2 is active-high per its
+    // own vendor spec ("All three buttons are triggered by a high level"),
+    // confirmed the hard way -- using the wrong polarity here (internal
+    // pull-up fighting a circuit built for active-high) left the pin in an
+    // underdetermined, noise-susceptible idle state that fired at random.
+    bool down = digitalRead(BTN_ORIENT_PIN) == (BTN_ACTIVE_HIGH ? HIGH : LOW);
     uint32_t now = millis();
     if (down && !g_orientBtnDown && (now - g_orientBtnAt) > 40) {
         g_orientBtnDown = true;
@@ -280,10 +285,22 @@ static void factoryReset() {
     ESP.restart();
 }
 
+static void softReboot() {
+    // Plain reboot, no NVS/config change -- picks up anything only checked
+    // once at boot (e.g. SD card presence; ENABLE_SD_CACHE boards don't
+    // re-poll for a card every loop) without needing a full power cycle.
+    Serial.println("reboot: KEY3 short-press — soft reboot");
+    MqttHub::stop();
+    delay(200);
+    ESP.restart();
+}
+
 static void pollResetButton() {
 #if BTN_RESET_PIN >= 0
-    // KEY3 long-press (active-low) clears adoption NVS and reboots to setup.
-    bool down = digitalRead(BTN_RESET_PIN) == LOW;
+    // Polarity is per-board -- see pollOrientationButton()'s comment.
+    // Held >= BTN_RESET_HOLD_MS clears adoption NVS and reboots to setup;
+    // released before that (a short press) just soft-reboots instead.
+    bool down = digitalRead(BTN_RESET_PIN) == (BTN_ACTIVE_HIGH ? HIGH : LOW);
     uint32_t now = millis();
     if (down) {
         if (!g_resetBtnDown) {
@@ -296,6 +313,9 @@ static void pollResetButton() {
         }
     } else if (g_resetBtnDown) {
         g_resetBtnDown = false;
+        if (!g_resetFired && (now - g_resetBtnAt) > 40) {
+            softReboot();
+        }
         g_resetFired = false;
     }
 #endif
@@ -485,10 +505,10 @@ void setup() {
 #endif
 
 #if BTN_ORIENT_PIN >= 0
-    pinMode(BTN_ORIENT_PIN, INPUT_PULLUP);
+    pinMode(BTN_ORIENT_PIN, BTN_ACTIVE_HIGH ? INPUT_PULLDOWN : INPUT_PULLUP);
 #endif
 #if BTN_RESET_PIN >= 0
-    pinMode(BTN_RESET_PIN, INPUT_PULLUP);
+    pinMode(BTN_RESET_PIN, BTN_ACTIVE_HIGH ? INPUT_PULLDOWN : INPUT_PULLUP);
 #endif
     loadOrientation();
 

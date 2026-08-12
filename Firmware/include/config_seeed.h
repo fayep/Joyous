@@ -35,6 +35,7 @@
 #define BTN_ORIENT_PIN 2  // KEY1 — toggle portrait/landscape preference
 #define BTN_RESET_PIN  5  // KEY3 — long-press clears NVS and re-enters BLE adopt
 #define BTN_RESET_HOLD_MS 3000
+#define BTN_ACTIVE_HIGH 0  // active-low, internal pull-up
 #define BTN_WAKE_MASK ((1ULL << BTN_ORIENT_PIN) | (1ULL << BTN_RESET_PIN))
 
 // InkJoy cloud orientation enum: 0=portrait, 90=landscape-left.

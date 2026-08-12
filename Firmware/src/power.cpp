@@ -40,7 +40,9 @@ int percentFromMv(int mv) {
 
 bool buttonHeld() {
 #if BTN_ORIENT_PIN >= 0 && BTN_RESET_PIN >= 0
-    return digitalRead(BTN_ORIENT_PIN) == LOW || digitalRead(BTN_RESET_PIN) == LOW;
+    // Polarity is per-board -- see main.cpp's pollOrientationButton().
+    const int active = BTN_ACTIVE_HIGH ? HIGH : LOW;
+    return digitalRead(BTN_ORIENT_PIN) == active || digitalRead(BTN_RESET_PIN) == active;
 #else
     return false;  // no button GPIOs known for this board yet
 #endif
@@ -141,7 +143,8 @@ void lightSleepMs(uint32_t ms) {
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     esp_sleep_enable_timer_wakeup((uint64_t)ms * 1000ULL);
 #if BTN_ORIENT_PIN >= 0 && BTN_RESET_PIN >= 0
-    esp_sleep_enable_ext1_wakeup(BTN_WAKE_MASK, ESP_EXT1_WAKEUP_ANY_LOW);
+    // Polarity is per-board -- see main.cpp's pollOrientationButton().
+    esp_sleep_enable_ext1_wakeup(BTN_WAKE_MASK, BTN_ACTIVE_HIGH ? ESP_EXT1_WAKEUP_ANY_HIGH : ESP_EXT1_WAKEUP_ANY_LOW);
 #endif
     // Keep MQTT reachable: WiFi DTIM / RX can wake the CPU from light sleep.
     esp_sleep_enable_wifi_wakeup();
@@ -172,7 +175,8 @@ void prepareForDeepSleep() {
     // KEY1/KEY3 can also cut the overnight window (or a low-battery recheck
     // sleep) short if needed.
 #if BTN_ORIENT_PIN >= 0 && BTN_RESET_PIN >= 0
-    esp_sleep_enable_ext1_wakeup(BTN_WAKE_MASK, ESP_EXT1_WAKEUP_ANY_LOW);
+    // Polarity is per-board -- see main.cpp's pollOrientationButton().
+    esp_sleep_enable_ext1_wakeup(BTN_WAKE_MASK, BTN_ACTIVE_HIGH ? ESP_EXT1_WAKEUP_ANY_HIGH : ESP_EXT1_WAKEUP_ANY_LOW);
 #endif
 }
 

@@ -6,10 +6,11 @@ is needed here — SD is on-board.
 
 **A second unit is on order**: ESP32-133C02-2 (SD firmware variant) paired with
 GooDisplay's **7.09" E6 panel** — same 1200x1600 pixel resolution as the 13.3"
-panel in a much smaller physical size, so noticeably higher PPI. Once it
-arrives, dump it the same way as below — this time the firmware should contain
-real SD/FATFS code, which should finally resolve the CARD1 pin mapping that
-this unit's `-3` (WiFi) firmware never touches.
+panel in a much smaller physical size, so noticeably higher PPI. (The SD GPIO
+pin mapping that originally motivated this — this unit's `-3`/WiFi firmware
+never touches the SD pins — was resolved a different way, from GooDisplay's
+own downloadable board specification; see "GPIO pin mapping" below. Still
+worth dumping/comparing once the second unit arrives.)
 
 ## Hardware (as dumped 2026-08-07)
 
@@ -119,35 +120,47 @@ a block of ~10 small resistors (R43/44/46/47/49/50/51/52/106/107) — consistent
 with series/pull-up resistors on the SD lines, but the IC's top marking wasn't
 legible at photo resolution.
 
-### GPIO pin mapping — NOT resolved
-No source for the -2 (SD) firmware variant was available to pull real pin
-numbers from, and the schematic hosted on GooDisplay's site
-(`docs/ESP32-133C02_panel_interposer_schematic.pdf`) turned out to be for the
-**e-paper panel's own driver interposer board** (the 13.3E6 panel + its 12-pin
-H1 header to the MCU board), not the ESP32-S3 main board — it doesn't cover
-the SD slot at all.
+### GPIO pin mapping — resolved (2026-08-11)
+The vendor's own official board specification
+(`docs/esp32_133c02_specification.pdf`, downloaded from the product page —
+https://www.good-display.com/product/574.html — not something previously
+pulled from a firmware dump or continuity trace) documents the complete
+GPIO pinout directly, Section 3:
 
-What IS confirmed, from the vendor's real USB-variant example source
-(`docs/vendor_code_example_usb_variant/pindefine.h`) — useful for elimination
-when tracing SD pins by continuity:
 ```c
-#define SPI_CS0    18   // panel CSB_M
-#define SPI_CS1    17   // panel CSB_S
-#define SPI_CLK     9   // panel SCL
-#define SPI_Data0  41   // panel SI0
-#define SPI_Data1  40   // panel SI1
-#define SPI_Data2  39   // panel SI2
-#define SPI_Data3  38   // panel SI3
-#define EPD_BUSY    7
-#define EPD_RST     6
-#define LOAD_SW    45   // panel power-switch control
+// SD card (Section 3.2)
+#define SD_CS    15
+#define SD_MOSI   3
+#define SD_MISO   5
+#define SD_SCK    8
+
+// EPD (Section 3.3)
+#define EPD_MOSI 41
+#define EPD_MISO 40
+#define EPD_CS_M 18
+#define EPD_CS_S 17
+#define EPD_RST   6
+#define EPD_DC    2   // matches the independently hand-traced + firmware-
+                      // disassembly-confirmed finding in Firmware/include/
+                      // tft_setup_goodisplay.h -- three independent methods,
+                      // same answer
+#define EPD_BUSY  7
+#define EPD_SCK   9
+
+// Function buttons (Section 3.1) -- pin numbers known, but not which
+// button maps to which InkJoy-side function (orient vs. factory reset)
+#define SW2 12
+#define SW3 13
+#define SW4 14
 ```
-These GPIOs are spoken for by the panel interface and can be ruled out as SD
-candidates. Everything else (buttons SW1/SW2/SW4, battery ADC, USB CDC pins,
-WiFi are internal to the S3 module) is unconfirmed. Getting the real SD pin
-numbers needs one of: multimeter continuity from the CARD1 pads to the ESP32-S3
-module's exposed pins, contacting GooDisplay support directly for the -2
-variant source or the real main-board schematic, or dumping GPIO matrix/IOMUX
-config registers live off a powered board (not attempted — firmware never
-configures these pins since SD is uninitialized in the -3 build, so there's
-nothing to read from a running system either).
+Wired into `Firmware/include/config_goodisplay.h` (`ENABLE_SD_CACHE=1`,
+`SD_SPI_*_PIN`/`SD_CS_PIN`). Buttons still unwired -- pin numbers known now,
+but the semantic mapping isn't documented, so assigning them to
+`BTN_ORIENT_PIN`/`BTN_RESET_PIN` would be guessing at behavior, not just a
+pin number.
+
+The same spec (Section 4.5, "Dual-IC Programming Analysis") also directly
+confirms the CS0(M)/CS1(S) split is left/right by column (each half
+diagrammed as `X (0-599)`, full `Y (0-1599)` height) -- matching what
+`Firmware/src/panel_goodisplay.cpp`'s bring-up determined empirically via
+`rulerTest()` before this document was found.
