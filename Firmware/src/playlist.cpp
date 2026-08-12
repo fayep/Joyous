@@ -3,7 +3,8 @@
 #include "playlist.h"
 #include "sd_card.h"
 #include <ArduinoJson.h>
-#include <SD.h>
+#include <SD_MMC.h>
+using fs::File;  // SD_MMC.h, unlike SD.h, does not do "using namespace fs;" itself
 #include <string.h>
 
 namespace Playlist {
@@ -32,7 +33,7 @@ static size_t g_currentFrame = 0;
 // string on failure (missing file or over-size).
 static String tryReadPlaylistJson(const String &dir, String &outSourceDir) {
     String path = dir + "/playlist.json";
-    File f = SD.open(path, FILE_READ);
+    File f = SD_MMC.open(path, FILE_READ);
     if (!f) return String();
 
     size_t size = f.size();

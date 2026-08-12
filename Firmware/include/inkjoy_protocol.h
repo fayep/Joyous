@@ -56,6 +56,12 @@ String buildSleep(const String &clientId, int batteryPct, int reason);
 struct PlayImage {
     String imgId;
     String imgUrl;
+    // Content hash for the SD cache (research/sd-content-cache-plan.md).
+    // Not part of the real InkJoy wire protocol -- an addition joyous-hub
+    // can populate once its PNG encoder exists. Empty until then, which
+    // callers treat as "no cache key available" and fall back to a direct
+    // fetch+render, same as before this field existed.
+    String hash;
 };
 
 struct PlayMsg {

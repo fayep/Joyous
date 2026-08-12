@@ -14,9 +14,15 @@
 #include "panel.h"
 #include <TFT_eSPI.h>
 #include <HTTPClient.h>
-#include <SD.h>
+#include <SD_MMC.h>
+using fs::File;  // SD_MMC.h, unlike SD.h, does not do "using namespace fs;" itself
+#include "lodepng.h"
+#include "lodepng_psram_allocator.h"
 // FreeSansBold24pt7b / FreeSans12pt7b come from TFT_eSPI.h -> gfxfont.h,
 // which #includes all 48 GFXFF fonts unconditionally when LOAD_GFXFF is set.
+// lodepng's PSRAM-backed allocator overrides live in
+// lib/lodepng/lodepng_psram_allocator.cpp, not here -- see that file's
+// comment for why they can't live in our own .cpp files.
 
 extern EPaper epaper; // owned by main.cpp
 
@@ -45,6 +51,24 @@ static uint8_t hiByteToColor(uint8_t hi) {
         case 0x06: return TFT_BLUE;
         case 0x07: return TFT_GREEN;
         default:   return TFT_WHITE;
+    }
+}
+
+// Indexed-PNG palette index -> color. Index order is a contract with the
+// hub-side encoder (0=black,1=white,2=yellow,3=red,4=blue,5=green), not
+// derived from the file's own PLTE chunk -- the PLTE bytes are written for
+// PC-side viewers to show accurate per-device colors, but this firmware's
+// decode always uses color_convert=0 (raw index, no RGBA expansion) and
+// maps by position, so the actual PLTE RGB values are cosmetic here.
+static uint8_t paletteIndexToColor(uint8_t idx) {
+    switch (idx) {
+        case 0: return TFT_BLACK;
+        case 1: return TFT_WHITE;
+        case 2: return TFT_YELLOW;
+        case 3: return TFT_RED;
+        case 4: return TFT_BLUE;
+        case 5: return TFT_GREEN;
+        default: return TFT_WHITE;
     }
 }
 
@@ -101,6 +125,21 @@ void showOrientation(bool portrait) {
     if (portrait) {
         epaper.setRotation(PANEL_ROTATION);
     }
+}
+
+void showMode(bool offline) {
+    const int16_t w = epaper.width();
+    const int16_t h = epaper.height();
+    epaper.fillSprite(TFT_WHITE);
+    epaper.setTextColor(TFT_BLACK, TFT_WHITE);
+    epaper.setTextDatum(MC_DATUM);
+    titleFont();
+    epaper.drawString(offline ? "Offline mode" : "Online mode", w / 2, h / 2 - 60);
+    bodyFont();
+    epaper.drawString(offline ? "Playing from SD playlist" : "Waiting for hub", w / 2, h / 2 + 60);
+    epaper.setTextDatum(TL_DATUM);
+    epaper.setFreeFont(nullptr);
+    epaper.update();
 }
 
 void showFactoryReset() {
@@ -193,11 +232,10 @@ bool renderBinFromHttp(const String &host, int port, const String &path, void (*
     return true;
 }
 
-bool renderBinFromFile(const String &path) {
-#if ENABLE_SD_CACHE
-    File f = SD.open(path, FILE_READ);
-    if (!f) return false;
-
+// Legacy streaming .bin decode, factored out so both renderBinFromFile
+// (path known to be .bin, by extension) and renderBinFromHttp share it
+// instead of duplicating the row-by-row loop.
+static bool renderBinStream(Stream &in) {
     const int W = INKJOY_BIN_WIDTH;
     const int H = INKJOY_BIN_HEIGHT;
     static uint8_t rowBuf[INKJOY_BIN_WIDTH * 2];
@@ -205,11 +243,8 @@ bool renderBinFromFile(const String &path) {
     for (int fileRow = 0; fileRow < H; fileRow++) {
         int got = 0;
         while (got < W * 2) {
-            int n = f.read(rowBuf + got, W * 2 - got);
-            if (n <= 0) {
-                f.close();
-                return false;
-            }
+            int n = in.readBytes(rowBuf + got, W * 2 - got);
+            if (n <= 0) return false;
             got += n;
         }
         int imageY = H - 1 - fileRow; // bin rows are stored bottom-to-top
@@ -218,14 +253,173 @@ bool renderBinFromFile(const String &path) {
             epaper.drawPixel(col, imageY, hiByteToColor(hi));
         }
     }
-
-    f.close();
-    epaper.update();
     return true;
+}
+
+bool renderBinFromFile(const String &path) {
+#if ENABLE_SD_CACHE
+    File f = SD_MMC.open(path, FILE_READ);
+    if (!f) return false;
+
+    bool ok;
+    if (path.endsWith(".png")) {
+        size_t len = f.size();
+        uint8_t *buf = (uint8_t *)heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
+        if (!buf) {
+            f.close();
+            return false;
+        }
+        size_t got = f.read(buf, len);
+        f.close();
+        ok = (got == len) && renderPngBytes(buf, len);
+        heap_caps_free(buf);
+        return ok;  // renderPngBytes() already calls epaper.update() on success
+    }
+
+    ok = renderBinStream(f);
+    f.close();
+    if (ok) epaper.update();
+    return ok;
 #else
     (void)path;
     return false;  // no SD support on this board yet
 #endif
+}
+
+bool renderBinBytes(const uint8_t *bytes, size_t len) {
+    const size_t expected = (size_t)INKJOY_BIN_WIDTH * INKJOY_BIN_HEIGHT * 2;
+    if (len != expected) return false;
+
+    // MemoryStream-style adapter isn't available here without pulling in
+    // another dependency; renderBinStream() reads from an Arduino Stream&,
+    // so just reimplement the same loop directly against the buffer -- this
+    // path is a straight linear scan either way, no real duplication of
+    // logic worth sharing beyond what renderBinStream already factors out
+    // for the two streaming callers.
+    const int W = INKJOY_BIN_WIDTH;
+    const int H = INKJOY_BIN_HEIGHT;
+    for (int fileRow = 0; fileRow < H; fileRow++) {
+        const uint8_t *rowBuf = bytes + (size_t)fileRow * W * 2;
+        int imageY = H - 1 - fileRow; // bin rows are stored bottom-to-top
+        for (int col = 0; col < W; col++) {
+            uint8_t hi = rowBuf[col * 2];
+            epaper.drawPixel(col, imageY, hiByteToColor(hi));
+        }
+    }
+    epaper.update();
+    return true;
+}
+
+bool renderPngBytes(const uint8_t *bytes, size_t len) {
+    LodePNGState state;
+    lodepng_state_init(&state);
+    state.decoder.color_convert = 0;  // keep the file's own raw indexed data
+
+    unsigned char *raw = nullptr;
+    unsigned width = 0, height = 0;
+    unsigned err = lodepng_decode(&raw, &width, &height, &state, bytes, len);
+    bool ok = (err == 0) && raw &&
+              width == INKJOY_BIN_WIDTH && height == INKJOY_BIN_HEIGHT &&
+              state.info_png.color.colortype == LCT_PALETTE &&
+              state.info_png.color.bitdepth == 4;
+    if (!ok) {
+        Serial.printf("panel: renderPngBytes: decode failed (err=%u w=%u h=%u)\n", err, width, height);
+        if (raw) lodepng_free(raw);
+        lodepng_state_cleanup(&state);
+        return false;
+    }
+
+    const int W = INKJOY_BIN_WIDTH;
+    const int H = INKJOY_BIN_HEIGHT;
+    const int rowBytes = (W * 4 + 7) / 8;  // 800 for W=1600, no row padding
+    for (int row = 0; row < H; row++) {
+        // No flip needed here, unlike renderBinFromHttp's imageY = H-1-fileRow:
+        // .bin's wire format stores rows bottom-to-top (see ToBin in
+        // joyous-hub/dither.go), so that flip is what UN-inverts it back to
+        // top-to-bottom for drawPixel. PNG rows are already stored
+        // top-to-bottom by the PNG spec itself, and joyous-hub's
+        // EncodeIndexedPNG4 writes hi[] (already top-to-bottom, see FromBin)
+        // straight across with no flip of its own -- so PNG row 0 here is
+        // already the image's actual top row, same as what drawPixel wants.
+        // Confirmed the hard way (2026-08-12): the H-1-row flip that used to
+        // be here, copied from renderBinFromHttp without accounting for this
+        // difference, rendered every PNG play upside down.
+        int imageY = row;
+        const unsigned char *rowPtr = raw + (size_t)row * rowBytes;
+        for (int col = 0; col < W; col++) {
+            uint8_t byte = rowPtr[col / 2];
+            uint8_t idx = (col % 2 == 0) ? (byte >> 4) : (byte & 0x0F);
+            epaper.drawPixel(col, imageY, paletteIndexToColor(idx));
+        }
+    }
+
+    lodepng_free(raw);
+    lodepng_state_cleanup(&state);
+    epaper.update();
+    return true;
+}
+
+// Same shape as renderBinFromHttp, but for the indexed-PNG format: unlike
+// .bin, PNG can't be decoded row-by-row as it streams in (deflate spans
+// the whole image), so the whole file is buffered in PSRAM first, then
+// handed to renderPngBytes. Used whenever a play's imgurl is .png but
+// there's no usable on-device cache to route it through ContentCache
+// (either ENABLE_SD_CACHE is off, or the SD addon isn't physically present
+// even though the hub thinks this firmware is cache-capable -- see
+// main.cpp's handlePlay fallback).
+bool renderPngFromHttp(const String &host, int port, const String &path) {
+    HTTPClient http;
+    String url = "http://" + host + ":" + String(port) + path;
+    if (!http.begin(url)) return false;
+
+    int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+        http.end();
+        return false;
+    }
+
+    int contentLen = http.getSize();
+    if (contentLen <= 0) {
+        // Need a known size up front to allocate a whole-file PSRAM buffer;
+        // our own hub always sets Content-Length on this route (see
+        // joyous-hub's inkjoy_cache.go ServeHTTPExt), so this should only
+        // trip on a genuinely malformed response.
+        http.end();
+        return false;
+    }
+    uint8_t *buf = (uint8_t *)heap_caps_malloc(contentLen, MALLOC_CAP_SPIRAM);
+    if (!buf) {
+        http.end();
+        return false;
+    }
+
+    WiFiClient *stream = http.getStreamPtr();
+    int written = 0;
+    bool ok = true;
+    while (http.connected() && written < contentLen) {
+        size_t avail = stream->available();
+        if (!avail) {
+            if (!http.connected()) break;
+            delay(1);
+            continue;
+        }
+        int n = stream->readBytes(buf + written, min((size_t)(contentLen - written), avail));
+        if (n <= 0) {
+            ok = false;
+            break;
+        }
+        written += n;
+    }
+    http.end();
+
+    if (!ok || written != contentLen) {
+        heap_caps_free(buf);
+        return false;
+    }
+
+    ok = renderPngBytes(buf, (size_t)contentLen);
+    heap_caps_free(buf);
+    return ok;
 }
 
 } // namespace Panel

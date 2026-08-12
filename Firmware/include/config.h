@@ -11,3 +11,13 @@
 #else
 #error "No board selected -- define BOARD_SEEED or BOARD_GOODISPLAY in platformio.ini build_flags"
 #endif
+
+// Shared clone-firmware protocol/feature version, reported as "T:%d" in
+// login's ver string (see inkjoy_protocol.cpp's buildLogin) alongside the
+// existing per-board "H:%d" hardware model. Real InkJoy hardware never
+// sends this field at all -- joyous-hub treats an absent T as 0. Bump this
+// whenever a protocol-visible firmware capability changes, and update the
+// hub-side gate (joyous-hub's InkJoyPNGProtocolT) in lockstep -- they must
+// never drift apart. T=9: first build with ContentCache/renderPngBytes
+// (indexed-PNG play support) -- see content_cache.h.
+#define FW_PROTOCOL_T 9

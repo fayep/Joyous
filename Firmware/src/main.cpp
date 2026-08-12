@@ -15,6 +15,7 @@
 #if ENABLE_SD_CACHE
 #include "sd_card.h"
 #include "playlist.h"
+#include "content_cache.h"
 #endif
 
 #if defined(BOARD_SEEED) || defined(BOARD_GOODISPLAY)
@@ -40,6 +41,33 @@ RTC_DATA_ATTR int savedSleepEndMin = -1;
 static unsigned long lastHeartMs = 0;
 #if ENABLE_SD_CACHE
 static unsigned long lastPlaylistRenderMs = 0;
+
+#if ENABLE_SD_CACHE
+// Forces the next offline-cycling check in loop() (playlist.json or
+// content-cache fallback, whichever applies) to fire immediately instead
+// of waiting out a full interval. Leaving lastPlaylistRenderMs at its
+// default of 0 only achieves that when millis() is already large -- true
+// when toggling into offline mode mid-session on a device that's been up
+// a while, but NOT on a fresh boot that persists straight into offline
+// mode (loadPlaybackMode() reads "offline" from NVS), where millis() is
+// itself only a few seconds in at that point. Subtracting a day's worth
+// of ms guarantees millis()-lastPlaylistRenderMs already exceeds any
+// realistic interval (schedule.interval_min or kCacheCycleIntervalMs)
+// regardless of how little real uptime has elapsed -- relies on the same
+// unsigned-wraparound arithmetic the interval check itself already uses.
+static void armOfflineCycleNow() {
+    lastPlaylistRenderMs = millis() - 24UL * 60UL * 60UL * 1000UL;
+}
+#endif
+// Cycle position for offline-mode cache-cycling (see loop()) -- only used
+// when no playlist.json exists; separate from Playlist's own g_currentFrame
+// since the two cycling sources are mutually exclusive per boot but this
+// still needs its own persistent index across loop() iterations.
+static size_t g_cacheFrameIndex = 0;
+// No schedule.interval_min to read when cycling the content cache instead
+// of a real playlist.json -- 10 minutes is a reasonable default slideshow
+// pace, matching typical InkJoy playlist authoring.
+constexpr unsigned long kCacheCycleIntervalMs = 10UL * 60UL * 1000UL;
 #endif
 static String g_currentPlayAckMsgId;
 
@@ -57,6 +85,8 @@ static uint32_t g_heartSentMs = 0;
 static uint32_t g_loginSettleUntilMs = 0;
 
 static bool connectWiFi();  // defined below; hearts force this when radio is down
+static bool goOnline();     // defined below; brings WiFi/MQTT up (boot or KEY2 toggle)
+static void goOffline();    // defined below; tears WiFi/MQTT down for offline mode
 static void onMqttMessage(const char *payload, int len);
 
 struct RuntimeConfig {
@@ -76,6 +106,11 @@ static uint32_t g_orientBtnAt = 0;
 static bool g_resetBtnDown = false;
 static uint32_t g_resetBtnAt = 0;
 static bool g_resetFired = false;
+// SW3/KEY2 (BTN_MODE_PIN) toggle: false = online (MQTT-driven play,
+// existing default), true = offline (SD playlist cycling, ignore play).
+static bool g_offlineMode = false;
+static bool g_modeBtnDown = false;
+static uint32_t g_modeBtnAt = 0;
 
 static bool loadConfig() {
     Preferences prefs;
@@ -144,6 +179,7 @@ static void clearConfig() {
     prefs.end();
     g_cfg = RuntimeConfig{};
     g_portrait = false;
+    g_offlineMode = false;
 }
 
 static void loadOrientation() {
@@ -157,6 +193,20 @@ static void saveOrientation() {
     Preferences prefs;
     prefs.begin("ijcfg", false);
     prefs.putBool("portrait", g_portrait);
+    prefs.end();
+}
+
+static void loadPlaybackMode() {
+    Preferences prefs;
+    prefs.begin("ijcfg", true);
+    g_offlineMode = prefs.isKey("offline") ? prefs.getBool("offline", false) : false;
+    prefs.end();
+}
+
+static void savePlaybackMode() {
+    Preferences prefs;
+    prefs.begin("ijcfg", false);
+    prefs.putBool("offline", g_offlineMode);
     prefs.end();
 }
 
@@ -276,6 +326,42 @@ static void pollOrientationButton() {
 #endif
 }
 
+static void toggleOfflineMode() {
+    g_offlineMode = !g_offlineMode;
+    savePlaybackMode();
+    Serial.printf("mode: %s\n", g_offlineMode ? "offline (SD playlist)" : "online (MQTT)");
+    Panel::showMode(g_offlineMode);
+    if (g_offlineMode) {
+        goOffline();
+#if ENABLE_SD_CACHE
+        armOfflineCycleNow();
+#endif
+    } else if (!goOnline()) {
+        // Not fatal: loop()'s own sendHeart() already retries connectWiFi()/
+        // MqttHub::begin() on its next interval once we're back in the
+        // online branch of loop(), same as any other transient wifi drop.
+        Serial.println("mode: online requested but wifi/mqtt bring-up failed — will keep retrying");
+    } else {
+        lastHeartMs = millis();
+    }
+}
+
+static void pollModeButton() {
+#if BTN_MODE_PIN >= 0
+    // Polarity is per-board -- see pollOrientationButton()'s comment.
+    bool down = digitalRead(BTN_MODE_PIN) == (BTN_ACTIVE_HIGH ? HIGH : LOW);
+    uint32_t now = millis();
+    if (down && !g_modeBtnDown && (now - g_modeBtnAt) > 40) {
+        g_modeBtnDown = true;
+        g_modeBtnAt = now;
+        toggleOfflineMode();
+    } else if (!down && g_modeBtnDown && (now - g_modeBtnAt) > 40) {
+        g_modeBtnDown = false;
+        g_modeBtnAt = now;
+    }
+#endif
+}
+
 static void factoryReset() {
     Serial.println("nvs: KEY3 long-press — clearing ijcfg, rebooting to BLE adopt");
     clearConfig();
@@ -327,15 +413,95 @@ static void onPlayProgress(int pct) {
     publish(InkJoy::buildAck("play_ack", clientId, g_currentPlayAckMsgId, result));
 }
 
+// Plain network fetch+render, no SD cache involved -- the "per usual"
+// fallback for both an empty hash (legacy hub, real InkJoy wire msgs) and
+// a genuine SD cache failure (no card physically present, write error --
+// see handlePlay; a normal cache miss on a healthy card instead goes
+// through ContentCache::fetchAndRender, which caches AND renders). Dispatches
+// on imgUrl's extension since a hub new enough to send PNG could point
+// either format at this same fallback.
+static bool renderPlayImage(const InkJoy::PlayMsg &play) {
+    if (play.img.imgUrl.endsWith(".png")) {
+        return Panel::renderPngFromHttp(play.host, play.port, play.img.imgUrl);
+    }
+    return Panel::renderBinFromHttp(play.host, play.port, play.img.imgUrl, onPlayProgress);
+}
+
 static void handlePlay(JsonDocument &doc) {
     InkJoy::PlayMsg play;
     if (!InkJoy::parsePlay(doc, play)) return;
 
     g_currentPlayAckMsgId = play.msgId;
+
+    if (g_offlineMode) {
+        // Should be unreachable in practice -- WiFi is off in offline mode
+        // (see goOffline()), so loop() never calls MqttHub::loopWait()/
+        // onMqttMessage() to begin with. Kept as a defensive belt-and-
+        // braces check (and to document the invariant) in case that ever
+        // changes, e.g. a message arriving mid-transition before the radio
+        // actually powers down.
+        Serial.println("play: declined (offline mode)");
+        publish(InkJoy::buildAck("play_ack", clientId, play.msgId, InkJoy::RESULT_FAILED));
+        return;
+    }
+
     publish(InkJoy::buildAck("play_ack", clientId, play.msgId, InkJoy::RESULT_ACCEPTED));
 
+#if ENABLE_SD_CACHE
+    // Re-mount fresh here, while the system is still at idle CPU/power --
+    // i.e. BEFORE Power::setHighPerformance(true) below ramps the CPU, and
+    // before any WiFi download or panel refresh current draw starts. The
+    // SD bus appears to be sensitive to that concurrent high-current load
+    // (all three of CPU boost, active WiFi TX, and an e-paper refresh land
+    // in this same window on every play, and GooDisplay has no dedicated
+    // power-enable/load-switch for the SD slot -- it's on the shared,
+    // unsequenced 3.3V rail). An earlier attempt at remounting mid-flow
+    // (after the CPU/power ramp had already started) made a previously-
+    // working card fail, which pointed at "never remount" -- but doing it
+    // here instead, while the board is still quiet, is a different bet:
+    // that remounting itself isn't the problem, timing it during heavy
+    // concurrent load was.
+    bool sdReady = !play.img.hash.isEmpty() && SdCard::begin();
+#endif
+
     Power::setHighPerformance(true);
-    bool ok = Panel::renderBinFromHttp(play.host, play.port, play.img.imgUrl, onPlayProgress);
+#if ENABLE_SD_CACHE
+    // play.img.hash is only populated once the hub's PNG encoder exists
+    // (see content_cache.h) -- until then this is always empty and we go
+    // straight to renderPlayImage(), same as before ContentCache existed.
+    int orientation = heartOrientation();
+    bool ok;
+    if (sdReady) {
+        if (ContentCache::has(play.img.hash, orientation)) {
+            Serial.printf("play: cache hit %s\n", play.img.hash.c_str());
+            ok = ContentCache::render(play.img.hash, orientation);
+        } else {
+            Serial.printf("play: cache miss %s, fetching+caching\n", play.img.hash.c_str());
+            // No onProgress plumbing through ContentCache yet -- a cached
+            // fetch skips the 20/40/60/80 progress acks the direct path
+            // sends, going straight from accepted to done/failed.
+            ok = ContentCache::fetchAndRender(play.host, play.port, play.img.imgUrl,
+                                               play.img.hash, orientation);
+            if (ok) {
+                ContentCache::evictIfNeeded(orientation);
+            } else {
+                // Only reached on a genuine, unrecoverable SD problem (no
+                // card physically present despite ENABLE_SD_CACHE, a
+                // write error even after the remount retry, etc.) --
+                // fall back to a plain network render rather than failing
+                // the play outright. On a healthy card this branch never
+                // runs; the miss above is written to cache normally.
+                Serial.println("play: SD cache fetch failed, falling back to direct network render");
+                ok = renderPlayImage(play);
+            }
+        }
+    } else {
+        ok = renderPlayImage(play);
+    }
+    if (sdReady) SdCard::end();  // see SdCard::end()'s comment -- don't leave it powered idle
+#else
+    bool ok = renderPlayImage(play);
+#endif
     Power::setHighPerformance(false);
 
     publish(InkJoy::buildAck("play_ack", clientId, play.msgId,
@@ -489,6 +655,37 @@ static bool connectWiFi() {
     return true;
 }
 
+// Brings WiFi + MQTT up: boot's online path and KEY2's offline→online
+// transition both go through this. sendLogin() itself fires from
+// MqttHub's connected-handler (set once in setup(), persists across
+// stop()/begin() cycles), not from here.
+static bool goOnline() {
+    if (!connectWiFi()) return false;
+    if (!MqttHub::begin(g_cfg.hubHost.c_str(), g_cfg.hubPort, clientId.c_str(),
+                        subTopic.c_str(), g_cfg.mqttUser.c_str(),
+                        g_cfg.mqttPass.c_str())) {
+        Serial.println("mqtt: begin failed");
+        return false;
+    }
+    return true;
+}
+
+// Tears WiFi + MQTT down for offline mode -- WIFI_OFF actually powers the
+// radio down (not just disassociates), which is the point: offline mode is
+// meant to extend battery life, not just stop attempting network I/O while
+// leaving the radio powered and idle.
+static void goOffline() {
+    MqttHub::stop();
+    // disconnect(true) tears down the association; mode(WIFI_OFF) powers
+    // the radio down fully (not just idle-associated) -- eraseap avoided
+    // deliberately, since connectWiFi() always WiFi.begin()s explicitly
+    // from g_cfg anyway, so there's nothing to gain from also wearing NVS
+    // by erasing WiFi's own separately-stored AP config on every toggle.
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    Serial.println("wifi: off (offline mode)");
+}
+
 void setup() {
     Serial.begin(115200);
     delay(300);
@@ -510,7 +707,16 @@ void setup() {
 #if BTN_RESET_PIN >= 0
     pinMode(BTN_RESET_PIN, BTN_ACTIVE_HIGH ? INPUT_PULLDOWN : INPUT_PULLUP);
 #endif
+#if BTN_MODE_PIN >= 0
+    pinMode(BTN_MODE_PIN, BTN_ACTIVE_HIGH ? INPUT_PULLDOWN : INPUT_PULLUP);
+#endif
     loadOrientation();
+    loadPlaybackMode();
+#if ENABLE_SD_CACHE
+    if (g_offlineMode) {
+        armOfflineCycleNow();
+    }
+#endif
 
     Serial.println("panel: begin");
     Panel::begin();
@@ -536,8 +742,37 @@ void setup() {
 // panel_tftespi.cpp and tft_setup_goodisplay.h.
 
 #if ENABLE_SD_CACHE
+    // Settle delay: the comment above documents Panel::begin() as an
+    // already-known real-current-draw/brownout-reset risk on this exact
+    // hardware (its EPD driver IC's own reset+charge-pump power-up
+    // sequence). SD.begin() immediately after that, with no gap, means the
+    // SD peripheral's own init handshake was landing right in that same
+    // window -- and every SD mount failure caught so far (2026-08-12) has
+    // been a low-level "sdcard_mount(): f_mount failed" / "Select Failed"
+    // inside SD.begin() itself, before any of our own code runs, including
+    // on a totally quiet fresh boot with nothing else yet running. Giving
+    // the panel's power rails a moment to settle first is cheap and
+    // directly targets that. Bumped 500ms -> 3000ms (2026-08-12) while
+    // actively debugging a cold-boot-only mount failure ("send_op_cond
+    // returned 0x107") that a warm/soft reboot doesn't reproduce -- soft
+    // reboot skips the analog rail/charge-pump ramp a true cold power-on
+    // goes through, so if a longer settle window fixes the cold-boot case
+    // too, that confirms settling time (not CPU clock, already ruled out)
+    // is the real cause. Also just makes the boot window easier to catch
+    // on a serial monitor. Dial back down once this either confirms or
+    // rules out the settling-time theory -- 3s adds real boot latency in
+    // normal use.
+    delay(3000);
     SdCard::begin();  // logs its own mount result; absence is non-fatal
     Playlist::begin();  // logs its own result; no card/playlist.json is non-fatal
+    if (SdCard::present()) {
+        ContentCache::begin();  // logs its own result; creates cache dirs up front
+    }
+    // Power the SDMMC peripheral back down now that boot-time setup is
+    // done -- nothing needs it live again until the next cache-eligible
+    // play (handlePlay() re-mounts on demand; see SdCard::end()'s comment
+    // on why this matters).
+    SdCard::end();
 #endif
 
     WiFi.mode(WIFI_STA);
@@ -550,6 +785,8 @@ void setup() {
     Serial.printf("orient: %s (%d) — KEY1 toggles; KEY3 hold %ds = factory reset\n",
                   g_portrait ? "portrait" : "landscape", heartOrientation(),
                   BTN_RESET_HOLD_MS / 1000);
+    Serial.printf("mode: %s — KEY2 toggles\n",
+                  g_offlineMode ? "offline (SD playlist)" : "online (MQTT)");
 
     bool adopted = loadConfig();
     Serial.printf("cfg: adopted=%d ssid=%s hub=%s:%d\n",
@@ -567,11 +804,6 @@ void setup() {
         ESP.restart();
     }
 
-    if (!connectWiFi()) {
-        Serial.println("wifi: giving up; restarting in 5s");
-        delay(5000);
-        ESP.restart();
-    }
     {
         int mv = Power::batteryMillivolts();
         Serial.printf("battery: %d%% (%dmV)\n",
@@ -579,18 +811,29 @@ void setup() {
     }
     Power::beginTimeEnv();
 
+    // MqttHub's report topic / connected-handler are cheap, no-I/O setup --
+    // safe to configure even when booting straight into offline mode, so
+    // goOnline() (KEY2 toggle, later) doesn't need to redo it.
     MqttHub::setReportTopic(reportTopic.c_str());
     MqttHub::setConnectedHandler([]() {
         Serial.println("mqtt: login");
         sendLogin();
     });
-    if (!MqttHub::begin(g_cfg.hubHost.c_str(), g_cfg.hubPort, clientId.c_str(),
-                        subTopic.c_str(), g_cfg.mqttUser.c_str(),
-                        g_cfg.mqttPass.c_str())) {
-        Serial.println("mqtt: begin failed");
+
+    if (g_offlineMode) {
+        // Skip WiFi/MQTT entirely -- offline mode means the radio stays off
+        // for battery life, not just "don't act on network messages" (see
+        // goOffline()'s comment). WiFi.mode(WIFI_STA) above was only to read
+        // the MAC for clientId; turn it back off now.
+        WiFi.mode(WIFI_OFF);
+        Serial.println("wifi: off (offline mode)");
+    } else if (!goOnline()) {
+        Serial.println("wifi: giving up; restarting in 5s");
+        delay(5000);
+        ESP.restart();
     }
 
-    if (pendingShowReady()) {
+    if (!g_offlineMode && pendingShowReady()) {
         for (int i = 0; i < 80 && !MqttHub::connected(); i++) {
             MqttHub::loopWait(100, onMqttMessage);
         }
@@ -607,6 +850,70 @@ void setup() {
 }
 
 void loop() {
+    pollOrientationButton();
+    pollResetButton();
+    pollModeButton();  // may flip g_offlineMode via goOnline()/goOffline() mid-call
+
+#if ENABLE_SD_CACHE
+    // Offline-mode cycling: a real playlist.json (manually authored,
+    // matching the real InkJoy schema) takes priority when present;
+    // otherwise fall back to cycling through whatever ContentCache has
+    // organically accumulated from live plays (see content_cache.h) --
+    // so a frame that's never had a playlist.json placed on it still
+    // shows a real slideshow in offline mode instead of a static image.
+    // Renders the first frame immediately on entering offline mode/boot
+    // (armOfflineCycleNow() force-arms lastPlaylistRenderMs -- see its own
+    // comment for why leaving it at the default 0 isn't enough on a fresh
+    // boot), then respects schedule.interval_min (playlist.json) or
+    // kCacheCycleIntervalMs (cache fallback, no schedule to read) thereafter.
+    if (g_offlineMode && Playlist::loaded() &&
+        millis() - lastPlaylistRenderMs >= Playlist::intervalMs()) {
+        String path = Playlist::currentFramePath();
+        Serial.printf("playlist: rendering %s\n", path.c_str());
+        // SdCard::end() (setup(), and after each play) powers the SDMMC
+        // peripheral down between uses -- renderBinFromFile() itself just
+        // assumes an already-mounted card (it's shared with the play path,
+        // where SdCard::begin() already ran first), so re-mount here too.
+        if (SdCard::begin() && Panel::renderBinFromFile(path)) {
+            Playlist::advance();
+        } else {
+            Serial.println("playlist: render failed, will retry next interval");
+        }
+        SdCard::end();
+        lastPlaylistRenderMs = millis();
+    } else if (g_offlineMode && !Playlist::loaded() &&
+               millis() - lastPlaylistRenderMs >= kCacheCycleIntervalMs) {
+        int orientation = heartOrientation();
+        if (!SdCard::begin()) {
+            Serial.println("content_cache: SD mount failed, skipping this cycle");
+        } else {
+            size_t count = ContentCache::frameCount(orientation);
+            if (count == 0) {
+                Serial.println("content_cache: nothing cached yet for offline cycling");
+            } else {
+                g_cacheFrameIndex %= count;  // orientation may have flipped since last cycle
+                Serial.printf("content_cache: cycling frame %u/%u\n",
+                              (unsigned)g_cacheFrameIndex, (unsigned)count);
+                if (ContentCache::renderFrame(g_cacheFrameIndex, orientation)) {
+                    g_cacheFrameIndex = (g_cacheFrameIndex + 1) % count;
+                } else {
+                    Serial.println("content_cache: cycle render failed, will retry next interval");
+                }
+            }
+        }
+        SdCard::end();
+        lastPlaylistRenderMs = millis();
+    }
+#endif
+
+    if (g_offlineMode) {
+        // WiFi is off (see goOffline()) -- MQTT, heart, and the wifi_sleep
+        // window below all require it, so none of that applies until KEY2
+        // goes back online. Just pace the button/playlist polling above.
+        delay(50);
+        return;
+    }
+
     uint32_t now = millis();
     uint32_t untilHeart = (now - lastHeartMs >= HEART_INTERVAL_MS)
                               ? 0
@@ -619,8 +926,6 @@ void loop() {
     if (waitMs == 0) waitMs = 50;
 
     MqttHub::loopWait(waitMs, onMqttMessage);
-    pollOrientationButton();
-    pollResetButton();
 
     if (pendingShowReady() && MqttHub::connected()) {
         Serial.println("panel: Connected (post-adopt)");
@@ -632,25 +937,6 @@ void loop() {
         handleBatteryLevel(sendHeart());  // checks/reconnects WiFi only when a heart is due
         lastHeartMs = millis();
     }
-
-#if ENABLE_SD_CACHE
-    // SD-card playlist.json cycling — independent of MQTT play, matching
-    // the real InkJoy firmware's own local slideshow behavior when no
-    // cloud content is pushed. Renders the first frame immediately on
-    // boot (lastPlaylistRenderMs starts at 0), then respects
-    // schedule.interval_min thereafter.
-    if (Playlist::loaded() &&
-        millis() - lastPlaylistRenderMs >= Playlist::intervalMs()) {
-        String path = Playlist::currentFramePath();
-        Serial.printf("playlist: rendering %s\n", path.c_str());
-        if (Panel::renderBinFromFile(path)) {
-            Playlist::advance();
-        } else {
-            Serial.println("playlist: render failed, will retry next interval");
-        }
-        lastPlaylistRenderMs = millis();
-    }
-#endif
 
     int nowMin = Power::nowMinutesSinceMidnight();
     if (millis() >= g_loginSettleUntilMs &&

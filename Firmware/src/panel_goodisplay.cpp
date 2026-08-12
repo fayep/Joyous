@@ -2,7 +2,8 @@
 #ifdef BOARD_GOODISPLAY
 #include "panel.h"
 #include <HTTPClient.h>
-#include <SD.h>
+#include <SD_MMC.h>
+using fs::File;  // SD_MMC.h, unlike SD.h, does not do "using namespace fs;" itself
 #include <driver/gpio.h>
 #include <driver/spi_master.h>
 #include <string.h>
@@ -745,7 +746,7 @@ bool renderBinFromHttp(const String &host, int port, const String &path, void (*
 
 bool renderBinFromFile(const String &path) {
 #if ENABLE_SD_CACHE
-    File f = SD.open(path, FILE_READ);
+    File f = SD_MMC.open(path, FILE_READ);
     if (!f) return false;
 
     const int W = INKJOY_BIN_WIDTH;

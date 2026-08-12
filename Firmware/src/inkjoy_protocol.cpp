@@ -41,8 +41,8 @@ String buildLogin(const String &clientId, const String &sleepBegin, const String
     doc["msgid"] = nowMsgId();
     JsonObject data = doc["data"].to<JsonObject>();
     data["inkjoy"] = true;
-    char ver[24];
-    snprintf(ver, sizeof(ver), "M H:%d F:%s", HW_MODEL, FW_VERSION);
+    char ver[32];
+    snprintf(ver, sizeof(ver), "M H:%d T:%d F:%s", HW_MODEL, FW_PROTOCOL_T, FW_VERSION);
     data["ver"] = ver;
     data["statype"] = 3;
     data["sleep_mode"] = 2;
@@ -128,6 +128,18 @@ bool parsePlay(JsonDocument &doc, PlayMsg &out) {
     JsonObject img0 = imgs[0];
     out.img.imgId = img0["imgid"].as<String>();
     out.img.imgUrl = img0["imgurl"].as<String>();
+    // NOT img0["hash"].as<String>() -- ArduinoJson v7's String converter
+    // serializes an absent/null variant as the literal text "null" rather
+    // than "" (see its convertFromJson: falls back to serializeJson() when
+    // the value isn't a JsonString), so that would make an absent hash
+    // read as the non-empty string "null" and wrongly route every legacy
+    // play (real InkJoy wire msgs, and any hub predating ContentCache)
+    // through ContentCache with a bogus cache key instead of falling
+    // through to the plain HTTP render below. `| ""` sidesteps the
+    // converter entirely for the missing-key case -- confirmed the hard
+    // way on real hardware (2026-08-11): this caused every play to fail
+    // with RESULT_FAILED on a device with no SD card at all.
+    out.img.hash = img0["hash"] | "";
     return true;
 }
 

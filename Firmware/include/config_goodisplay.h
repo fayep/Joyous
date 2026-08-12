@@ -73,11 +73,26 @@
 #define SD_SPI_MISO_PIN 5
 #define SD_SPI_MOSI_PIN 3
 #define SD_CS_PIN 15
+// D1/D2: the two native-SDMMC data lines with no SPI-mode equivalent, so
+// the vendor's own SPI-named spec table doesn't cover them -- found by
+// physically tracing the microSD socket's DAT1/DAT2 pads (pins 8 and 1 of
+// the standard microSD pinout) back to the ESP32-S3-WROOM-1 module's
+// pads (2026-08-12), using the same direct pad-to-pin continuity method
+// that correctly found SD_CS_PIN/SD_SPI_MISO_PIN's already-known values
+// (GPIO4 = D1, GPIO16 = D2). Previously disabled after 4-bit mode failed
+// to mount ("send_op_cond returned 0x107") -- but that same error turned
+// out to also hit plain 1-bit mode on a true cold power-on, and was fixed
+// by a longer settle delay before SdCard::begin() (see main.cpp's
+// setup()), not by anything pin-related. Re-enabled 2026-08-12 to retest
+// 4-bit mode with that fix in place.
+#define SD_D1_PIN 4
+#define SD_D2_PIN 16
 
 // Buttons: vendor spec (Section 3.1) documents 3 function buttons
 // (SW2=IO12, SW3=IO13, SW4=IO14) but not which does what -- assigned here
 // to mirror Seeed's own 2-button pattern (config_seeed.h: KEY1=orient,
-// KEY3=reset), SW3 left unused.
+// KEY3=reset). SW3 (middle) now drives the offline/online playback mode
+// toggle -- see BTN_MODE_PIN below; Seeed has no equivalent third button.
 //
 // BTN_ACTIVE_HIGH=1: per the same vendor spec, "All three buttons are
 // triggered by a high level" -- opposite polarity from Seeed's active-low
@@ -91,9 +106,10 @@
 // assumption into the shared code.
 #define BTN_ORIENT_PIN 12  // SW2
 #define BTN_RESET_PIN  14  // SW4
+#define BTN_MODE_PIN   13  // SW3 — offline (SD playlist) / online (MQTT) toggle
 #define BTN_RESET_HOLD_MS 3000
 #define BTN_ACTIVE_HIGH 1
-#define BTN_WAKE_MASK ((1ULL << BTN_ORIENT_PIN) | (1ULL << BTN_RESET_PIN))
+#define BTN_WAKE_MASK ((1ULL << BTN_ORIENT_PIN) | (1ULL << BTN_RESET_PIN) | (1ULL << BTN_MODE_PIN))
 
 // Battery ADC pin is not yet traced for this board -- -1 sentinel (matching
 // the existing PANEL_ENABLE_PIN convention in power.cpp) disables the code

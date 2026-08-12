@@ -31,12 +31,18 @@
 // Panel power rail (TFT_ENABLE on EE02 pin map). Held LOW in deep sleep.
 #define PANEL_ENABLE_PIN 43
 
-// EE02 KEY1..KEY3 (same GPIOs across EE0x).
+// EE02 KEY1..KEY3 (same GPIOs across EE0x). Faye confirmed GPIO2/3/5 in
+// order (2026-08-11) -- KEY2/GPIO3 is the middle button, drives the
+// offline/online playback mode toggle (see BTN_MODE_PIN below). There's
+// also a separate physical reset button on the XIAO module wired straight
+// to EN -- a true hardware reset, not a GPIO, so nothing for firmware to
+// poll for that one.
 #define BTN_ORIENT_PIN 2  // KEY1 — toggle portrait/landscape preference
+#define BTN_MODE_PIN   3  // KEY2 — offline (SD playlist) / online (MQTT) toggle
 #define BTN_RESET_PIN  5  // KEY3 — long-press clears NVS and re-enters BLE adopt
 #define BTN_RESET_HOLD_MS 3000
 #define BTN_ACTIVE_HIGH 0  // active-low, internal pull-up
-#define BTN_WAKE_MASK ((1ULL << BTN_ORIENT_PIN) | (1ULL << BTN_RESET_PIN))
+#define BTN_WAKE_MASK ((1ULL << BTN_ORIENT_PIN) | (1ULL << BTN_RESET_PIN) | (1ULL << BTN_MODE_PIN))
 
 // InkJoy cloud orientation enum: 0=portrait, 90=landscape-left.
 #define ORIENT_PORTRAIT 0
