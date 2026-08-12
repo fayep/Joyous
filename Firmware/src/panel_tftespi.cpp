@@ -18,11 +18,23 @@
 using fs::File;  // SD_MMC.h, unlike SD.h, does not do "using namespace fs;" itself
 #include "lodepng.h"
 #include "lodepng_psram_allocator.h"
-// FreeSansBold24pt7b / FreeSans12pt7b come from TFT_eSPI.h -> gfxfont.h,
-// which #includes all 48 GFXFF fonts unconditionally when LOAD_GFXFF is set.
+// FreeSansBold24pt7b / FreeSans12pt7b (Adafruit's stock bundled set) come
+// from TFT_eSPI.h -> gfxfont.h, which #includes all 48 GFXFF fonts
+// unconditionally when LOAD_GFXFF is set. GoRegular*/Caveat39pt7b below are
+// ours -- not part of that bundle -- so they need an explicit #include.
 // lodepng's PSRAM-backed allocator overrides live in
 // lib/lodepng/lodepng_psram_allocator.cpp, not here -- see that file's
 // comment for why they can't live in our own .cpp files.
+#include "fonts/GoRegular23pt7b.h"
+#include "fonts/GoRegular30pt7b.h"
+#include "fonts/GoRegular42pt7b.h"
+#include "fonts/Caveat39pt7b.h"
+// GoRegular30pt7b/Caveat39pt7b aren't referenced by any status screen yet --
+// staged for on-device weather/caption rendering (matching joyous-hub's
+// "medium" line size and photo-name caption face respectively) discussed
+// alongside this conversion but not yet implemented. Reference them
+// directly via epaper.setFreeFont(&GoRegular30pt7b)/&Caveat39pt7b when that
+// lands, same as titleFont()/bodyFont() do below for the other two sizes.
 
 extern EPaper epaper; // owned by main.cpp
 
@@ -30,12 +42,22 @@ extern EPaper epaper; // owned by main.cpp
 // present but unpopulated on that board rev -- confirmed against the
 // physical unit, so there's no on-board glyph ROM to draw from there.
 // GooDisplay's board isn't known to have an equivalent font chip either.
-// These GFXFF vector fonts (already compiled in via LOAD_GFXFF/SMOOTH_FONT
-// in Setup510_.../tft_setup_goodisplay.h) are the best available quality on
-// either board: real glyphs at their point size instead of a
-// setTextSize()-scaled GLCD font.
-static void titleFont() { epaper.setFreeFont(&FreeSansBold24pt7b); }
-static void bodyFont() { epaper.setFreeFont(&FreeSans12pt7b); }
+// GFXFF vector fonts are the best available quality on either board: real
+// glyphs at their point size instead of a setTextSize()-scaled GLCD font.
+// Note this is strictly 1-bit rendering (TFT_eSPI's GFXFF drawChar path is
+// plain drawFastHLine/fillRect runs off a monochrome bitmap) -- SMOOTH_FONT
+// in tft_setup_goodisplay.h only applies to the separate, unused .vlw
+// "Smooth_font" loader, which nothing here calls.
+//
+// Go Regular, not Adafruit's stock FreeSans -- same face joyous-hub uses
+// for its own overlay text (see joyous-hub/overlay_render.go), converted
+// at 42pt/23pt via Adafruit's fontconvert (see include/fonts/*.h's own
+// comments for exact provenance, including why these aren't hub's
+// exactly-scaled 82pt/44pt -- fontconvert's DPI default doesn't match
+// hub's) so on-device status screens and hub-rendered photo overlays
+// read as the same typeface family, at the same real size.
+static void titleFont() { epaper.setFreeFont(&GoRegular42pt7b); }
+static void bodyFont() { epaper.setFreeFont(&GoRegular23pt7b); }
 
 namespace Panel {
 
@@ -81,6 +103,38 @@ void sleep() {
     epaper.sleep();
 }
 
+// Centered title + up to 2 body lines, spaced off the active fonts' own
+// fontHeight() (== GFXfont.yAdvance -- see TFT_eSPI::fontHeight()) rather
+// than fixed pixel gaps. Fixed gaps tuned for FreeSans's small yAdvance
+// (title 56, body 29) silently became too tight once these screens moved
+// to GoRegular42pt7b/GoRegular23pt7b (yAdvance 95/52) to unify with
+// joyous-hub's typeface -- confirmed on real hardware, 2026-08-12: body
+// lines overlapped/clipped. Deriving from fontHeight() means this can't
+// drift out of sync with whatever font sizes end up in fonts/*.h again.
+static void drawCenteredStatus(const String &title, const String &body1, const String &body2 = String()) {
+    const int16_t w = epaper.width();
+    const int16_t h = epaper.height();
+    epaper.fillSprite(TFT_WHITE);
+    epaper.setTextColor(TFT_BLACK, TFT_WHITE);
+    epaper.setTextDatum(MC_DATUM);
+
+    titleFont();
+    int titleH = epaper.fontHeight();
+    epaper.drawString(title, w / 2, h / 2 - titleH / 2 - 10);
+
+    bodyFont();
+    int bodyH = epaper.fontHeight();
+    int bodyY = h / 2 + bodyH / 2 + 10;
+    epaper.drawString(body1, w / 2, bodyY);
+    if (body2.length()) {
+        epaper.drawString(body2, w / 2, bodyY + bodyH);
+    }
+
+    epaper.setTextDatum(TL_DATUM);
+    epaper.setFreeFont(nullptr);
+    epaper.update();
+}
+
 void showProvisioning(const String &clientId) {
     // fillSprite, not fillScreen: with setRotation(1) on a 4bpp EPaper sprite,
     // fillScreen uses unswapped TFT _width/_height and only clears 1200×1200 of
@@ -88,15 +142,22 @@ void showProvisioning(const String &clientId) {
     epaper.fillSprite(TFT_WHITE);
     epaper.setTextColor(TFT_BLACK, TFT_WHITE);
 
+    // TL_DATUM (default): y is each line's top. Spacing below derived from
+    // each font's own fontHeight() -- see drawCenteredStatus()'s comment.
     titleFont();
+    int titleH = epaper.fontHeight();
     epaper.drawString("Setup mode", 40, 100);
 
     bodyFont();
-    epaper.drawString("Adopt this frame from the hub:", 40, 220);
-    epaper.drawString("look for BLE name", 40, 260);
+    int bodyH = epaper.fontHeight();
+    int y = 100 + titleH + 20;
+    epaper.drawString("Adopt this frame from the hub:", 40, y);
+    y += bodyH;
+    epaper.drawString("look for BLE name", 40, y);
 
     titleFont();
-    epaper.drawString("IJ_" + clientId, 40, 360);
+    y += bodyH + 20;
+    epaper.drawString("IJ_" + clientId, 40, y);
 
     epaper.setFreeFont(nullptr);
     epaper.update();
@@ -109,84 +170,39 @@ void showOrientation(bool portrait) {
     if (portrait) {
         epaper.setRotation(0); // flip to 2 if this reads upside down
     }
-    const int16_t w = epaper.width();
-    const int16_t h = epaper.height();
-    epaper.fillSprite(TFT_WHITE);
-    epaper.setTextColor(TFT_BLACK, TFT_WHITE);
-    epaper.setTextDatum(MC_DATUM);
-    titleFont();
-    epaper.drawString(portrait ? "Portrait" : "Landscape", w / 2, h / 2 - 60);
-    bodyFont();
-    epaper.drawString("Hub crop preference saved", w / 2, h / 2 + 60);
-    epaper.drawString("Next send uses this crop", w / 2, h / 2 + 110);
-    epaper.setTextDatum(TL_DATUM);
-    epaper.setFreeFont(nullptr);
-    epaper.update();
+    drawCenteredStatus(portrait ? "Portrait" : "Landscape",
+                        "Hub crop preference saved", "Next send uses this crop");
     if (portrait) {
         epaper.setRotation(PANEL_ROTATION);
     }
 }
 
 void showMode(bool offline) {
-    const int16_t w = epaper.width();
-    const int16_t h = epaper.height();
-    epaper.fillSprite(TFT_WHITE);
-    epaper.setTextColor(TFT_BLACK, TFT_WHITE);
-    epaper.setTextDatum(MC_DATUM);
-    titleFont();
-    epaper.drawString(offline ? "Offline mode" : "Online mode", w / 2, h / 2 - 60);
-    bodyFont();
-    epaper.drawString(offline ? "Playing from SD playlist" : "Waiting for hub", w / 2, h / 2 + 60);
-    epaper.setTextDatum(TL_DATUM);
-    epaper.setFreeFont(nullptr);
-    epaper.update();
+    drawCenteredStatus(offline ? "Offline mode" : "Online mode",
+                        offline ? "Playing from SD playlist" : "Waiting for hub");
 }
 
 void showFactoryReset() {
-    const int16_t w = epaper.width();
-    const int16_t h = epaper.height();
-    epaper.fillSprite(TFT_WHITE);
-    epaper.setTextColor(TFT_BLACK, TFT_WHITE);
-    epaper.setTextDatum(MC_DATUM);
-    titleFont();
-    epaper.drawString("Factory reset", w / 2, h / 2 - 60);
-    bodyFont();
-    epaper.drawString("Credentials cleared", w / 2, h / 2 + 60);
-    epaper.drawString("Rebooting to setup mode", w / 2, h / 2 + 110);
-    epaper.setTextDatum(TL_DATUM);
-    epaper.setFreeFont(nullptr);
-    epaper.update();
+    drawCenteredStatus("Factory reset", "Credentials cleared", "Rebooting to setup mode");
 }
 
 void showConnected() {
-    const int16_t w = epaper.width();
-    const int16_t h = epaper.height();
-    epaper.fillSprite(TFT_WHITE);
-    epaper.setTextColor(TFT_BLACK, TFT_WHITE);
-    epaper.setTextDatum(MC_DATUM);
-    titleFont();
-    epaper.drawString("Connected", w / 2, h / 2 - 60);
-    bodyFont();
-    epaper.drawString("Ready to receive images", w / 2, h / 2 + 60);
-    epaper.drawString("from Joyous Hub", w / 2, h / 2 + 110);
-    epaper.setTextDatum(TL_DATUM);
-    epaper.setFreeFont(nullptr);
-    epaper.update();
+    drawCenteredStatus("Connected", "Ready to receive images", "from Joyous Hub");
 }
 
 void showLowBattery() {
-    const int16_t w = epaper.width();
-    const int16_t h = epaper.height();
-    epaper.fillSprite(TFT_WHITE);
-    epaper.setTextColor(TFT_BLACK, TFT_WHITE);
-    epaper.setTextDatum(MC_DATUM);
-    titleFont();
-    epaper.drawString("Critical Low Battery", w / 2, h / 2 - 60);
-    bodyFont();
-    epaper.drawString("Connect USB to power supply", w / 2, h / 2 + 60);
-    epaper.setTextDatum(TL_DATUM);
-    epaper.setFreeFont(nullptr);
-    epaper.update();
+    drawCenteredStatus("Critical Low Battery", "Connect USB to power supply");
+}
+
+void drawDegreeGlyph(int x, int y, int fontPt, uint16_t color) {
+    // Radius/placement scaled off point size the same way joyous-hub scales
+    // its rain-cloud icon off fontPx (overlayIconSize in overlay_icons.go)
+    // -- both exist so a hand-drawn glyph reads as roughly font-sized next
+    // to real text, not a fixed size that only looks right at one scale.
+    // y is the text baseline; the ring sits at cap-height,
+    // offset up by roughly the font's ascent.
+    int r = max(2, fontPt / 10);
+    epaper.drawCircle(x + r, y - fontPt * 3 / 4, r, color);
 }
 
 bool renderBinFromHttp(const String &host, int port, const String &path, void (*onProgress)(int)) {

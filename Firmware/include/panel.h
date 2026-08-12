@@ -68,6 +68,17 @@ bool renderBinFromFile(const String &path);
 // do. Returns false if `len` doesn't match the expected size.
 bool renderBinBytes(const uint8_t *bytes, size_t len);
 
+// Draws a degree glyph ('°') as a small stroked circle at (x, y), scaled to
+// sit correctly against text drawn at the given point size. Not a font
+// glyph -- Go Regular's GFXFF conversion only covers ASCII 0x20-0x7E (see
+// include/fonts/GoRegular*.h), and widening that range for one rarely-used
+// character isn't worth the added flash -- same reasoning joyous-hub
+// already applies to its own rain-cloud weather icon (a private-use rune
+// intercepted before font lookup and hand-drawn instead of rasterized from
+// a font; see joyous-hub/overlay_icons.go). Staged for on-device weather
+// text, not yet called from anywhere.
+void drawDegreeGlyph(int x, int y, int fontPt, uint16_t color);
+
 // Renders indexed-PNG-format bytes already fully loaded in memory (4-bit
 // palette, INKJOY_BIN_WIDTH x INKJOY_BIN_HEIGHT, palette index 0-5 mapped
 // to black/white/yellow/red/blue/green -- a contract with the hub-side
