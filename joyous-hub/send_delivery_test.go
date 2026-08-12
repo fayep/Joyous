@@ -69,12 +69,12 @@ func TestBindInkJoyWithoutRegister(t *testing.T) {
 }
 
 func TestBuildPlayPayloadReusesMsgid(t *testing.T) {
-	_, a := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "fixed-msgid")
-	_, b := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "fixed-msgid")
+	_, a := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "fixed-msgid", "")
+	_, b := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "fixed-msgid", "")
 	if a != "fixed-msgid" || b != "fixed-msgid" {
 		t.Fatalf("reuse: got %q %q", a, b)
 	}
-	_, c := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "")
+	_, c := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "", "")
 	if c == "" || c == "fixed-msgid" {
 		t.Fatalf("empty should mint fresh msgid, got %q", c)
 	}

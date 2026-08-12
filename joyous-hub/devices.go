@@ -67,6 +67,7 @@ type Device struct {
 	Portrait       bool   `json:"portrait,omitempty"` // frame orientation preference (UI and/or Seeed KEY1)
 	Orientation    int    `json:"orientation"`        // heart orientation (0/90/180/270); accel unreliable on real frames
 	HardwareModel  int    `json:"hardware_model,omitempty"` // H from login ver; see inkjoybridge.HardwareModelSeeed
+	ProtocolT      int    `json:"protocol_t,omitempty"`     // T from login ver; see inkjoybridge.InkJoyPNGProtocolT
 	DeepSleepActive bool  `json:"deep_sleep_active,omitempty"` // samsung: overnight deep sleep (button wake)
 	// ColorOverride is a per-device snapshot of the 6 ink RGB values, captured at
 	// save time. nil means "use the bridge's current InkJoy display palette."
@@ -304,6 +305,9 @@ func (r *DeviceRegistry) UpdateLogin(mac string, info inkjoybridge.LoginInfo) *L
 	}
 	if info.HardwareModel > 0 {
 		d.HardwareModel = info.HardwareModel
+	}
+	if info.ProtocolT > 0 {
+		d.ProtocolT = info.ProtocolT
 	}
 	if info.P2 != nil {
 		p := [6]PaletteRGB{}

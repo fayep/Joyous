@@ -88,6 +88,12 @@ type LoginInfo struct {
 	// (login's "p2": [[r,g,b]x6]), if this firmware reports one. nil for
 	// firmware that doesn't send it (older builds, real InkJoy hardware).
 	P2 *[6][3]int
+	// ProtocolT is the "T" clone-firmware protocol/feature version parsed
+	// from ver ("T:%d", see HardwareModelFromVer's H). 0 if absent (real
+	// InkJoy hardware never sends it, nor do clone builds predating it).
+	// See InkJoyPNGProtocolT: T < InkJoyPNGProtocolT means the device has
+	// no PNG content-cache support and must only ever be sent .bin.
+	ProtocolT int
 }
 
 // HardwareModelSeeed is the H value used by Seeed EE02 custom firmware.
@@ -105,9 +111,11 @@ func LocalOnlyHardware(model int) bool {
 	return model == HardwareModelSeeed || model == HardwareModelGooDisplay
 }
 
-// HardwareModelFromVer parses H from an InkJoy login ver string ("M H:%d F:...").
-func HardwareModelFromVer(ver string) int {
-	const prefix = "H:"
+// verIntField parses the integer following prefix (e.g. "H:", "T:") in an
+// InkJoy login ver string ("M H:%d T:%d F:..."). Returns 0 if prefix is
+// absent (older firmware, or real InkJoy hardware which sends neither H
+// nor T).
+func verIntField(ver, prefix string) int {
 	i := strings.Index(ver, prefix)
 	if i < 0 {
 		return 0
@@ -122,6 +130,24 @@ func HardwareModelFromVer(ver string) int {
 	}
 	return n
 }
+
+// HardwareModelFromVer parses H from an InkJoy login ver string ("M H:%d F:...").
+func HardwareModelFromVer(ver string) int {
+	return verIntField(ver, "H:")
+}
+
+// ProtocolTFromVer parses T (clone-firmware protocol/feature version) from
+// an InkJoy login ver string. 0 if absent -- see LoginInfo.ProtocolT.
+func ProtocolTFromVer(ver string) int {
+	return verIntField(ver, "T:")
+}
+
+// InkJoyPNGProtocolT is the minimum ProtocolT that supports the PNG
+// content-cache format (see content_cache.h / panel.h's renderPngBytes in
+// Firmware/). Devices below this must only ever be sent .bin. Keep in
+// lockstep with Firmware/include/config.h's FW_PROTOCOL_T -- they gate the
+// same capability from opposite ends of the wire and must never drift.
+const InkJoyPNGProtocolT = 9
 
 // ParseLoginPayload extracts login info from a login MQTT payload.
 func ParseLoginPayload(payload []byte) (LoginInfo, error) {
@@ -141,6 +167,7 @@ func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 		ClientID:       msg.Data.ClientID,
 		Firmware:       msg.Data.Ver,
 		HardwareModel:  HardwareModelFromVer(msg.Data.Ver),
+		ProtocolT:      ProtocolTFromVer(msg.Data.Ver),
 		P2:             msg.Data.P2,
 		SleepBeginTime: msg.Data.SleepBeginTime,
 		SleepEndTime:   msg.Data.SleepEndTime,

@@ -476,7 +476,12 @@ func buildAckPayloadFor(mac, ackAction, ackMsgid string, data map[string]any) []
 // (same message replay — frame skips redo for duplicate msgid).
 // Callers should register the msgid via registerInjectedPlay so the
 // corresponding play_ack can be suppressed from upstream forwarding.
-func buildPlayPayload(mac, imgURL, msgid string) ([]byte, string) {
+// hash is the SD-cache content key (see ContentHash) for clone firmware
+// with PNG/ContentCache support (inkjoybridge.InkJoyPNGProtocolT) — pass ""
+// for real InkJoy hardware and older clone builds, which don't understand
+// the field (see content_cache.h's parsePlay comment: absent hash is
+// treated as "no cache key available", same as before this field existed).
+func buildPlayPayload(mac, imgURL, msgid, hash string) ([]byte, string) {
 	// imgURL is e.g. "https://192.168.1.7:1443/images/abc.bin"
 	// Strip scheme (http:// or https://)
 	rest := imgURL
@@ -498,6 +503,10 @@ func buildPlayPayload(mac, imgURL, msgid string) ([]byte, string) {
 	if msgid == "" {
 		msgid = fmt.Sprintf("%d", time.Now().UnixMilli())
 	}
+	img0 := map[string]any{"imgid": "local-0", "imgurl": path}
+	if hash != "" {
+		img0["hash"] = hash
+	}
 	b, _ := json.Marshal(map[string]any{
 		"action": "play",
 		"msgid":  msgid,
@@ -505,7 +514,7 @@ func buildPlayPayload(mac, imgURL, msgid string) ([]byte, string) {
 		"data": map[string]any{
 			"host":     host,
 			"port":     port,
-			"imgs":     []any{map[string]any{"imgid": "local-0", "imgurl": path}},
+			"imgs":     []any{img0},
 			"mode":     2,
 			"strategy": 1,
 		},

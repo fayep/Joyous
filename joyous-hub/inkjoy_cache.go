@@ -29,8 +29,9 @@ func inkjoyMACDir(mac string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(strings.ToUpper(mac), ":", ""), "-", "")
 }
 
-// isInkJoyFrameBinProxyPath reports paths like D0CF13EF4080/foo-p.bin that must be
-// served from the hub disk cache, never tunneled to the bridge over MQTT.
+// isInkJoyFrameBinProxyPath reports paths like D0CF13EF4080/foo-p.bin (or
+// .png, see EncodeIndexedPNG4) that must be served from the hub disk cache,
+// never tunneled to the bridge over MQTT.
 func isInkJoyFrameBinProxyPath(subPath string) bool {
 	parts := strings.Split(strings.Trim(subPath, "/"), "/")
 	if len(parts) != 2 {
@@ -40,7 +41,8 @@ func isInkJoyFrameBinProxyPath(subPath string) bool {
 	if !looksLikeInkJoyMAC(mac) {
 		return false
 	}
-	return strings.HasSuffix(strings.ToLower(file), ".bin")
+	lower := strings.ToLower(file)
+	return strings.HasSuffix(lower, ".bin") || strings.HasSuffix(lower, ".png")
 }
 
 func looksLikeInkJoyMAC(s string) bool {
@@ -67,8 +69,14 @@ func inkjoyAlbumCacheName(imageID, overlayToken string, portrait bool) string {
 }
 
 func inkjoyPlayURL(hubBaseURL, frameIP, mac, cacheName, preferHost string) string {
+	return inkjoyPlayURLExt(hubBaseURL, frameIP, mac, cacheName, preferHost, ".bin")
+}
+
+// inkjoyPlayURLExt is inkjoyPlayURL with an explicit cache-file extension
+// (".bin" or ".png" -- see EncodeIndexedPNG4 / InkJoyPNGProtocolT).
+func inkjoyPlayURLExt(hubBaseURL, frameIP, mac, cacheName, preferHost, ext string) string {
 	hostPort := inkjoyPlayContentHost(hubBaseURL, frameIP, preferHost)
-	return "http://" + hostPort + inkjoyCacheURLPath(mac, cacheName)
+	return "http://" + hostPort + "/inkjoy/" + inkjoyMACDir(mac) + "/" + cacheName + ext
 }
 
 // inkjoyPlayContentHost picks host:port for frame .bin downloads on the hub HTTP server.
@@ -127,8 +135,13 @@ func registerInkJoyCacheRoutes(mux *http.ServeMux, hub *Hub, cache *InkJoyCache)
 			http.NotFound(w, r)
 			return
 		}
-		name := strings.TrimSuffix(r.PathValue("file"), ".bin")
-		cache.ServeHTTP(w, r, r.PathValue("mac"), name)
+		file := r.PathValue("file")
+		ext := ".bin"
+		if strings.HasSuffix(file, ".png") {
+			ext = ".png"
+		}
+		name := strings.TrimSuffix(file, ext)
+		cache.ServeHTTPExt(w, r, r.PathValue("mac"), name, ext)
 	}
 	mux.HandleFunc("GET /inkjoy/{mac}/{file}", serve)
 	mux.HandleFunc("HEAD /inkjoy/{mac}/{file}", serve)
@@ -220,8 +233,16 @@ func VerifyInkjoyCacheServing(ctx context.Context, hubBaseURL string) error {
 	return fmt.Errorf("inkjoy cache handler not active (HTTP %d)", resp.StatusCode)
 }
 
+func (c *InkJoyCache) extPath(mac, name, ext string) string {
+	return filepath.Join(c.dir, inkjoyMACDir(mac), name+ext)
+}
+
 func (c *InkJoyCache) binPath(mac, name string) string {
-	return filepath.Join(c.dir, inkjoyMACDir(mac), name+".bin")
+	return c.extPath(mac, name, ".bin")
+}
+
+func (c *InkJoyCache) pngPath(mac, name string) string {
+	return c.extPath(mac, name, ".png")
 }
 
 // LatestImageID reports the imageID/overlayToken of the most-recently-modified cached
@@ -262,13 +283,24 @@ func (c *InkJoyCache) LatestImageID(mac string) (imageID, overlayToken string, o
 	return name, "", true
 }
 
-// Save writes bin atomically: to a temp file in the same directory, fsynced,
-// then renamed over the final path. This means a concurrent ServeHTTP reader
-// that already has the old file open (see below) keeps seeing the complete
-// old inode's bytes — never a half-written or truncated file — and any write
-// failure leaves the previous file (if any) untouched instead of a corrupt one.
+// Save writes bin (a .bin file) -- see SaveExt for the general form.
 func (c *InkJoyCache) Save(mac, name string, bin []byte) error {
-	path := c.binPath(mac, name)
+	return c.SaveExt(mac, name, ".bin", bin)
+}
+
+// SavePNG writes data (an EncodeIndexedPNG4 image) to the .png cache path.
+func (c *InkJoyCache) SavePNG(mac, name string, data []byte) error {
+	return c.SaveExt(mac, name, ".png", data)
+}
+
+// SaveExt writes data atomically: to a temp file in the same directory,
+// fsynced, then renamed over the final path. This means a concurrent
+// ServeHTTPExt reader that already has the old file open (see below) keeps
+// seeing the complete old inode's bytes — never a half-written or truncated
+// file — and any write failure leaves the previous file (if any) untouched
+// instead of a corrupt one.
+func (c *InkJoyCache) SaveExt(mac, name, ext string, data []byte) error {
+	path := c.extPath(mac, name, ext)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -278,7 +310,7 @@ func (c *InkJoyCache) Save(mac, name string, bin []byte) error {
 		return err
 	}
 	tmpPath := tmp.Name()
-	_, werr := tmp.Write(bin)
+	_, werr := tmp.Write(data)
 	serr := tmp.Sync()
 	cerr := tmp.Close()
 	if werr != nil || serr != nil || cerr != nil {
@@ -298,17 +330,23 @@ func (c *InkJoyCache) Save(mac, name string, bin []byte) error {
 	return nil
 }
 
+// ServeHTTP serves a .bin cache entry -- see ServeHTTPExt for the general form.
 func (c *InkJoyCache) ServeHTTP(w http.ResponseWriter, r *http.Request, mac, name string) {
+	c.ServeHTTPExt(w, r, mac, name, ".bin")
+}
+
+func (c *InkJoyCache) ServeHTTPExt(w http.ResponseWriter, r *http.Request, mac, name, ext string) {
 	setInkjoyCacheResponseHeaders(w)
-	path := c.binPath(mac, name)
+	path := c.extPath(mac, name, ext)
 	// Open once and derive size/etag from the same file descriptor used to
-	// read the body: a concurrent Save() rename swaps the directory entry to
-	// a new inode but never touches bytes already open here, so Content-Length
-	// (and everything else) always matches what's actually written below —
-	// unlike a separate Stat+ReadFile pair, which can straddle a rename.
+	// read the body: a concurrent SaveExt() rename swaps the directory entry
+	// to a new inode but never touches bytes already open here, so
+	// Content-Length (and everything else) always matches what's actually
+	// written below — unlike a separate Stat+ReadFile pair, which can
+	// straddle a rename.
 	f, err := os.Open(path)
 	if err != nil {
-		log.Printf("inkjoy cache miss mac=%s name=%s path=%s", inkjoyMACDir(mac), name, path)
+		log.Printf("inkjoy cache miss mac=%s name=%s%s path=%s", inkjoyMACDir(mac), name, ext, path)
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -323,7 +361,11 @@ func (c *InkJoyCache) ServeHTTP(w http.ResponseWriter, r *http.Request, mac, nam
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	w.Header().Set("Content-Type", "application/octet-stream")
+	contentType := "application/octet-stream"
+	if ext == ".png" {
+		contentType = "image/png"
+	}
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("ETag", `"`+etag+`"`)
 	w.Header().Set("Last-Modified", info.ModTime().UTC().Format(http.TimeFormat))
 	w.Header().Set("Cache-Control", "no-cache")

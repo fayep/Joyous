@@ -347,18 +347,33 @@ func bridgeDeliverInkJoyImage(
 		return fmt.Errorf("encode: %w", err)
 	}
 	cacheName := inkjoyAlbumCacheName(body.ImageID, body.OverlayToken, dev.Portrait)
-	if err := cache.Save(dev.MAC, cacheName, bin); err != nil {
+
+	// PNG/ContentCache (Firmware/include/content_cache.h) only for clone
+	// firmware new enough to decode it -- see InkJoyPNGProtocolT. Real
+	// InkJoy hardware and older clone builds always get .bin, unchanged.
+	ext, cacheBytes, hash := ".bin", bin, ""
+	if inkjoybridge.LocalOnlyHardware(dev.HardwareModel) && dev.ProtocolT >= inkjoybridge.InkJoyPNGProtocolT {
+		colorOverride := protocolRGBToPalette(body.ColorOverride)
+		palette := encodeHub.images.devicePaletteRGB(body.ImageID, colorOverride)
+		png, err := EncodeIndexedPNG4(bin, frameW, frameH, palette)
+		if err != nil {
+			return fmt.Errorf("encode png: %w", err)
+		}
+		ext, cacheBytes, hash = ".png", png, ContentHash(bin)
+	}
+
+	if err := cache.SaveExt(dev.MAC, cacheName, ext, cacheBytes); err != nil {
 		return fmt.Errorf("cache: %w", err)
 	}
-	cachePath := cache.FilePath(dev.MAC, cacheName)
+	cachePath := cache.extPath(dev.MAC, cacheName, ext)
 	hubHost := dev.HubIP
 	if hubHost == "" {
 		hubHost = encodeHub.hubIP
 	}
-	imgURL := inkjoyPlayURL(body.HubBaseURL, dev.IP, dev.MAC, cacheName, hubHost)
-	log.Printf("[%s] cache write %s (%dB) play url %s hub_host=%s", dev.MAC, cachePath, len(bin), imgURL, hubHost)
+	imgURL := inkjoyPlayURLExt(body.HubBaseURL, dev.IP, dev.MAC, cacheName, hubHost, ext)
+	log.Printf("[%s] cache write %s (%dB) play url %s hub_host=%s", dev.MAC, cachePath, len(cacheBytes), imgURL, hubHost)
 	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	err = ProbeHubURL(probeCtx, imgURL, int64(len(bin)))
+	err = ProbeHubURL(probeCtx, imgURL, int64(len(cacheBytes)))
 	cancel()
 	if err != nil {
 		return fmt.Errorf("hub cache probe %s: %w", imgURL, err)
@@ -368,7 +383,7 @@ func bridgeDeliverInkJoyImage(
 	if body.SendID != "" && sendDelivery != nil {
 		reuseMsgid = sendDelivery.InkJoyMsgid(body.SendID)
 	}
-	payload, msgid := buildPlayPayload(dev.MAC, imgURL, reuseMsgid)
+	payload, msgid := buildPlayPayload(dev.MAC, imgURL, reuseMsgid, hash)
 	if body.SendID != "" && sendDelivery != nil {
 		sendDelivery.BindInkJoy(body.SendID, msgid)
 		if inkjoyRetry != nil {
