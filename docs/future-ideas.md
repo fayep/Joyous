@@ -42,6 +42,21 @@ Browse and import from the system Photos library — albums, smart albums, favor
 - **Likely shape:** small macOS helper (CLI or companion) lists collections → JSON for the hub; user picks albums → helper exports new/changed assets → hub ingests with album/tags. Fits the themes/stacks idea.
 - **Open choices:** one-shot import vs ongoing sync; copy into `data/images` (simple, matches today) vs referencing files in the library (harder).
 
+## On-device overlay text (separate raw photo from overlay in the SD cache)
+
+Right now the SD content cache (`ContentCache`, offline-mode slideshow) stores whatever the hub delivers — a photo with any date/weather/caption overlay already baked in, frozen at whatever it said when that image was last fetched. Idea: cache the **raw** photo (no overlay) separately from overlay text, and have the firmware draw the overlay itself at display time. Decided (2026-08-12) to leave this for later — not worth it yet, see below — but capturing what it'd actually take.
+
+**Status quo, decided against for now:**
+
+- **Weather is a hard no.** Requires a live network fetch, which directly fights offline mode's whole reason for existing — `goOffline()` turns WiFi off specifically to save battery. Reintroducing periodic fetches just for weather text undermines that.
+- **Date/time isn't worth it either, for a different reason:** this is a 6-color e-paper panel (GDEP133C02/T133A01), and every real update — even a small one — goes through the same multi-second PON→DRF→POF waveform sequence regardless of how much of the panel changes. There's no way to make a clock-style frequent update cheap on this hardware, so a "live" date is off the table too.
+
+**What it would actually take, if revisited:**
+
+- **Hub side:** split raw-photo caching from overlay compositing — device fetches/caches the plain photo once, hub (or device) supplies overlay text separately, composited at render time instead of once at encode time.
+- **Firmware side:** port the outline-stroke text technique from `joyous-hub/overlay_render.go`'s `drawBorderedOverlayText` (8-direction stroke + fill), not a soft drop shadow — confirmed this matters: the hub's own semi-transparent shadow already gets crushed to a hard edge by `pinOverlayPixels`' nearest-palette-ink snap before it ever reaches a device, since there's no true alpha blending on a 6-ink display. An outline guarantees contrast on every side of a glyph against an unpredictable dithered photo background; a single offset shadow only protects one side. Font infra for this already exists (`GoRegular23pt7b`/`GoRegular30pt7b`/`Caveat39pt7b`, `Panel::drawDegreeGlyph` — see `panel_tftespi.cpp`).
+- **A real, narrower-scope path if only occasional (not live) date refreshes are wanted later:** the panel hardware does support partial-window updates — confirmed in GooDisplay's own vendor reference code (`GooDisplay/docs/vendor_code_example_usb_variant/GDEP133C02.c`, `partialWindowUpdateWithImageData`, `PTLW` register) — which constrains a refresh to a rectangular sub-window (e.g. just a date strip) instead of the whole panel, leaving the rest of the displayed photo undisturbed. Two real caveats: it still calls the same `epdDisplay()` waveform sequence internally (same multi-second wait — this saves *area*, not *time*), and the window coordinates have real alignment constraints (`HRST` a multiple of 8, `HRED-7` a multiple of 8, `xStart≤584`, `xPixel≤600`, `yStart+yLine` even, etc.) that would need real firmware work to satisfy, not just picking a rectangle.
+
 ## Phone app
 
 A native iOS (or cross-platform) companion for Joyous Hub on the LAN — upload from the camera roll, pick frames, push photos, maybe glance at frame status (battery, last image, asleep vs deep sleep).
