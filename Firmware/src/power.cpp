@@ -201,7 +201,7 @@ void deepSleepUntilButton() {
 }
 
 int batteryMillivolts() {
-#if BATTERY_ADC_PIN < 0 || BATTERY_ADC_EN_PIN < 0
+#if BATTERY_ADC_PIN < 0
     return -1;
 #else
     // Full-pack ÷2 is ~2.1 V at A0. Default attenuation on some cores tops
@@ -209,9 +209,18 @@ int batteryMillivolts() {
     analogReadResolution(12);
     analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
     pinMode(BATTERY_ADC_PIN, INPUT);
+    // BATTERY_ADC_EN_PIN is optional: GooDisplay's divider (unlike Seeed's)
+    // has no gating FET at all -- confirmed on real hardware (2026-08-14):
+    // a real voltage shows up on BATTERY_ADC_PIN purely from the battery
+    // being connected, with nothing actively enabling anything. Boards
+    // with a real gate pin (Seeed) still get the enable/settle/disable
+    // sequence around the read; boards without one (-1 sentinel) just
+    // read directly.
+#if BATTERY_ADC_EN_PIN >= 0
     pinMode(BATTERY_ADC_EN_PIN, OUTPUT);
     digitalWrite(BATTERY_ADC_EN_PIN, HIGH);
     delay(20);  // divider RC settle
+#endif
     (void)analogReadMilliVolts(BATTERY_ADC_PIN);  // discard first sample
     uint32_t sumMv = 0;
     constexpr int kSamples = 16;
@@ -219,7 +228,9 @@ int batteryMillivolts() {
         sumMv += analogReadMilliVolts(BATTERY_ADC_PIN);
         delay(2);
     }
+#if BATTERY_ADC_EN_PIN >= 0
     digitalWrite(BATTERY_ADC_EN_PIN, LOW);
+#endif
     return (int)(sumMv / kSamples) * BATTERY_DIVIDER_RATIO;
 #endif
 }

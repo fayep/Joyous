@@ -111,11 +111,33 @@
 #define BTN_ACTIVE_HIGH 1
 #define BTN_WAKE_MASK ((1ULL << BTN_ORIENT_PIN) | (1ULL << BTN_RESET_PIN) | (1ULL << BTN_MODE_PIN))
 
-// Battery ADC pin is not yet traced for this board -- -1 sentinel (matching
-// the existing PANEL_ENABLE_PIN convention in power.cpp) disables the code
-// path at compile time rather than guessing a pin number.
-// batteryMillivolts() returns -1, and handleBatteryLevel() already treats
-// a negative percent as "unknown, don't act on it."
+// BATTERY_ADC_PIN = GPIO1 (ESP32-S3-WROOM-1 module pin 39, right-hand
+// column, 2nd pin down from the antenna end -- one position above GPIO2,
+// whose own position is independently confirmed, see TFT_DC's comment in
+// tft_setup_goodisplay.h). Found via a deliberate test pad physically
+// present at that exact pin (2026-08-14) -- the kind of thing a board
+// designer adds specifically for probing a calibration-relevant signal
+// like battery voltage, not just an unlabeled via. Also matches
+// config_seeed.h's own BATTERY_ADC_PIN (also GPIO1) -- same reference
+// design convention on both boards.
+//
+// BATTERY_ADC_EN_PIN stays -1 deliberately, not "not yet found": unlike
+// Seeed's board (real gate pin, GPIO6), this divider has no gating FET at
+// all -- confirmed on real hardware (2026-08-14): a real voltage shows up
+// on BATTERY_ADC_PIN purely from the battery being connected, nothing
+// actively enabling anything. power.cpp's batteryMillivolts() treats -1
+// here as "ungated, just read directly" rather than "feature disabled"
+// (only BATTERY_ADC_PIN < 0 disables the whole feature).
+// Pin re-disabled after a real-hardware test (2026-08-14): enabling it
+// with BATTERY_DIVIDER_RATIO still at Seeed's placeholder (2, unconfirmed
+// for this board's actual divider resistors) computed a falsely-low
+// battery voltage on the very first heart, which handleBatteryLevel()
+// correctly-but-wrongly acted on -- triggered a real low-battery
+// deep-sleep shutdown on a battery that was actually fine. GPIO1 itself
+// is still believed correct (see above), just don't re-enable this until
+// BATTERY_DIVIDER_RATIO is properly calibrated against a real onboard-ADC
+// reading (not a multimeter -- see the loading-artifact reasoning above)
+// -- otherwise every boot risks the same false shutdown.
 #define PANEL_ENABLE_PIN -1
 #define BATTERY_ADC_PIN -1
 #define BATTERY_ADC_EN_PIN -1
