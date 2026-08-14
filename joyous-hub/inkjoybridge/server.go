@@ -461,6 +461,21 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		if h.devices != nil {
 			h.devices.MarkShutdown(mac, info)
 		}
+	case "overlay_ack":
+		// Logged, not otherwise acted on -- this is a manual comparison
+		// workflow (see joyous-hub's CmdSendOverlay), the operator is
+		// looking at the panel, not a UI, for the actual result.
+		var ack struct {
+			Data struct {
+				AckMsgid string `json:"ack_msgid"`
+				Result   int    `json:"result"`
+			} `json:"data"`
+		}
+		_ = json.Unmarshal(payload, &ack)
+		log.Printf("[%s] overlay_ack result=%d", mac, ack.Data.Result)
+		if h.devices != nil {
+			h.devices.MarkConnected(mac)
+		}
 	default:
 		if h.devices != nil {
 			h.devices.MarkConnected(mac)

@@ -308,6 +308,17 @@ func handleInkJoyBridgeCommand(
 			return
 		}
 		_ = srv.PublishToFrame(dev.MAC, buildWifiSleepPayloadFromBody(dev.MAC, cmd.Body))
+	case protocol.CmdSendOverlay:
+		dev, ok := devices.Get(cmd.DeviceID)
+		if !ok || dev.Type != DeviceTypeInkJoy {
+			return
+		}
+		var body protocol.OverlaySendBody
+		if err := json.Unmarshal(cmd.Body, &body); err != nil {
+			log.Printf("inkjoy-bridge send.overlay: bad body: %v", err)
+			return
+		}
+		_ = srv.PublishToFrame(dev.MAC, buildOverlayPayload(dev.MAC, body))
 	case protocol.CmdRedirect:
 		dev, ok := devices.Get(cmd.DeviceID)
 		if !ok {

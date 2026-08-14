@@ -84,12 +84,28 @@ func drawWeatherOverlayOnImage(dst *image.RGBA, cfg OverlayConfig, lines []overl
 	return dst
 }
 
+// overlayWeatherOrigin computes the top-left point the weather overlay's
+// text actually starts drawing from, for either style. Shared by
+// drawWeatherOverlayOutlined/drawWeatherOverlayBox and overlayWireLines
+// (overlay_wire.go) so the wire path handed to a device for the on-device-
+// vs-hub-baked comparison can never silently drift from what's actually
+// baked into a real image -- copy-pasting this arithmetic into a second
+// place would make that comparison meaningless.
+func overlayWeatherOrigin(dw, dh int, lines []overlayLine, style string) (x, y int) {
+	marginX := overlayPadForDimension(dw, dw, dh)
+	marginY := overlayPadForDimension(dh, dw, dh)
+	if style == overlayWeatherStyleOutline {
+		return marginX, dh - marginY - overlayContentHeight(lines)
+	}
+	pad := overlayScaledPx(overlayPadMinPt, dw, dh)
+	_, boxH := overlayBoxSize(lines, dw, dh)
+	x0 := marginX
+	y0 := dh - marginY - boxH
+	return x0 + pad, y0 + pad
+}
+
 func drawWeatherOverlayOutlined(dst *image.RGBA, lines []overlayLine, dw, dh int) *image.RGBA {
-	b := dst.Bounds()
-	marginX := overlayPadForDimension(b.Dx(), dw, dh)
-	marginY := overlayPadForDimension(b.Dy(), dw, dh)
-	x := b.Min.X + marginX
-	y := b.Max.Y - marginY - overlayContentHeight(lines)
+	x, y := overlayWeatherOrigin(dw, dh, lines, overlayWeatherStyleOutline)
 	for _, ln := range lines {
 		if ln.face != nil && ln.text != "" {
 			drawOverlayLineContent(dst, x, y, ln, overlayBorderedFill, true)
@@ -103,7 +119,6 @@ func drawWeatherOverlayBox(dst *image.RGBA, lines []overlayLine, dw, dh int) *im
 	b := dst.Bounds()
 	marginX := overlayPadForDimension(b.Dx(), dw, dh)
 	marginY := overlayPadForDimension(b.Dy(), dw, dh)
-	pad := overlayScaledPx(overlayPadMinPt, dw, dh)
 	boxW, boxH := overlayBoxSize(lines, dw, dh)
 
 	x0 := b.Min.X + marginX
@@ -112,7 +127,8 @@ func drawWeatherOverlayBox(dst *image.RGBA, lines []overlayLine, dw, dh int) *im
 	y1 := b.Max.Y - marginY
 	drawSolidPanel(dst, x0, y0, x1, y1, 210)
 
-	drawOverlayLines(dst, x0+pad, y0+pad, lines)
+	x, y := overlayWeatherOrigin(dw, dh, lines, overlayWeatherStyleBox)
+	drawOverlayLines(dst, x, y, lines)
 	return dst
 }
 

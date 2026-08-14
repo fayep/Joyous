@@ -4,6 +4,8 @@ import (
 	"image"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/image/font"
 )
 
 const (
@@ -38,30 +40,40 @@ func overlayNeedsWeather(cfg OverlayConfig) bool {
 	return cfg.ShowCity || cfg.ShowDate || cfg.ShowTemp || cfg.ShowCondition
 }
 
-func drawPhotoNameCaption(dst *image.RGBA, text, position string, dw, dh int) {
+// overlayPhotoNameOrigin computes the top-left point the photo-name caption
+// actually starts drawing from, and the resolved font/size used to measure
+// it. Shared by drawPhotoNameCaption and overlayWireLines (overlay_wire.go)
+// for the same reason overlayWeatherOrigin is shared -- see its comment.
+func overlayPhotoNameOrigin(text, position string, dw, dh int) (x, y int, face font.Face, fontSize float64, ok bool) {
 	if text == "" {
-		return
+		return 0, 0, nil, 0, false
 	}
-	b := dst.Bounds()
-	w, h := b.Dx(), b.Dy()
-	fontSize := overlayPhotoNameFontSize(dw, dh)
-	face := overlayCaveatFace(fontSize)
+	fontSize = overlayPhotoNameFontSize(dw, dh)
+	face = overlayCaveatFace(fontSize)
 	if face == nil {
 		face = overlayFacePt(overlayFontSmallPt, dw, dh)
 	}
 	if face == nil {
-		return
+		return 0, 0, nil, 0, false
 	}
-	marginX := overlayPadForDimension(w, dw, dh)
-	marginY := overlayPadForDimension(h, dw, dh)
+	marginX := overlayPadForDimension(dw, dw, dh)
+	marginY := overlayPadForDimension(dh, dw, dh)
 	textW := fontMeasureString(face, text)
 	ascent := face.Metrics().Ascent.Ceil()
 	descent := face.Metrics().Descent.Ceil()
 	lineH := ascent + descent
-	yTop := b.Max.Y - marginY - lineH
-	x := b.Max.X - marginX - textW
+	yTop := dh - marginY - lineH
+	x = dw - marginX - textW
 	if normalizePhotoNamePosition(position) == overlayPhotoNameBottomCenter {
-		x = b.Min.X + (w-textW)/2
+		x = (dw - textW) / 2
+	}
+	return x, yTop, face, fontSize, true
+}
+
+func drawPhotoNameCaption(dst *image.RGBA, text, position string, dw, dh int) {
+	x, yTop, face, fontSize, ok := overlayPhotoNameOrigin(text, position, dw, dh)
+	if !ok {
+		return
 	}
 	drawBorderedOverlayText(dst, text, x, yTop, face, fontSize)
 }

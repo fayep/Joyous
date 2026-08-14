@@ -158,6 +158,7 @@ const (
 	CmdSamsungSleep  = "samsung.sleep"
 	CmdSamsungConfig = "samsung.config"
 	CmdDeviceTouch   = "device.touch" // hub → bridge: cache pull / hub contact (see DeviceTouchBody)
+	CmdSendOverlay   = "send.overlay" // hub → bridge: relay pre-computed overlay text (see OverlaySendBody)
 )
 
 // DeviceTouchBody is the body for CmdDeviceTouch. The hub reports that a device
@@ -204,6 +205,32 @@ type RGB [3]int
 type OverlaySendInfo struct {
 	Config  json.RawMessage `json:"config"`
 	Weather json.RawMessage `json:"weather"`
+}
+
+// OverlaySendBody is the body for CmdSendOverlay. Unlike OverlaySendInfo
+// (raw config+weather, for the bridge to render), this carries the hub's
+// own already-computed line geometry -- same layout math the hub uses to
+// bake its own overlay pixels (see joyous-hub's overlayWireLines) -- so the
+// bridge/device never redo margin/position arithmetic themselves. This is
+// a standalone test/comparison message, not part of a real image send: it
+// draws on top of whatever a device is already displaying so its own
+// on-device rendering can be checked against the hub's baked-in version
+// for size/position parity.
+type OverlaySendBody struct {
+	Lines   []OverlayWireLine `json:"lines"`
+	Caption *OverlayWireLine  `json:"caption,omitempty"`
+}
+
+// OverlayWireLine is one already-positioned line of overlay text. X/Y are
+// absolute pixel coordinates (top-left of the line, ascent added by the
+// renderer) in the target device's own native frame dimensions -- not
+// normalized/relative -- since this is device-specific test tooling, not
+// something crops/album-relative like CropRect.
+type OverlayWireLine struct {
+	Text string `json:"text"`
+	Font string `json:"font"` // "large" | "medium" | "caption"
+	X    int    `json:"x"`
+	Y    int    `json:"y"`
 }
 
 // SendCompletePayload reports send delivery to the hub.

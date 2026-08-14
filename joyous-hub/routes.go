@@ -99,6 +99,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("POST /api/calibration/inkjoy-black-248/send", hub.handleInkJoyBlack248CalibrationSend)
 	mux.HandleFunc("POST /api/calibration/inkjoy-lo-ladder/send", hub.handleInkJoyLoLadderCalibrationSend)
 	mux.HandleFunc("POST /api/overlay/send", hub.handleOverlaySend)
+	mux.HandleFunc("POST /api/overlay/send-test", hub.handleOverlayTestSend)
 	mux.HandleFunc("POST /api/images/{id}/crop", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleSaveCrop(w, r, r.PathValue("id"))
 	})

@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"joyous-hub/protocol"
 )
 
 func (h *Hub) handleOverlayGet(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +134,69 @@ func (h *Hub) handleOverlaySend(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "send_id": sendID, "image_id": imageID})
+}
+
+// handleOverlayTestSend fires a standalone "overlay" message at a device --
+// no image involved, draws on top of whatever the device is already
+// showing. Purely a comparison tool: lets the device-rendered overlay be
+// checked against the hub's own baked-in version for size/position parity
+// before the baked-in version is ever turned off for a board (that switch
+// is a separate, future change -- not implemented here). Modeled on
+// handleOverlaySend/handleInkJoyCalibrationSend.
+func (h *Hub) handleOverlayTestSend(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceID == "" {
+		http.Error(w, "device_id required", http.StatusBadRequest)
+		return
+	}
+	dev, ok := h.devices.Get(body.DeviceID)
+	if !ok {
+		http.Error(w, "device not found", http.StatusNotFound)
+		return
+	}
+	if dev.Type != DeviceTypeInkJoy {
+		http.Error(w, "overlay test send only supports InkJoy-protocol frames", http.StatusBadRequest)
+		return
+	}
+	if h.bridgeCoord == nil || !h.bridgeCoord.BridgeOnline(string(DeviceTypeInkJoy)) {
+		http.Error(w, "inkjoy bridge offline", http.StatusBadGateway)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	cfg := h.overlay.Config()
+	weather, err := h.fetchOverlayWeather(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	// No display name tracked for the device's last-sent image today (only
+	// LastImageID, see Device) -- a fixed placeholder is fine for a v1
+	// size/position comparison tool, not worth plumbing new tracking for.
+	wireBody, err := overlayWireLines(cfg, weather, "TEST-CAPTION", dev.Portrait)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	payload, err := json.Marshal(wireBody)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.bridgeCoord.PublishCommand(string(DeviceTypeInkJoy), protocol.CmdPayload{
+		Cmd:      protocol.CmdSendOverlay,
+		DeviceID: dev.ID,
+		Body:     payload,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ok": true, "lines": len(wireBody.Lines)})
 }
 
 // SendImageToDeviceWithOverlay attributes the send to BroadcastSessionID (no owning browser
