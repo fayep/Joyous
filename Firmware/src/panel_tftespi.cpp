@@ -263,13 +263,22 @@ static void drawOverlayLineStroked(const String &text, int x, int y) {
     epaper.drawString(text, x, y);
 }
 
-bool drawOverlayLines(const OverlayLine *lines, int count, const OverlayLine *caption) {
-    // No fillSprite() -- see this function's own doc comment in panel.h.
-    // Transparent glyphs throughout: the single-arg setTextColor() means
-    // "background not over-written" (TFT_eSPI.h's own doc comment on that
-    // overload), unlike the two-arg form every status screen above uses,
-    // which would opaque-fill each glyph's cell and clobber the photo
-    // underneath.
+// Draws overlay text into whatever's already in the sprite buffer, but
+// does NOT call epaper.update() -- shared by every render*() function
+// (each draws its image, then this, then its own single epaper.update())
+// and by the public drawOverlayLines() below (image already on screen,
+// draws this then updates itself). One implementation, one place that
+// knows how overlay text gets drawn; two callers with different ideas of
+// when the actual refresh should happen.
+static bool drawOverlayLinesNoUpdate(const OverlayLine *lines, int count, const OverlayLine *caption) {
+    if (count == 0 && caption == nullptr) return true;  // nothing to draw
+    // No fillSprite() -- overlay draws on top of whatever's already in the
+    // buffer (the image render*() just did, or whatever was last shown,
+    // for the standalone drawOverlayLines() caller). Transparent glyphs
+    // throughout: the single-arg setTextColor() means "background not
+    // over-written" (TFT_eSPI.h's own doc comment on that overload),
+    // unlike the two-arg form every status screen above uses, which would
+    // opaque-fill each glyph's cell and clobber the photo underneath.
     // Default TL_DATUM, no setTextDatum()/padX call -- required for the
     // top-left x/y convention the hub already computes its coordinates in
     // (confirmed against TFT_eSPI::drawString's GFXFF path: poY += ascent
@@ -290,12 +299,17 @@ bool drawOverlayLines(const OverlayLine *lines, int count, const OverlayLine *ca
         }
     }
     epaper.setFreeFont(nullptr);
-    if (!ok) return false;
+    return ok;
+}
+
+bool drawOverlayLines(const OverlayLine *lines, int count, const OverlayLine *caption) {
+    if (!drawOverlayLinesNoUpdate(lines, count, caption)) return false;
     epaper.update();
     return true;
 }
 
-bool renderBinFromHttp(const String &host, int port, const String &path, void (*onProgress)(int)) {
+bool renderBinFromHttp(const String &host, int port, const String &path, void (*onProgress)(int),
+                        const OverlayLine *lines, int lineCount, const OverlayLine *caption) {
     HTTPClient http;
     String url = "http://" + host + ":" + String(port) + path;
     if (!http.begin(url)) return false;
@@ -334,6 +348,7 @@ bool renderBinFromHttp(const String &host, int port, const String &path, void (*
     }
 
     http.end();
+    drawOverlayLinesNoUpdate(lines, lineCount, caption);  // ignored on failure -- image already succeeded
     epaper.update();
     return true;
 }
@@ -362,7 +377,8 @@ static bool renderBinStream(Stream &in) {
     return true;
 }
 
-bool renderBinFromFile(const String &path) {
+bool renderBinFromFile(const String &path,
+                        const OverlayLine *lines, int lineCount, const OverlayLine *caption) {
 #if ENABLE_SD_CACHE
     File f = SD_MMC.open(path, FILE_READ);
     if (!f) return false;
@@ -377,22 +393,29 @@ bool renderBinFromFile(const String &path) {
         }
         size_t got = f.read(buf, len);
         f.close();
-        ok = (got == len) && renderPngBytes(buf, len);
+        ok = (got == len) && renderPngBytes(buf, len, lines, lineCount, caption);
         heap_caps_free(buf);
-        return ok;  // renderPngBytes() already calls epaper.update() on success
+        return ok;  // renderPngBytes() already draws overlay + calls epaper.update() on success
     }
 
     ok = renderBinStream(f);
     f.close();
-    if (ok) epaper.update();
+    if (ok) {
+        drawOverlayLinesNoUpdate(lines, lineCount, caption);  // ignored on failure -- image already succeeded
+        epaper.update();
+    }
     return ok;
 #else
     (void)path;
+    (void)lines;
+    (void)lineCount;
+    (void)caption;
     return false;  // no SD support on this board yet
 #endif
 }
 
-bool renderBinBytes(const uint8_t *bytes, size_t len) {
+bool renderBinBytes(const uint8_t *bytes, size_t len,
+                     const OverlayLine *lines, int lineCount, const OverlayLine *caption) {
     const size_t expected = (size_t)INKJOY_BIN_WIDTH * INKJOY_BIN_HEIGHT * 2;
     if (len != expected) return false;
 
@@ -412,11 +435,13 @@ bool renderBinBytes(const uint8_t *bytes, size_t len) {
             epaper.drawPixel(col, imageY, hiByteToColor(hi));
         }
     }
+    drawOverlayLinesNoUpdate(lines, lineCount, caption);  // ignored on failure -- image already succeeded
     epaper.update();
     return true;
 }
 
-bool renderPngBytes(const uint8_t *bytes, size_t len) {
+bool renderPngBytes(const uint8_t *bytes, size_t len,
+                     const OverlayLine *lines, int lineCount, const OverlayLine *caption) {
     LodePNGState state;
     lodepng_state_init(&state);
     state.decoder.color_convert = 0;  // keep the file's own raw indexed data
@@ -461,6 +486,7 @@ bool renderPngBytes(const uint8_t *bytes, size_t len) {
 
     lodepng_free(raw);
     lodepng_state_cleanup(&state);
+    drawOverlayLinesNoUpdate(lines, lineCount, caption);  // ignored on failure -- image already succeeded
     epaper.update();
     return true;
 }
@@ -473,7 +499,8 @@ bool renderPngBytes(const uint8_t *bytes, size_t len) {
 // (either ENABLE_SD_CACHE is off, or the SD addon isn't physically present
 // even though the hub thinks this firmware is cache-capable -- see
 // main.cpp's handlePlay fallback).
-bool renderPngFromHttp(const String &host, int port, const String &path) {
+bool renderPngFromHttp(const String &host, int port, const String &path,
+                        const OverlayLine *lines, int lineCount, const OverlayLine *caption) {
     HTTPClient http;
     String url = "http://" + host + ":" + String(port) + path;
     if (!http.begin(url)) return false;
@@ -523,7 +550,7 @@ bool renderPngFromHttp(const String &host, int port, const String &path) {
         return false;
     }
 
-    ok = renderPngBytes(buf, (size_t)contentLen);
+    ok = renderPngBytes(buf, (size_t)contentLen, lines, lineCount, caption);
     heap_caps_free(buf);
     return ok;
 }

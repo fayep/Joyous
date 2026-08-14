@@ -64,11 +64,32 @@ struct PlayImage {
     String hash;
 };
 
+// One already-positioned line of overlay text -- x/y are absolute pixel
+// coordinates (top-left, ascent added by the panel renderer) the hub
+// computed using the exact same layout math it uses to bake its own
+// overlay pixels (joyous-hub's overlayWireLines/overlayWeatherOrigin).
+// Firmware does no layout math of its own here; it just draws.
+struct OverlayLine {
+    String text;
+    String font; // "large" | "medium" | "caption"
+    int x = 0;
+    int y = 0;
+};
+
 struct PlayMsg {
     String msgId;
     String host;
     int port = 0;
     PlayImage img;
+    // Optional overlay text to draw after the image renders (see
+    // joyous-hub's SendImageBody.OverlayWire) -- absent on real InkJoy
+    // vendor frames, Samsung, and any clone-board play where the hub's
+    // overlay feature is inactive. lineCount==0 && !hasCaption means "no
+    // overlay for this play", not a parse failure.
+    OverlayLine lines[6];
+    int lineCount = 0;
+    bool hasCaption = false;
+    OverlayLine caption;
 };
 
 struct SleepWindow {
@@ -82,18 +103,6 @@ bool parsePlay(JsonDocument &doc, PlayMsg &out);
 
 // `doc` must already hold a deserialized action envelope (action == "wifi_sleep").
 bool parseSleepWindow(JsonDocument &doc, SleepWindow &out);
-
-// One already-positioned line of overlay text -- x/y are absolute pixel
-// coordinates (top-left, ascent added by the panel renderer) the hub
-// computed using the exact same layout math it uses to bake its own
-// overlay pixels (joyous-hub's overlayWireLines/overlayWeatherOrigin).
-// Firmware does no layout math of its own here; it just draws.
-struct OverlayLine {
-    String text;
-    String font; // "large" | "medium" | "caption"
-    int x = 0;
-    int y = 0;
-};
 
 // Not a real InkJoy action -- our own addition (see joyous-hub's
 // CmdSendOverlay) for comparing on-device overlay rendering against the

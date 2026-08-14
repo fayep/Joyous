@@ -65,8 +65,15 @@ bool ensureDir(const String &path) {
 // Reads and decodes `path` fully into a PSRAM buffer, then renders it --
 // dispatching on the file's own extension. Shared by render() (a specific
 // hash lookup) and renderFrame() (offline-mode cycling by index) so
-// there's one open/read/decode path, not two.
-bool renderFile(const String &path) {
+// there's one open/read/decode path, not two. lines/lineCount/caption
+// default to none -- renderFrame() never passes any (offline cycling
+// stays a no-op change, see panel.h's own note on this); render() passes
+// through whatever its own caller (handlePlay's SD-cache-hit path) gave
+// it, so overlay text lands in the same single refresh as the image
+// either way.
+bool renderFile(const String &path,
+                 const Panel::OverlayLine *lines = nullptr, int lineCount = 0,
+                 const Panel::OverlayLine *caption = nullptr) {
     File f = SD_MMC.open(path, FILE_READ);
     if (!f) return false;
 
@@ -85,8 +92,8 @@ bool renderFile(const String &path) {
         return false;
     }
 
-    bool ok = path.endsWith(".png") ? Panel::renderPngBytes(buf, len)
-                                     : Panel::renderBinBytes(buf, len);
+    bool ok = path.endsWith(".png") ? Panel::renderPngBytes(buf, len, lines, lineCount, caption)
+                                     : Panel::renderBinBytes(buf, len, lines, lineCount, caption);
     heap_caps_free(buf);
     return ok;
 }
@@ -145,14 +152,16 @@ bool has(const String &hash, int orientation) {
     return cachedExtension(hash, orientation) != nullptr;
 }
 
-bool render(const String &hash, int orientation) {
+bool render(const String &hash, int orientation,
+            const Panel::OverlayLine *lines, int lineCount, const Panel::OverlayLine *caption) {
     const char *ext = cachedExtension(hash, orientation);
     if (!ext) return false;
-    return renderFile(pathFor(hash, orientation, ext));
+    return renderFile(pathFor(hash, orientation, ext), lines, lineCount, caption);
 }
 
 bool fetchAndRender(const String &host, int port, const String &path,
-                     const String &hash, int orientation) {
+                     const String &hash, int orientation,
+                     const Panel::OverlayLine *lines, int lineCount, const Panel::OverlayLine *caption) {
     // Save under whichever format the hub's URL implies -- the hub
     // controls `path`, and its extension is the source of truth for what
     // format the response body actually is.
@@ -233,7 +242,7 @@ bool fetchAndRender(const String &host, int port, const String &path,
         return false;
     }
 
-    return render(hash, orientation);
+    return render(hash, orientation, lines, lineCount, caption);
 }
 
 void evictIfNeeded(int orientation) {

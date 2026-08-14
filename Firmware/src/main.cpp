@@ -420,11 +420,13 @@ static void onPlayProgress(int pct) {
 // through ContentCache::fetchAndRender, which caches AND renders). Dispatches
 // on imgUrl's extension since a hub new enough to send PNG could point
 // either format at this same fallback.
-static bool renderPlayImage(const InkJoy::PlayMsg &play) {
+static bool renderPlayImage(const InkJoy::PlayMsg &play, const Panel::OverlayLine *lines,
+                             int lineCount, const Panel::OverlayLine *caption) {
     if (play.img.imgUrl.endsWith(".png")) {
-        return Panel::renderPngFromHttp(play.host, play.port, play.img.imgUrl);
+        return Panel::renderPngFromHttp(play.host, play.port, play.img.imgUrl, lines, lineCount, caption);
     }
-    return Panel::renderBinFromHttp(play.host, play.port, play.img.imgUrl, onPlayProgress);
+    return Panel::renderBinFromHttp(play.host, play.port, play.img.imgUrl, onPlayProgress,
+                                     lines, lineCount, caption);
 }
 
 static void handlePlay(JsonDocument &doc) {
@@ -446,6 +448,31 @@ static void handlePlay(JsonDocument &doc) {
     }
 
     publish(InkJoy::buildAck("play_ack", clientId, play.msgId, InkJoy::RESULT_ACCEPTED));
+
+    // Translated up front (not after rendering) -- every render path below
+    // takes this directly and draws it into the same buffer before its own
+    // one epaper.update() call. absent/empty (offline mode, real InkJoy,
+    // Samsung, or a clone-board play with the hub's overlay feature
+    // inactive) is a no-op there, not a separate step here -- see
+    // panel.h's own note above the render*() declarations for why: two
+    // renders (image, then overlay) meant two full e-paper waveform
+    // refreshes back to back, confirmed on real hardware as genuinely,
+    // unacceptably slow (~1 minute per play).
+    Panel::OverlayLine lines[6];
+    for (int i = 0; i < play.lineCount; i++) {
+        lines[i].text = play.lines[i].text;
+        lines[i].font = play.lines[i].font;
+        lines[i].x = play.lines[i].x;
+        lines[i].y = play.lines[i].y;
+    }
+    Panel::OverlayLine caption;
+    if (play.hasCaption) {
+        caption.text = play.caption.text;
+        caption.font = play.caption.font;
+        caption.x = play.caption.x;
+        caption.y = play.caption.y;
+    }
+    const Panel::OverlayLine *captionPtr = play.hasCaption ? &caption : nullptr;
 
 #if ENABLE_SD_CACHE
     // Re-mount fresh here, while the system is still at idle CPU/power --
@@ -474,14 +501,15 @@ static void handlePlay(JsonDocument &doc) {
     if (sdReady) {
         if (ContentCache::has(play.img.hash, orientation)) {
             Serial.printf("play: cache hit %s\n", play.img.hash.c_str());
-            ok = ContentCache::render(play.img.hash, orientation);
+            ok = ContentCache::render(play.img.hash, orientation, lines, play.lineCount, captionPtr);
         } else {
             Serial.printf("play: cache miss %s, fetching+caching\n", play.img.hash.c_str());
             // No onProgress plumbing through ContentCache yet -- a cached
             // fetch skips the 20/40/60/80 progress acks the direct path
             // sends, going straight from accepted to done/failed.
             ok = ContentCache::fetchAndRender(play.host, play.port, play.img.imgUrl,
-                                               play.img.hash, orientation);
+                                               play.img.hash, orientation,
+                                               lines, play.lineCount, captionPtr);
             if (ok) {
                 ContentCache::evictIfNeeded(orientation);
             } else {
@@ -492,15 +520,15 @@ static void handlePlay(JsonDocument &doc) {
                 // the play outright. On a healthy card this branch never
                 // runs; the miss above is written to cache normally.
                 Serial.println("play: SD cache fetch failed, falling back to direct network render");
-                ok = renderPlayImage(play);
+                ok = renderPlayImage(play, lines, play.lineCount, captionPtr);
             }
         }
     } else {
-        ok = renderPlayImage(play);
+        ok = renderPlayImage(play, lines, play.lineCount, captionPtr);
     }
     if (sdReady) SdCard::end();  // see SdCard::end()'s comment -- don't leave it powered idle
 #else
-    bool ok = renderPlayImage(play);
+    bool ok = renderPlayImage(play, lines, play.lineCount, captionPtr);
 #endif
     Power::setHighPerformance(false);
 

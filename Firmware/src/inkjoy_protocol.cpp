@@ -117,6 +117,16 @@ String buildSleep(const String &clientId, int batteryPct, int reason) {
     return out;
 }
 
+static void parseOverlayLine(JsonObject obj, OverlayLine &out) {
+    // `| ""` not `.as<String>()` for text/font -- see the hash comment
+    // below for why an absent key must not read back as the literal
+    // string "null".
+    out.text = obj["text"] | "";
+    out.font = obj["font"] | "";
+    out.x = obj["x"] | 0;
+    out.y = obj["y"] | 0;
+}
+
 bool parsePlay(JsonDocument &doc, PlayMsg &out) {
     JsonObject data = doc["data"];
     if (data.isNull()) return false;
@@ -140,6 +150,25 @@ bool parsePlay(JsonDocument &doc, PlayMsg &out) {
     // way on real hardware (2026-08-11): this caused every play to fail
     // with RESULT_FAILED on a device with no SD card at all.
     out.img.hash = img0["hash"] | "";
+
+    // Optional -- absent on real InkJoy vendor frames, Samsung, and any
+    // clone-board play where the hub's overlay feature is inactive (see
+    // joyous-hub's SendImageBody.OverlayWire). Not a parse failure either
+    // way; out.lineCount stays 0 / out.hasCaption stays false if missing.
+    JsonObject overlay = data["overlay"];
+    if (!overlay.isNull()) {
+        JsonArray lines = overlay["lines"];
+        for (JsonObject ln : lines) {
+            if (out.lineCount >= (int)(sizeof(out.lines) / sizeof(out.lines[0]))) break;
+            parseOverlayLine(ln, out.lines[out.lineCount]);
+            out.lineCount++;
+        }
+        JsonObject caption = overlay["caption"];
+        out.hasCaption = !caption.isNull();
+        if (out.hasCaption) {
+            parseOverlayLine(caption, out.caption);
+        }
+    }
     return true;
 }
 
@@ -150,16 +179,6 @@ bool parseSleepWindow(JsonDocument &doc, SleepWindow &out) {
     out.endTime = data["endTime"].as<String>();
     out.ackMsgId = doc["msgid"].as<String>();
     return true;
-}
-
-static void parseOverlayLine(JsonObject obj, OverlayLine &out) {
-    // `| ""` not `.as<String>()` for text/font -- see parsePlay's hash
-    // comment for why an absent key must not read back as the literal
-    // string "null".
-    out.text = obj["text"] | "";
-    out.font = obj["font"] | "";
-    out.x = obj["x"] | 0;
-    out.y = obj["y"] | 0;
 }
 
 bool parseOverlay(JsonDocument &doc, OverlayMsg &out) {

@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include "panel.h"
 
 // Content-addressed SD cache for InkJoy images, shared by both boards.
 //
@@ -46,16 +47,26 @@ void begin();
 bool has(const String &hash, int orientation);
 
 // Decodes and renders the cached PNG for `hash` (from the given
-// orientation's cache) directly to the panel. Returns false on any
-// open/decode error -- nothing is drawn to the panel in that case.
-bool render(const String &hash, int orientation);
+// orientation's cache) directly to the panel, drawing lines/caption into
+// the same buffer before the one refresh this makes -- same overlay
+// contract as Panel's render*() functions (see panel.h's own note), and
+// for the same reason: one play, one refresh. Defaults to none, a no-op
+// for offline-mode cycling (see renderFrame() below, which never passes
+// any). Returns false on any open/decode error -- nothing is drawn to the
+// panel in that case.
+bool render(const String &hash, int orientation,
+            const Panel::OverlayLine *lines = nullptr, int lineCount = 0,
+            const Panel::OverlayLine *caption = nullptr);
 
 // Fetches image bytes from host:port+path over HTTP, saves to the given
 // orientation's cache under `hash` (write-to-.tmp-then-rename), then
-// renders it. Returns false on any HTTP/write/decode error; a failed
-// fetch never touches an existing valid cache entry for a different hash.
+// renders it (same overlay contract as render() above). Returns false on
+// any HTTP/write/decode error; a failed fetch never touches an existing
+// valid cache entry for a different hash.
 bool fetchAndRender(const String &host, int port, const String &path,
-                     const String &hash, int orientation);
+                     const String &hash, int orientation,
+                     const Panel::OverlayLine *lines = nullptr, int lineCount = 0,
+                     const Panel::OverlayLine *caption = nullptr);
 
 // Deletes oldest-by-mtime cache files (within this orientation's cache
 // only -- each orientation has its own independent cap, so heavy use of
