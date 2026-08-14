@@ -42,12 +42,25 @@ func overlayWireLines(cfg OverlayConfig, weather WeatherSnapshot, photoName stri
 
 	var body protocol.OverlaySendBody
 	for i, ln := range lines {
-		if ln.text == "" {
+		// Strip the rain-cloud private-use rune (overlayIconRainRune,
+		// overlay_icons.go) before it ever reaches the wire -- it's a
+		// hand-drawn vector icon hub-side (oksvg/rasterx), not a real font
+		// glyph, and firmware has no glyph for it either (GFXFF's
+		// converted range is plain ASCII 0x20-0x7E) or any icon-drawing
+		// code wired up to intercept it -- confirmed on real hardware
+		// (2026-08-13): passed through unstripped, it rendered as a
+		// visible placeholder/tofu glyph instead of being silently
+		// invisible or, worse, actually drawing a cloud. Dropped from the
+		// wire format entirely for v1, matching the same "no icon" call
+		// already made for the degree glyph -- see Panel::drawDegreeGlyph's
+		// own comment in Firmware/include/panel.h.
+		text := strings.TrimSpace(strings.ReplaceAll(ln.text, string(overlayIconRainRune), ""))
+		if text == "" {
 			y += ln.stepPx
 			continue
 		}
 		body.Lines = append(body.Lines, protocol.OverlayWireLine{
-			Text: ln.text,
+			Text: text,
 			Font: overlayLineFontRole(i),
 			X:    x,
 			Y:    y,

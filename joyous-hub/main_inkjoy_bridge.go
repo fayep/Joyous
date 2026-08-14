@@ -201,13 +201,25 @@ func main() {
 		if !ok {
 			return fmt.Errorf("device %q not found", entry.deviceID)
 		}
-		return bridgeDeliverInkJoyImage(bridgeCtx, srv, encodeHub, sendDelivery, inkjoyRetry, hubInkjoyCache, dev, protocol.SendImageBody{
-			ImageID:       entry.imageID,
-			OverlayToken:  entry.overlayToken,
-			SendID:        entry.sendID,
-			HubBaseURL:    entry.hubBaseURL,
-			ColorOverride: entry.colorOverride,
-		})
+		// Rebuild the full body via buildSendImageBody (the same
+		// constructor a fresh send uses) rather than hand-assembling a
+		// partial protocol.SendImageBody{} literal here -- a second,
+		// independent construction site is exactly how this drifted out
+		// of sync with the real one and silently dropped both Overlay and
+		// OverlayWire on every retry (found 2026-08-13, chasing why a
+		// device-embedded overlay wasn't showing up: it turned out an
+		// earlier attempt in this same test had gone through a retry,
+		// which used this literal and carried no overlay data at all).
+		// Recomputes overlay config/weather/color-override fresh at retry
+		// time instead of reusing what was captured at the original send
+		// -- more correct than a stale snapshot, and this is the only
+		// path that ever reaches here now, so there's nothing left to
+		// drift.
+		body, err := buildSendImageBody(encodeHub, dev, entry.imageID, entry.overlayToken, entry.sendID, nil, nil)
+		if err != nil {
+			return err
+		}
+		return bridgeDeliverInkJoyImage(bridgeCtx, srv, encodeHub, sendDelivery, inkjoyRetry, hubInkjoyCache, dev, body)
 	})
 
 	if err := srv.Start(ctx); err != nil {
@@ -353,6 +365,21 @@ func bridgeDeliverInkJoyImage(
 	dev *Device,
 	body protocol.SendImageBody,
 ) error {
+	// Baked-in overlay compositing is only for real InkJoy vendor hardware
+	// (H:2/H:3) and any other hardware we don't specifically recognize as
+	// our own -- never our own Seeed/GooDisplay clones (H:9/H:10), which
+	// render overlay text themselves on-device instead (see body.OverlayWire
+	// and Panel::drawOverlayLines). Cleared here, in this bridge-tagged
+	// file where dev.HardwareModel is legitimately known, rather than as a
+	// hardware check inside bridgeEncodeInkJoy itself (bridge_send.go has
+	// no build tag and compiles into the hub binary too -- see this same
+	// fix already made once for OverlayWire's own gating, 2026-08-13).
+	// body is a value parameter, so this only affects the copy passed to
+	// bridgeEncodeInkJoy below, not the caller's original.
+	if inkjoybridge.LocalOnlyHardware(dev.HardwareModel) {
+		body.OverlayToken = ""
+		body.Overlay = nil
+	}
 	bin, err := bridgeEncodeInkJoy(ctx, encodeHub, body, dev)
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
@@ -394,7 +421,18 @@ func bridgeDeliverInkJoyImage(
 	if body.SendID != "" && sendDelivery != nil {
 		reuseMsgid = sendDelivery.InkJoyMsgid(body.SendID)
 	}
-	payload, msgid := buildPlayPayload(dev.MAC, imgURL, reuseMsgid, hash)
+	// The hub attaches OverlayWire unconditionally (see buildSendImageBody's
+	// own comment) -- deciding whether this specific device can actually
+	// act on it belongs here, not there: this file is the one tagged
+	// `inkjoybridge`, only ever compiled into the bridge binary, where
+	// LocalOnlyHardware/dev.HardwareModel are legitimately known (this
+	// dev came straight from the bridge's own registry, populated by real
+	// login messages -- no hub-side sync involved at all).
+	overlayWire := body.OverlayWire
+	if overlayWire != nil && !inkjoybridge.LocalOnlyHardware(dev.HardwareModel) {
+		overlayWire = nil
+	}
+	payload, msgid := buildPlayPayload(dev.MAC, imgURL, reuseMsgid, hash, overlayWire)
 	if body.SendID != "" && sendDelivery != nil {
 		sendDelivery.BindInkJoy(body.SendID, msgid)
 		if inkjoyRetry != nil {

@@ -68,18 +68,18 @@ const (
 
 // Message type constants.
 const (
-	TypeHello           = "bridge.hello"
-	TypeDevices         = "devices.sync"
-	TypeDevice          = "device.update"
-	TypeDeviceRemove    = "device.remove"
-	TypeEvent           = "bridge.event"
-	TypeUIState         = "ui.state"
-	TypeUIAction        = "ui.action"
-	TypeUIHTTPRequest   = "ui.http.request"
-	TypeUIHTTPResponse  = "ui.http.response"
-	TypeCmd             = "bridge.cmd"
-	TypeSendComplete    = "send.complete"
-	TypeMQTTLogs        = "mqtt.logs"
+	TypeHello          = "bridge.hello"
+	TypeDevices        = "devices.sync"
+	TypeDevice         = "device.update"
+	TypeDeviceRemove   = "device.remove"
+	TypeEvent          = "bridge.event"
+	TypeUIState        = "ui.state"
+	TypeUIAction       = "ui.action"
+	TypeUIHTTPRequest  = "ui.http.request"
+	TypeUIHTTPResponse = "ui.http.response"
+	TypeCmd            = "bridge.cmd"
+	TypeSendComplete   = "send.complete"
+	TypeMQTTLogs       = "mqtt.logs"
 )
 
 // HelloPayload announces a bridge at startup.
@@ -99,29 +99,29 @@ type HelloPayload struct {
 
 // BridgeDevice is the vendor-neutral device view bridges publish to the hub.
 type BridgeDevice struct {
-	ID              string    `json:"id"`
-	Type            string    `json:"type"`
-	Name            string    `json:"name,omitempty"`
-	MAC             string    `json:"mac,omitempty"`
-	IP              string    `json:"ip,omitempty"`
-	LastIP          string    `json:"last_ip,omitempty"` // Samsung: durable WoL target when ip cleared
-	USN             string    `json:"usn,omitempty"`
-	Firmware        string    `json:"firmware,omitempty"`
-	Battery         int       `json:"battery,omitempty"`
-	PowerSource     string    `json:"power_source,omitempty"`
-	RSSI            int       `json:"rssi,omitempty"`
-	Connected       bool      `json:"connected"`
-	LastSeen        time.Time `json:"last_seen"`
-	LastAction      string    `json:"last_action,omitempty"`
-	SleepBeginTime  string    `json:"sleep_begin_time,omitempty"`
-	SleepEndTime    string    `json:"sleep_end_time,omitempty"`
-	Portrait        bool      `json:"portrait,omitempty"`
-	HubIP           string    `json:"hub_ip,omitempty"`
-	MDCPin          string    `json:"mdc_pin,omitempty"`
-	DisplayCropFormat string  `json:"display_crop_format,omitempty"`
-	DisplayWidth    int       `json:"display_width,omitempty"`
-	DisplayHeight   int       `json:"display_height,omitempty"`
-	DeepSleepActive bool      `json:"deep_sleep_active,omitempty"`
+	ID                string    `json:"id"`
+	Type              string    `json:"type"`
+	Name              string    `json:"name,omitempty"`
+	MAC               string    `json:"mac,omitempty"`
+	IP                string    `json:"ip,omitempty"`
+	LastIP            string    `json:"last_ip,omitempty"` // Samsung: durable WoL target when ip cleared
+	USN               string    `json:"usn,omitempty"`
+	Firmware          string    `json:"firmware,omitempty"`
+	Battery           int       `json:"battery,omitempty"`
+	PowerSource       string    `json:"power_source,omitempty"`
+	RSSI              int       `json:"rssi,omitempty"`
+	Connected         bool      `json:"connected"`
+	LastSeen          time.Time `json:"last_seen"`
+	LastAction        string    `json:"last_action,omitempty"`
+	SleepBeginTime    string    `json:"sleep_begin_time,omitempty"`
+	SleepEndTime      string    `json:"sleep_end_time,omitempty"`
+	Portrait          bool      `json:"portrait,omitempty"`
+	HubIP             string    `json:"hub_ip,omitempty"`
+	MDCPin            string    `json:"mdc_pin,omitempty"`
+	DisplayCropFormat string    `json:"display_crop_format,omitempty"`
+	DisplayWidth      int       `json:"display_width,omitempty"`
+	DisplayHeight     int       `json:"display_height,omitempty"`
+	DeepSleepActive   bool      `json:"deep_sleep_active,omitempty"`
 }
 
 // DevicesPayload is a full device list snapshot from a bridge.
@@ -141,9 +141,9 @@ type DeviceRemovePayload struct {
 
 // CmdPayload is a hub→bridge command.
 type CmdPayload struct {
-	Cmd     string          `json:"cmd"`
-	DeviceID string         `json:"device_id,omitempty"`
-	Body    json.RawMessage `json:"body,omitempty"`
+	Cmd      string          `json:"cmd"`
+	DeviceID string          `json:"device_id,omitempty"`
+	Body     json.RawMessage `json:"body,omitempty"`
 }
 
 // Command names (CmdPayload.Cmd).
@@ -186,8 +186,18 @@ type SendImageBody struct {
 	Crops        map[string]CropRect `json:"crops,omitempty"` // all album crops, keyed by aspect (e.g. "4:3", "16:9")
 	OverlayToken string              `json:"overlay_token,omitempty"`
 	Overlay      *OverlaySendInfo    `json:"overlay,omitempty"`
-	SendID       string              `json:"send_id,omitempty"`
-	HubBaseURL   string              `json:"hub_base_url"`
+	// OverlayWire carries the hub's already-computed overlay line geometry
+	// (see OverlaySendBody's own comment) for devices that render overlay
+	// text themselves -- currently only Seeed/GooDisplay clones (see
+	// inkjoybridge.LocalOnlyHardware). Separate from Overlay above: that
+	// field is raw config+weather for the bridge to composite into image
+	// pixels (real InkJoy vendor frames, Samsung -- always baked in, never
+	// gated), this one is relayed into the play message's own "overlay"
+	// field verbatim for the device to draw itself, on top of the same
+	// image, in one message. A play can carry both, neither, or just one.
+	OverlayWire *OverlaySendBody `json:"overlay_wire,omitempty"`
+	SendID      string           `json:"send_id,omitempty"`
+	HubBaseURL  string           `json:"hub_base_url"`
 	// ColorOverride is the device's per-device ink/color palette override, if
 	// any (hub-owned — see the hub's Device.ColorOverride), resolved by the hub
 	// at send time and handed to the bridge for this one encode. The bridge
@@ -290,9 +300,9 @@ const (
 
 // NotifyBody is EventPayload.Body when Name is EventNotify.
 type NotifyBody struct {
-	ID         string `json:"id,omitempty"`          // toast id; repeats replace in place
-	Message    string `json:"message"`               // user-visible text
-	Level      string `json:"level,omitempty"`        // "", "success", "error"
+	ID         string `json:"id,omitempty"`    // toast id; repeats replace in place
+	Message    string `json:"message"`         // user-visible text
+	Level      string `json:"level,omitempty"` // "", "success", "error"
 	DeviceID   string `json:"device_id,omitempty"`
 	Closable   *bool  `json:"closable,omitempty"`     // default true
 	AutoHideMs int    `json:"auto_hide_ms,omitempty"` // 0 = stay until dismiss/replace

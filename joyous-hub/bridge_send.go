@@ -299,6 +299,31 @@ func buildSendImageBody(h *Hub, dev *Device, imageID, overlayToken, sendID strin
 			return body, err
 		}
 		body.Overlay = info
+
+		// Also attach already-positioned line geometry for devices that
+		// render overlay text themselves -- see OverlayWire's own comment.
+		// Computed unconditionally, for every InkJoy send, regardless of
+		// hardware model -- the hub has no business deciding which vendor
+		// hardware can act on this (that's exactly the LocalOnlyHardware
+		// check, which belongs to the bridge; this file has no build tag
+		// and compiles straight into the hub binary, so calling it here
+		// would put hardware-specific vendor knowledge in hub-compiled
+		// code, breaking the hub/bridge separation this whole project
+		// otherwise holds to -- caught 2026-08-13). The bridge decides
+		// whether to actually forward this into the real play message;
+		// see bridgeDeliverInkJoyImage in main_inkjoy_bridge.go (tagged
+		// inkjoybridge, only ever compiled into that bridge).
+		photoName := ""
+		if h.images != nil {
+			if meta, err := h.images.GetMeta(imageID); err == nil {
+				photoName = overlayPhotoNameFromMeta(meta, *cfg)
+			}
+		}
+		wire, err := overlayWireLines(*cfg, *weather, photoName, dev.Portrait)
+		if err != nil {
+			return body, err
+		}
+		body.OverlayWire = &wire
 	}
 	return body, nil
 }

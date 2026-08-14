@@ -11,6 +11,7 @@ import (
 
 	"joyous-hub/bridgehub"
 	"joyous-hub/inkjoybridge"
+	"joyous-hub/protocol"
 )
 
 // MQTTPublisher is satisfied by the real broker and by test doubles.
@@ -481,7 +482,7 @@ func buildAckPayloadFor(mac, ackAction, ackMsgid string, data map[string]any) []
 // for real InkJoy hardware and older clone builds, which don't understand
 // the field (see content_cache.h's parsePlay comment: absent hash is
 // treated as "no cache key available", same as before this field existed).
-func buildPlayPayload(mac, imgURL, msgid, hash string) ([]byte, string) {
+func buildPlayPayload(mac, imgURL, msgid, hash string, overlay *protocol.OverlaySendBody) ([]byte, string) {
 	// imgURL is e.g. "https://192.168.1.7:1443/images/abc.bin"
 	// Strip scheme (http:// or https://)
 	rest := imgURL
@@ -507,17 +508,24 @@ func buildPlayPayload(mac, imgURL, msgid, hash string) ([]byte, string) {
 	if hash != "" {
 		img0["hash"] = hash
 	}
+	data := map[string]any{
+		"host":     host,
+		"port":     port,
+		"imgs":     []any{img0},
+		"mode":     2,
+		"strategy": 1,
+	}
+	if overlay != nil {
+		data["overlay"] = map[string]any{
+			"lines":   overlay.Lines,
+			"caption": overlay.Caption,
+		}
+	}
 	b, _ := json.Marshal(map[string]any{
 		"action": "play",
 		"msgid":  msgid,
 		"stamac": mac,
-		"data": map[string]any{
-			"host":     host,
-			"port":     port,
-			"imgs":     []any{img0},
-			"mode":     2,
-			"strategy": 1,
-		},
+		"data":   data,
 	})
 	return b, msgid
 }
