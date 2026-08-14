@@ -103,7 +103,9 @@ manifest (device doesn't need to derive one).
 Reuses joyous-hub's existing per-device-MAC cache
 (`joyous-hub/inkjoy_cache.go`'s `InkJoyCache`, served at
 `/inkjoy/{mac}/{file}`) unmodified — just name entries by content hash
-(`sha256(pngBytes)`, truncated to 16 hex chars) instead of the existing
+(`sha256(pngBytes)`, truncated to 8 hex chars -- must fit a FAT 8.3 short
+filename's 8-char base name, since the SD card's FatFs build has no
+long-filename support) instead of the existing
 `(imageID, overlayToken, portrait)` scheme. No new HTTP route needed.
 
 ```json

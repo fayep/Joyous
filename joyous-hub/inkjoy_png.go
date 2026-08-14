@@ -135,10 +135,17 @@ func (s *ImageStore) devicePaletteRGB(id string, colorOverride *[6]PaletteRGB) [
 }
 
 // ContentHash returns the SD-cache content-addressed key for bin (see
-// Firmware's content_cache.h) -- a short hex digest, not the full sha256,
-// matching the FAT32 short-filename reasoning in
-// research/sd-content-cache-plan.md.
+// Firmware's content_cache.h) -- a short hex digest, not the full sha256.
+// 8 hex chars (4 bytes), not more: this must fit a FAT 8.3 short filename's
+// 8-character base-name limit, since the SD card's FatFs build has no
+// long-filename support -- a longer name here doesn't cleanly fail, it
+// silently breaks 8.3 short-name handling on the device (confirmed the
+// hard way, 2026-08-13: a play using a 16-char hash hung on-device with no
+// further ack after the initial accept). Deliberately chosen this short
+// even beyond the 8.3 limit itself: at 4 bytes, the cache's own file-count
+// ceiling (kCacheMaxFiles = 200/orientation, content_cache.cpp) is well
+// under the point where hash collisions become a real concern.
 func ContentHash(bin []byte) string {
 	sum := sha256.Sum256(bin)
-	return hex.EncodeToString(sum[:8])
+	return hex.EncodeToString(sum[:4])
 }

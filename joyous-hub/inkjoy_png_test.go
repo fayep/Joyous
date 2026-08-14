@@ -88,7 +88,7 @@ func TestContentHashStableAndDistinct(t *testing.T) {
 	if a == c {
 		t.Fatalf("hash collision for distinct input")
 	}
-	if len(a) != 16 { // 8 bytes hex-encoded
-		t.Fatalf("hash len = %d, want 16", len(a))
+	if len(a) != 8 { // 4 bytes hex-encoded -- must fit a FAT 8.3 short filename's 8-char base name
+		t.Fatalf("hash len = %d, want 8", len(a))
 	}
 }
