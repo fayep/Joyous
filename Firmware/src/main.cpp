@@ -521,6 +521,40 @@ static void handleWifiSleep(JsonDocument &doc) {
     publish(InkJoy::buildAck("wifi_sleep_ack", clientId, win.ackMsgId, InkJoy::RESULT_ACCEPTED));
 }
 
+// Not a real InkJoy action -- our own addition (see joyous-hub's
+// CmdSendOverlay) for comparing on-device overlay rendering against the
+// hub's baked-in version. Single ack, no progress -- unlike handlePlay this
+// is a small, synchronous draw with no HTTP download to report progress on.
+static void handleOverlay(JsonDocument &doc) {
+    InkJoy::OverlayMsg ov;
+    if (!InkJoy::parseOverlay(doc, ov)) return;
+
+    Panel::OverlayLine lines[6];
+    for (int i = 0; i < ov.lineCount; i++) {
+        lines[i].text = ov.lines[i].text;
+        lines[i].font = ov.lines[i].font;
+        lines[i].x = ov.lines[i].x;
+        lines[i].y = ov.lines[i].y;
+    }
+    Panel::OverlayLine caption;
+    if (ov.hasCaption) {
+        caption.text = ov.caption.text;
+        caption.font = ov.caption.font;
+        caption.x = ov.caption.x;
+        caption.y = ov.caption.y;
+    }
+
+    // Panel work (epaper.update()) -- same CPU boost handlePlay uses around
+    // its own panel refresh, see Power::setHighPerformance's own comment
+    // ("Perf: 240 MHz for HTTP/panel work").
+    Power::setHighPerformance(true);
+    bool ok = Panel::drawOverlayLines(lines, ov.lineCount, ov.hasCaption ? &caption : nullptr);
+    Power::setHighPerformance(false);
+
+    publish(InkJoy::buildAck("overlay_ack", clientId, ov.msgId,
+                              ok ? InkJoy::RESULT_DONE : InkJoy::RESULT_FAILED));
+}
+
 static void onMqttMessage(const char *payload, int len) {
     JsonDocument doc;
     if (deserializeJson(doc, payload, len)) return;
@@ -539,6 +573,8 @@ static void onMqttMessage(const char *payload, int len) {
         handlePlay(doc);
     } else if (!strcmp(action, "wifi_sleep")) {
         handleWifiSleep(doc);
+    } else if (!strcmp(action, "overlay")) {
+        handleOverlay(doc);
     }
 }
 

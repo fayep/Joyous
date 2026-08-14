@@ -79,6 +79,28 @@ bool renderBinBytes(const uint8_t *bytes, size_t len);
 // text, not yet called from anywhere.
 void drawDegreeGlyph(int x, int y, int fontPt, uint16_t color);
 
+// One already-positioned line of overlay text. Deliberately a Panel-local
+// type, not InkJoy::OverlayLine (inkjoy_protocol.h) -- this header has no
+// dependency on the protocol layer today and shouldn't gain one just for
+// this; main.cpp translates InkJoy::OverlayMsg into this at the call site.
+// x/y are absolute pixel coordinates (top-left, same convention drawString
+// already uses -- see drawOverlayLines()'s own comment in panel_tftespi.cpp).
+struct OverlayLine {
+    String text;
+    String font; // "large" | "medium" | "caption"
+    int x = 0;
+    int y = 0;
+};
+
+// Draws overlay text lines (date/weather/caption) on top of whatever the
+// panel is currently showing -- does NOT clear the panel first, unlike
+// showProvisioning()/showMode()/etc above. For the on-device-vs-hub-baked
+// overlay sizing/position comparison; see joyous-hub's CmdSendOverlay.
+// `caption` may be nullptr. Returns false (and draws nothing) if any
+// line's `font` isn't a recognized role -- bad data should be visible in
+// this comparison tool, not silently misdrawn.
+bool drawOverlayLines(const OverlayLine *lines, int count, const OverlayLine *caption);
+
 // Renders indexed-PNG-format bytes already fully loaded in memory (4-bit
 // palette, INKJOY_BIN_WIDTH x INKJOY_BIN_HEIGHT, palette index 0-5 mapped
 // to black/white/yellow/red/blue/green -- a contract with the hub-side

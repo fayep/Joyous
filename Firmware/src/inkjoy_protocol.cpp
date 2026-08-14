@@ -152,4 +152,35 @@ bool parseSleepWindow(JsonDocument &doc, SleepWindow &out) {
     return true;
 }
 
+static void parseOverlayLine(JsonObject obj, OverlayLine &out) {
+    // `| ""` not `.as<String>()` for text/font -- see parsePlay's hash
+    // comment for why an absent key must not read back as the literal
+    // string "null".
+    out.text = obj["text"] | "";
+    out.font = obj["font"] | "";
+    out.x = obj["x"] | 0;
+    out.y = obj["y"] | 0;
+}
+
+bool parseOverlay(JsonDocument &doc, OverlayMsg &out) {
+    JsonObject data = doc["data"];
+    if (data.isNull()) return false;
+    out.msgId = doc["msgid"].as<String>();
+
+    JsonArray lines = data["lines"];
+    out.lineCount = 0;
+    for (JsonObject ln : lines) {
+        if (out.lineCount >= (int)(sizeof(out.lines) / sizeof(out.lines[0]))) break;
+        parseOverlayLine(ln, out.lines[out.lineCount]);
+        out.lineCount++;
+    }
+
+    JsonObject caption = data["caption"];
+    out.hasCaption = !caption.isNull();
+    if (out.hasCaption) {
+        parseOverlayLine(caption, out.caption);
+    }
+    return true;
+}
+
 } // namespace InkJoy

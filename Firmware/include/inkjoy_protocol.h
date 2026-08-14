@@ -83,4 +83,31 @@ bool parsePlay(JsonDocument &doc, PlayMsg &out);
 // `doc` must already hold a deserialized action envelope (action == "wifi_sleep").
 bool parseSleepWindow(JsonDocument &doc, SleepWindow &out);
 
+// One already-positioned line of overlay text -- x/y are absolute pixel
+// coordinates (top-left, ascent added by the panel renderer) the hub
+// computed using the exact same layout math it uses to bake its own
+// overlay pixels (joyous-hub's overlayWireLines/overlayWeatherOrigin).
+// Firmware does no layout math of its own here; it just draws.
+struct OverlayLine {
+    String text;
+    String font; // "large" | "medium" | "caption"
+    int x = 0;
+    int y = 0;
+};
+
+// Not a real InkJoy action -- our own addition (see joyous-hub's
+// CmdSendOverlay) for comparing on-device overlay rendering against the
+// hub's baked-in version. Fixed-size line array, not std::vector, matching
+// this header's existing style.
+struct OverlayMsg {
+    String msgId;
+    OverlayLine lines[6];
+    int lineCount = 0;
+    bool hasCaption = false;
+    OverlayLine caption;
+};
+
+// `doc` must already hold a deserialized action envelope (action == "overlay").
+bool parseOverlay(JsonDocument &doc, OverlayMsg &out);
+
 } // namespace InkJoy

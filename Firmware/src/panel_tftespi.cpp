@@ -58,6 +58,8 @@ extern EPaper epaper; // owned by main.cpp
 // read as the same typeface family, at the same real size.
 static void titleFont() { epaper.setFreeFont(&GoRegular42pt7b); }
 static void bodyFont() { epaper.setFreeFont(&GoRegular23pt7b); }
+static void mediumFont() { epaper.setFreeFont(&GoRegular30pt7b); }
+static void captionFont() { epaper.setFreeFont(&Caveat39pt7b); }
 
 namespace Panel {
 
@@ -203,6 +205,94 @@ void drawDegreeGlyph(int x, int y, int fontPt, uint16_t color) {
     // offset up by roughly the font's ascent.
     int r = max(2, fontPt / 10);
     epaper.drawCircle(x + r, y - fontPt * 3 / 4, r, color);
+}
+
+// Returns false (font unset) for an unrecognized role -- caller treats that
+// as a hard failure, see drawOverlayLines()'s own comment.
+static bool overlayLineFont(const String &font) {
+    if (font == "large") { titleFont(); return true; }
+    if (font == "medium") { mediumFont(); return true; }
+    if (font == "caption") { captionFont(); return true; }
+    return false;
+}
+
+// White fill + 8-direction black outline, matching joyous-hub's own
+// drawBorderedOverlayText (overlay_render.go) -- plain single-color text
+// read poorly against a busy dithered photo in the very first real-hardware
+// test of this feature (2026-08-13); an outline is what actually makes
+// hub-baked overlay text legible on an arbitrary background, so the
+// on-device comparison needs it too, not just position/size parity.
+// 2px step, not 1px: matches hub's own overlayTextOutlineStep(), which
+// steps up to 2px once fontSize>=58 -- a first pass here wrongly assumed
+// none of our roles crossed that threshold by comparing against the base
+// pt constants (56/40/52) instead of the real rendered pixel sizes
+// (~82/59/76, all >=58 -- see include/fonts/*.h's own provenance
+// comments), so hub uses 2px for all three roles we ever draw. 1px
+// under-stroked relative to that, visibly leaving white showing through
+// at glyph curves/diagonals on real hardware (2026-08-13).
+constexpr int kOverlayOutlineStepPx = 2;
+
+// Empirical correction for hub and firmware disagreeing on what "ascent"
+// means for the same nominal font: hub's Go rendering positions text using
+// the font's *design* ascent metric (face.Metrics().Ascent), while this
+// GFXFF path positions using glyph_ab -- TFT_eSPI's own computed *maximum
+// actual ink extent* across the converted glyph set, a different, smaller
+// quantity for most fonts. Both are legitimate, correct-for-their-own-
+// convention values, not a bug in either renderer -- confirmed against the
+// hub's own baked-in overlay (the ground truth) on real hardware, which
+// showed this GFXFF path landing too high, uniformly across every line;
+// first measured ~5px (2026-08-13), refined to 8px after a second real-
+// hardware check. Belongs here, not as a hub-side wire-coordinate fudge,
+// since it's specific to this rendering path's own ascent convention, not
+// something hub's device-agnostic layout math should need to know about.
+constexpr int kOverlayYCalibrationPx = 8;
+
+static void drawOverlayLineStroked(const String &text, int x, int y) {
+    y += kOverlayYCalibrationPx;
+    static const int8_t kOffsets[8][2] = {
+        {-kOverlayOutlineStepPx, 0}, {kOverlayOutlineStepPx, 0},
+        {0, -kOverlayOutlineStepPx}, {0, kOverlayOutlineStepPx},
+        {-kOverlayOutlineStepPx, -kOverlayOutlineStepPx}, {-kOverlayOutlineStepPx, kOverlayOutlineStepPx},
+        {kOverlayOutlineStepPx, -kOverlayOutlineStepPx}, {kOverlayOutlineStepPx, kOverlayOutlineStepPx},
+    };
+    epaper.setTextColor(TFT_BLACK);
+    for (auto &o : kOffsets) {
+        epaper.drawString(text, x + o[0], y + o[1]);
+    }
+    epaper.setTextColor(TFT_WHITE);
+    epaper.drawString(text, x, y);
+}
+
+bool drawOverlayLines(const OverlayLine *lines, int count, const OverlayLine *caption) {
+    // No fillSprite() -- see this function's own doc comment in panel.h.
+    // Transparent glyphs throughout: the single-arg setTextColor() means
+    // "background not over-written" (TFT_eSPI.h's own doc comment on that
+    // overload), unlike the two-arg form every status screen above uses,
+    // which would opaque-fill each glyph's cell and clobber the photo
+    // underneath.
+    // Default TL_DATUM, no setTextDatum()/padX call -- required for the
+    // top-left x/y convention the hub already computes its coordinates in
+    // (confirmed against TFT_eSPI::drawString's GFXFF path: poY += ascent
+    // always runs before the textdatum switch, and that switch is skipped
+    // entirely at the default TL_DATUM/padX=0, so passing "top of line" as
+    // y and letting the library add ascent internally is exactly what
+    // already happens with no further adjustment needed).
+    bool ok = true;
+    for (int i = 0; i < count; i++) {
+        if (!overlayLineFont(lines[i].font)) { ok = false; break; }
+        drawOverlayLineStroked(lines[i].text, lines[i].x, lines[i].y);
+    }
+    if (ok && caption != nullptr) {
+        if (!overlayLineFont(caption->font)) {
+            ok = false;
+        } else {
+            drawOverlayLineStroked(caption->text, caption->x, caption->y);
+        }
+    }
+    epaper.setFreeFont(nullptr);
+    if (!ok) return false;
+    epaper.update();
+    return true;
 }
 
 bool renderBinFromHttp(const String &host, int port, const String &path, void (*onProgress)(int)) {
