@@ -21,18 +21,21 @@ void showOrientation(bool portrait);
 // Brief on-panel confirmation after toggling offline/online playback mode
 // (SW3/KEY2 -- see BTN_MODE_PIN). offline=true means "driven by the SD
 // playlist"; offline=false means "driven by MQTT play messages", the
-// existing default behavior.
-void showMode(bool offline);
+// existing default behavior. portrait -- see showOrientation()'s own
+// comment on this pattern; every status screen draws upright in the
+// device's current orientation preference, not always the fixed mount
+// rotation.
+void showMode(bool offline, bool portrait);
 
 // Confirmation before reboot into BLE provisioning (KEY3 factory reset).
-void showFactoryReset();
+void showFactoryReset(bool portrait);
 
 // Shown once after BLE adopt when Wi‑Fi/MQTT are up.
-void showConnected();
+void showConnected(bool portrait);
 
 // Shown before the critical-battery deep sleep (see BATTERY_LOW_PCT in
 // config.h) — the last thing on the panel until it's charged and woken.
-void showLowBattery();
+void showLowBattery(bool portrait);
 
 // One already-positioned line of overlay text. Deliberately a Panel-local
 // type, not InkJoy::OverlayLine (inkjoy_protocol.h) -- this header has no

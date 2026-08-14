@@ -286,7 +286,7 @@ static void handleBatteryLevel(int pct) {
         publish(InkJoy::buildSleep(clientId, pct, InkJoy::SLEEP_REASON_LOW_BATTERY));
         delay(200);  // let the publish flush before the radio drops
     }
-    Panel::showLowBattery();
+    Panel::showLowBattery(g_portrait);
     MqttHub::stop();
     if (pct <= BATTERY_CRITICAL_PCT) {
         Power::deepSleepUntilButton();
@@ -340,7 +340,7 @@ static void toggleOfflineMode() {
     g_offlineMode = !g_offlineMode;
     savePlaybackMode();
     Serial.printf("mode: %s\n", g_offlineMode ? "offline (SD playlist)" : "online (MQTT)");
-    Panel::showMode(g_offlineMode);
+    Panel::showMode(g_offlineMode, g_portrait);
     if (g_offlineMode) {
         goOffline();
 #if ENABLE_SD_CACHE
@@ -376,7 +376,7 @@ static void factoryReset() {
     Serial.println("nvs: KEY3 long-press — clearing ijcfg, rebooting to BLE adopt");
     clearConfig();
     MqttHub::stop();
-    Panel::showFactoryReset();
+    Panel::showFactoryReset(g_portrait);
     delay(500);
     ESP.restart();
 }
@@ -913,7 +913,7 @@ void setup() {
         }
         if (MqttHub::connected()) {
             Serial.println("panel: Connected (post-adopt)");
-            Panel::showConnected();
+            Panel::showConnected(g_portrait);
             clearShowReady();
         } else {
             Serial.println("panel: Connected deferred (mqtt not up yet)");
@@ -1003,7 +1003,7 @@ void loop() {
 
     if (pendingShowReady() && MqttHub::connected()) {
         Serial.println("panel: Connected (post-adopt)");
-        Panel::showConnected();
+        Panel::showConnected(g_portrait);
         clearShowReady();
     }
 

@@ -113,7 +113,14 @@ void sleep() {
 // joyous-hub's typeface -- confirmed on real hardware, 2026-08-12: body
 // lines overlapped/clipped. Deriving from fontHeight() means this can't
 // drift out of sync with whatever font sizes end up in fonts/*.h again.
-static void drawCenteredStatus(const String &title, const String &body1, const String &body2 = String()) {
+// portrait -- draws upright in the device's current orientation preference
+// rather than always the fixed mount rotation, same setRotation(0)
+// toggle-and-restore technique showOrientation() already established
+// (and renderPngBytes's nativeDims branch reuses for actual images).
+static void drawCenteredStatus(const String &title, const String &body1, bool portrait, const String &body2 = String()) {
+    if (portrait) {
+        epaper.setRotation(0);
+    }
     const int16_t w = epaper.width();
     const int16_t h = epaper.height();
     epaper.fillSprite(TFT_WHITE);
@@ -135,6 +142,9 @@ static void drawCenteredStatus(const String &title, const String &body1, const S
     epaper.setTextDatum(TL_DATUM);
     epaper.setFreeFont(nullptr);
     epaper.update();
+    if (portrait) {
+        epaper.setRotation(PANEL_ROTATION);
+    }
 }
 
 void showProvisioning(const String &clientId) {
@@ -168,32 +178,28 @@ void showProvisioning(const String &clientId) {
 void showOrientation(bool portrait) {
     // Toast only — hub Portrait crop updates on the next encoded send.
     // Portrait text is drawn in native portrait coords (90° from PANEL_ROTATION)
-    // so it reads upright when the frame is hung tall; mount rotation restored after.
-    if (portrait) {
-        epaper.setRotation(0); // flip to 2 if this reads upside down
-    }
+    // so it reads upright when the frame is hung tall; mount rotation restored after
+    // -- drawCenteredStatus's own portrait param now does this same toggle,
+    // originally established right here.
     drawCenteredStatus(portrait ? "Portrait" : "Landscape",
-                        "Hub crop preference saved", "Next send uses this crop");
-    if (portrait) {
-        epaper.setRotation(PANEL_ROTATION);
-    }
+                        "Hub crop preference saved", portrait, "Next send uses this crop");
 }
 
-void showMode(bool offline) {
+void showMode(bool offline, bool portrait) {
     drawCenteredStatus(offline ? "Offline mode" : "Online mode",
-                        offline ? "Playing from SD playlist" : "Waiting for hub");
+                        offline ? "Playing from SD playlist" : "Waiting for hub", portrait);
 }
 
-void showFactoryReset() {
-    drawCenteredStatus("Factory reset", "Credentials cleared", "Rebooting to setup mode");
+void showFactoryReset(bool portrait) {
+    drawCenteredStatus("Factory reset", "Credentials cleared", portrait, "Rebooting to setup mode");
 }
 
-void showConnected() {
-    drawCenteredStatus("Connected", "Ready to receive images", "from Joyous Hub");
+void showConnected(bool portrait) {
+    drawCenteredStatus("Connected", "Ready to receive images", portrait, "from Joyous Hub");
 }
 
-void showLowBattery() {
-    drawCenteredStatus("Critical Low Battery", "Connect USB to power supply");
+void showLowBattery(bool portrait) {
+    drawCenteredStatus("Critical Low Battery", "Connect USB to power supply", portrait);
 }
 
 void drawDegreeGlyph(int x, int y, int fontPt, uint16_t color) {
