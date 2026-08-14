@@ -321,6 +321,11 @@ bool renderBinFromHttp(const String &host, int port, const String &path, void (*
     }
 
     WiFiClient *stream = http.getStreamPtr();
+    // Always the fixed shape -- .bin has no header to self-describe
+    // dimensions, so a native-dims (swapped) send can only ever ride the
+    // PNG protocol (see renderPngBytes's nativeDims handling); real InkJoy
+    // hardware and any clone firmware below InkJoyNativeDimsProtocolT only
+    // ever receives this fixed shape via either protocol anyway.
     const int W = INKJOY_BIN_WIDTH;
     const int H = INKJOY_BIN_HEIGHT;
     static uint8_t rowBuf[INKJOY_BIN_WIDTH * 2];
@@ -357,6 +362,9 @@ bool renderBinFromHttp(const String &host, int port, const String &path, void (*
 // (path known to be .bin, by extension) and renderBinFromHttp share it
 // instead of duplicating the row-by-row loop.
 static bool renderBinStream(Stream &in) {
+    // Always the fixed shape -- see renderBinFromHttp's comment on this
+    // same point; .bin has no header, so it never carries native (swapped)
+    // dims.
     const int W = INKJOY_BIN_WIDTH;
     const int H = INKJOY_BIN_HEIGHT;
     static uint8_t rowBuf[INKJOY_BIN_WIDTH * 2];
@@ -416,6 +424,9 @@ bool renderBinFromFile(const String &path,
 
 bool renderBinBytes(const uint8_t *bytes, size_t len,
                      const OverlayLine *lines, int lineCount, const OverlayLine *caption) {
+    // Always the fixed shape -- see renderBinFromHttp's comment on this
+    // same point; .bin has no header, so it never carries native (swapped)
+    // dims.
     const size_t expected = (size_t)INKJOY_BIN_WIDTH * INKJOY_BIN_HEIGHT * 2;
     if (len != expected) return false;
 
@@ -449,8 +460,15 @@ bool renderPngBytes(const uint8_t *bytes, size_t len,
     unsigned char *raw = nullptr;
     unsigned width = 0, height = 0;
     unsigned err = lodepng_decode(&raw, &width, &height, &state, bytes, len);
+    // A native-dims send (our own Seeed/GooDisplay clones, portrait content,
+    // hub gated on inkjoybridge.InkJoyNativeDimsProtocolT) arrives swapped
+    // -- INKJOY_BIN_HEIGHT x INKJOY_BIN_WIDTH -- since the hub skips the
+    // rotate90CCW-into-fixed-shape step entirely for these devices; real
+    // InkJoy hardware and any clone below that protocol threshold only ever
+    // sends the fixed INKJOY_BIN_WIDTH x INKJOY_BIN_HEIGHT shape.
+    bool nativeDims = (width == INKJOY_BIN_HEIGHT && height == INKJOY_BIN_WIDTH);
     bool ok = (err == 0) && raw &&
-              width == INKJOY_BIN_WIDTH && height == INKJOY_BIN_HEIGHT &&
+              ((width == INKJOY_BIN_WIDTH && height == INKJOY_BIN_HEIGHT) || nativeDims) &&
               state.info_png.color.colortype == LCT_PALETTE &&
               state.info_png.color.bitdepth == 4;
     if (!ok) {
@@ -460,8 +478,18 @@ bool renderPngBytes(const uint8_t *bytes, size_t len,
         return false;
     }
 
-    const int W = INKJOY_BIN_WIDTH;
-    const int H = INKJOY_BIN_HEIGHT;
+    // setRotation(0) here mirrors showOrientation()'s own proven
+    // toggle-and-restore pattern: at rotation 0, TFT_eSprite::drawPixel
+    // applies no coordinate remap at all (4bpp branch, Seeed_GFX's
+    // Sprite.cpp), so raw (col,imageY) below lands directly in the panel's
+    // native 1200x1600 portrait buffer -- exactly matching a native-dims
+    // decoded image with zero rotation math on either side.
+    if (nativeDims) {
+        epaper.setRotation(0);
+    }
+
+    const int W = (int)width;
+    const int H = (int)height;
     const int rowBytes = (W * 4 + 7) / 8;  // 800 for W=1600, no row padding
     for (int row = 0; row < H; row++) {
         // No flip needed here, unlike renderBinFromHttp's imageY = H-1-fileRow:
@@ -486,8 +514,15 @@ bool renderPngBytes(const uint8_t *bytes, size_t len,
 
     lodepng_free(raw);
     lodepng_state_cleanup(&state);
+    // drawOverlayLinesNoUpdate draws at whatever rotation is currently
+    // active -- called here, before restoring PANEL_ROTATION, so native-dims
+    // overlay text (already computed hub-side in the same identity/upright
+    // coordinate space) lands correctly with no transform on either side.
     drawOverlayLinesNoUpdate(lines, lineCount, caption);  // ignored on failure -- image already succeeded
     epaper.update();
+    if (nativeDims) {
+        epaper.setRotation(PANEL_ROTATION);
+    }
     return true;
 }
 

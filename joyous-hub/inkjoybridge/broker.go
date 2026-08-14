@@ -149,6 +149,17 @@ func ProtocolTFromVer(ver string) int {
 // same capability from opposite ends of the wire and must never drift.
 const InkJoyPNGProtocolT = 9
 
+// InkJoyNativeDimsProtocolT is the minimum ProtocolT whose firmware can
+// decode/render a PNG at native (swapped) panel dimensions under
+// epaper.setRotation(0), instead of always assuming the fixed
+// frameW x frameH landscape wire shape (see panel_tftespi.cpp's
+// renderPngBytes, nativeDims handling). Deliberately a separate, higher
+// threshold than InkJoyPNGProtocolT: firmware already in the field at
+// T==InkJoyPNGProtocolT supports PNG but only at the fixed shape, and must
+// keep getting exactly that until it's upgraded. Keep in lockstep with
+// Firmware/include/config.h's FW_PROTOCOL_T, same as InkJoyPNGProtocolT.
+const InkJoyNativeDimsProtocolT = 10
+
 // ParseLoginPayload extracts login info from a login MQTT payload.
 func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 	var msg struct {

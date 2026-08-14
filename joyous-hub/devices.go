@@ -253,11 +253,12 @@ func (r *DeviceRegistry) UpdateHeart(mac string, info inkjoybridge.HeartInfo) {
 	if info.Firmware != "" {
 		d.Firmware = info.Firmware
 	}
-	// Seeed EE02 reports a deliberate preference via KEY1 → heart.orientation
-	// (0=portrait, 90=landscape). Real InkJoy accel values are unreliable, so we
-	// only mirror orientation into Portrait for that hardware model.
+	// Seeed EE02 and GooDisplay both report a deliberate preference via
+	// KEY1 → heart.orientation (0=portrait, 90=landscape). Real InkJoy
+	// accel values are unreliable, so we only mirror orientation into
+	// Portrait for our own clone hardware (LocalOnlyHardware).
 	portraitChanged := false
-	if d.HardwareModel == inkjoybridge.HardwareModelSeeed {
+	if inkjoybridge.LocalOnlyHardware(d.HardwareModel) {
 		switch info.Orientation {
 		case 0, 180:
 			if !d.Portrait {

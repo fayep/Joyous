@@ -19,5 +19,7 @@
 // whenever a protocol-visible firmware capability changes, and update the
 // hub-side gate (joyous-hub's InkJoyPNGProtocolT) in lockstep -- they must
 // never drift apart. T=9: first build with ContentCache/renderPngBytes
-// (indexed-PNG play support) -- see content_cache.h.
-#define FW_PROTOCOL_T 9
+// (indexed-PNG play support) -- see content_cache.h. T=10: renderPngBytes
+// accepts native (swapped) panel dimensions under epaper.setRotation(0),
+// see joyous-hub's InkJoyNativeDimsProtocolT.
+#define FW_PROTOCOL_T 10

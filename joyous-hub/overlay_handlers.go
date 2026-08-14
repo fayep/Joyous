@@ -176,7 +176,7 @@ func (h *Hub) handleOverlayTestSend(w http.ResponseWriter, r *http.Request) {
 	// No display name tracked for the device's last-sent image today (only
 	// LastImageID, see Device) -- a fixed placeholder is fine for a v1
 	// size/position comparison tool, not worth plumbing new tracking for.
-	wireBody, err := overlayWireLines(cfg, weather, "TEST-CAPTION", dev.Portrait)
+	wireBody, err := overlayWireLines(cfg, weather, "TEST-CAPTION", dev.Portrait, false)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

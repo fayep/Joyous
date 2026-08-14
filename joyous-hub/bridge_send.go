@@ -176,6 +176,7 @@ func bridgeEncodeInkJoy(
 		return nil, fmt.Errorf("bridge encode: hub_base_url required")
 	}
 	portrait := dev.Portrait
+	nativeDims := body.NativeDims
 	syncColorFromHub(hub.color, body.HubBaseURL)
 
 	meta, raw, err := fetchHubImage(ctx, body.HubBaseURL, body.ImageID)
@@ -200,9 +201,9 @@ func bridgeEncodeInkJoy(
 		photoName := overlayPhotoNameFromMeta(meta, cfg)
 		return hub.images.ServeBinOrientationOverlayForDevice(body.ImageID, portrait, body.OverlayToken, func(img image.Image, flatRGB bool) (image.Image, error) {
 			return drawWeatherOverlay(img, cfg, weather, photoName, portrait), nil
-		}, colorOverride, dev.ID)
+		}, colorOverride, dev.ID, nativeDims)
 	}
-	return hub.images.ServeBinOrientationForDevice(body.ImageID, portrait, colorOverride, dev.ID)
+	return hub.images.ServeBinOrientationForDevice(body.ImageID, portrait, colorOverride, dev.ID, nativeDims)
 }
 
 // paletteToProtocolRGB / protocolRGBToPalette convert between the hub's
@@ -319,7 +320,10 @@ func buildSendImageBody(h *Hub, dev *Device, imageID, overlayToken, sendID strin
 				photoName = overlayPhotoNameFromMeta(meta, *cfg)
 			}
 		}
-		wire, err := overlayWireLines(*cfg, *weather, photoName, dev.Portrait)
+		// Always nativeDims=false here -- see overlayWireLines's own comment.
+		// bridgeDeliverInkJoyImage applies a coordinate correction after the
+		// fact for devices that turn out to be native-dims-eligible.
+		wire, err := overlayWireLines(*cfg, *weather, photoName, dev.Portrait, false)
 		if err != nil {
 			return body, err
 		}

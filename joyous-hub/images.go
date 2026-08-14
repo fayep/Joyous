@@ -224,7 +224,7 @@ func (s *ImageStore) ServeBin(id string) ([]byte, error) {
 }
 
 func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, error) {
-	return s.ServeBinOrientationForDevice(id, portrait, nil, "")
+	return s.ServeBinOrientationForDevice(id, portrait, nil, "", false)
 }
 
 // ServeBinOrientationForDevice is ServeBinOrientation with an optional per-device
@@ -232,14 +232,24 @@ func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, erro
 // (colorOverride == nil) share the plain image-keyed cache entry exactly as
 // before; an override gets its own cache entry keyed by cacheKeySuffix (the
 // device ID) so different devices' calibrations don't collide or overwrite
-// each other's cached renders of the same image.
-func (s *ImageStore) ServeBinOrientationForDevice(id string, portrait bool, colorOverride *[6]PaletteRGB, cacheKeySuffix string) ([]byte, error) {
+// each other's cached renders of the same image. nativeDims requests a
+// native (swapped) panel-dimension encode for portrait content instead of
+// the fixed frameW x frameH rotate-to-fit shape — see
+// prepareInkJoyFrameFromRaw's own comment; bridge-only, always false from
+// hub-compiled callers.
+func (s *ImageStore) ServeBinOrientationForDevice(id string, portrait bool, colorOverride *[6]PaletteRGB, cacheKeySuffix string, nativeDims bool) ([]byte, error) {
 	cacheFile := s.cachePath(id)
 	if colorOverride != nil && cacheKeySuffix != "" {
 		cacheFile = s.cachePath(id) + "~dev-" + sanitizeCacheKey(cacheKeySuffix)
 	}
 	if portrait {
 		cacheFile += ".portrait"
+	}
+	// .native is its own suffix, not folded into .portrait, so a device
+	// that becomes native-dims-eligible (or is rolled back) never risks
+	// reading back a stale wrong-shape cache entry under the same key.
+	if nativeDims {
+		cacheFile += ".native"
 	}
 	meta, _ := s.readMeta(id)
 	// Calibration charts always re-encode so the fixed vertical-sweep wipe is applied.
@@ -251,7 +261,7 @@ func (s *ImageStore) ServeBinOrientationForDevice(id string, portrait bool, colo
 	}
 
 	// Cache miss — convert (or flat calibration refresh).
-	bin, err := s.convertToBinOrientationForDevice(id, portrait, colorOverride)
+	bin, err := s.convertToBinOrientationForDevice(id, portrait, colorOverride, nativeDims)
 	if err != nil {
 		return nil, err
 	}
@@ -1077,10 +1087,10 @@ func (s *ImageStore) readMeta(id string) (ImageMeta, error) {
 }
 
 func (s *ImageStore) convertToBinOrientation(id string, portrait bool) ([]byte, error) {
-	return s.convertToBinOrientationForDevice(id, portrait, nil)
+	return s.convertToBinOrientationForDevice(id, portrait, nil, false)
 }
 
-func (s *ImageStore) convertToBinOrientationForDevice(id string, portrait bool, colorOverride *[6]PaletteRGB) ([]byte, error) {
+func (s *ImageStore) convertToBinOrientationForDevice(id string, portrait bool, colorOverride *[6]PaletteRGB, nativeDims bool) ([]byte, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return nil, err
@@ -1097,7 +1107,7 @@ func (s *ImageStore) convertToBinOrientationForDevice(id string, portrait bool, 
 		}
 		return BuildLoLadderPrimariesBin(frameW, frameH), nil
 	}
-	rgba, flatRGB, err := s.prepareInkJoyFrameRGBA(id, portrait)
+	rgba, flatRGB, err := s.prepareInkJoyFrameRGBA(id, portrait, nativeDims)
 	if err != nil {
 		return nil, err
 	}
@@ -1117,15 +1127,19 @@ type overlayFrameMutator func(img image.Image, flatRGB bool) (image.Image, error
 
 // ServeBinOrientationOverlay converts the album image, applies mutate, caches under token.
 func (s *ImageStore) ServeBinOrientationOverlay(id string, portrait bool, token string, mutate overlayFrameMutator) ([]byte, error) {
-	return s.ServeBinOrientationOverlayForDevice(id, portrait, token, mutate, nil, "")
+	return s.ServeBinOrientationOverlayForDevice(id, portrait, token, mutate, nil, "", false)
 }
 
 // ServeBinOrientationOverlayForDevice is ServeBinOrientationOverlay with an
 // optional per-device ink palette override — see ServeBinOrientationForDevice.
-func (s *ImageStore) ServeBinOrientationOverlayForDevice(id string, portrait bool, token string, mutate overlayFrameMutator, colorOverride *[6]PaletteRGB, cacheKeySuffix string) ([]byte, error) {
+// nativeDims — see ServeBinOrientationForDevice's own comment.
+func (s *ImageStore) ServeBinOrientationOverlayForDevice(id string, portrait bool, token string, mutate overlayFrameMutator, colorOverride *[6]PaletteRGB, cacheKeySuffix string, nativeDims bool) ([]byte, error) {
 	cacheFile := s.overlayCacheFile(id, token, portrait)
 	if colorOverride != nil && cacheKeySuffix != "" {
 		cacheFile += "~dev-" + sanitizeCacheKey(cacheKeySuffix)
+	}
+	if nativeDims {
+		cacheFile += ".native"
 	}
 	if bin, err := os.ReadFile(cacheFile); err == nil {
 		return bin, nil
@@ -1134,7 +1148,7 @@ func (s *ImageStore) ServeBinOrientationOverlayForDevice(id string, portrait boo
 	if err != nil {
 		return nil, err
 	}
-	rgba, flatRGB, err := s.prepareInkJoyFrameRGBA(id, portrait)
+	rgba, flatRGB, err := s.prepareInkJoyFrameRGBA(id, portrait, nativeDims)
 	if err != nil {
 		return nil, err
 	}
@@ -1149,7 +1163,7 @@ func (s *ImageStore) ServeBinOrientationOverlayForDevice(id string, portrait boo
 	return bin, nil
 }
 
-func (s *ImageStore) prepareInkJoyFrameRGBA(id string, portrait bool) (image.Image, bool, error) {
+func (s *ImageStore) prepareInkJoyFrameRGBA(id string, portrait bool, nativeDims bool) (image.Image, bool, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return nil, false, err
@@ -1171,11 +1185,20 @@ func (s *ImageStore) prepareInkJoyFrameRGBA(id string, portrait bool) (image.Ima
 	if portrait {
 		cropKey = "3:4"
 	}
-	img, _, err := prepareInkJoyFrameFromRaw(raw, meta.Crops[cropKey], portrait, meta.RotateOverride)
+	img, _, err := prepareInkJoyFrameFromRaw(raw, meta.Crops[cropKey], portrait, meta.RotateOverride, nativeDims)
 	return img, meta.FlatRGB, err
 }
 
-func prepareInkJoyFrameFromRaw(raw []byte, crop CropRect, portrait bool, rotateOverride int) (image.Image, bool, error) {
+// prepareInkJoyFrameFromRaw crops and sizes a source image for InkJoy
+// delivery. nativeDims (only ever true for our own Seeed/GooDisplay clones,
+// see inkjoybridge.LocalOnlyHardware + InkJoyNativeDimsProtocolT, decided
+// bridge-side and threaded down as a plain bool) requests sizing straight
+// to the swapped native panel dimensions for portrait content instead of
+// rotating into the fixed frameW x frameH landscape wire shape — mirrors
+// prepareSamsungFrameRGBA's tw,th pattern (overlay_handlers.go). This
+// function itself stays hardware-agnostic; nativeDims is just a bool it
+// was handed.
+func prepareInkJoyFrameFromRaw(raw []byte, crop CropRect, portrait bool, rotateOverride int, nativeDims bool) (image.Image, bool, error) {
 	img, err := decodeAnyImage(raw)
 	if err != nil {
 		return nil, false, err
@@ -1185,8 +1208,12 @@ func prepareInkJoyFrameFromRaw(raw []byte, crop CropRect, portrait bool, rotateO
 		img = applyCrop(img, crop)
 	}
 	if portrait {
-		img = rotate90CCW(img)
-		img = resizeToFrame(img)
+		if nativeDims {
+			img = resizeTo(img, frameH, frameW) // swapped native dims, no rotate
+		} else {
+			img = rotate90CCW(img)
+			img = resizeToFrame(img)
+		}
 	} else {
 		img = resizeToFrame(img)
 	}
@@ -1247,7 +1274,7 @@ func convertBin(raw []byte) ([]byte, error) {
 }
 
 func convertImageWithCrop(raw []byte, crop CropRect, portrait bool, flatRGB bool) ([]byte, error) {
-	img, _, err := prepareInkJoyFrameFromRaw(raw, crop, portrait, 0)
+	img, _, err := prepareInkJoyFrameFromRaw(raw, crop, portrait, 0, false)
 	if err != nil {
 		return nil, err
 	}

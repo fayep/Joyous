@@ -196,8 +196,18 @@ type SendImageBody struct {
 	// field verbatim for the device to draw itself, on top of the same
 	// image, in one message. A play can carry both, neither, or just one.
 	OverlayWire *OverlaySendBody `json:"overlay_wire,omitempty"`
-	SendID      string           `json:"send_id,omitempty"`
-	HubBaseURL  string           `json:"hub_base_url"`
+	// NativeDims, when true, tells the bridge to encode this send at native
+	// (swapped) panel dimensions instead of rotating portrait content into
+	// the fixed frameW x frameH landscape wire shape -- our own clone
+	// hardware's physical panel is natively portrait, so this skips a
+	// rotate90CCW pixel transform (and the matching overlay coordinate
+	// transform) entirely. Computed and consumed bridge-side only
+	// (bridgeDeliverInkJoyImage decides it via inkjoybridge.LocalOnlyHardware
+	// + InkJoyNativeDimsProtocolT; bridgeEncodeInkJoy reads it) -- never set
+	// or branched on by hub-compiled code, same convention as OverlayWire.
+	NativeDims bool   `json:"native_dims,omitempty"`
+	SendID     string `json:"send_id,omitempty"`
+	HubBaseURL string `json:"hub_base_url"`
 	// ColorOverride is the device's per-device ink/color palette override, if
 	// any (hub-owned — see the hub's Device.ColorOverride), resolved by the hub
 	// at send time and handed to the bridge for this one encode. The bridge

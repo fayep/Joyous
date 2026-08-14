@@ -301,6 +301,16 @@ static void toggleOrientation() {
     Serial.printf("orient: %s (%d)\n",
                   g_portrait ? "portrait" : "landscape", heartOrientation());
     Panel::showOrientation(g_portrait);
+    // sendLogin() as well as sendHeart(): the hub only mirrors heart's
+    // orientation field into its own Portrait state once it knows this
+    // device's HardwareModel (joyous-hub's devices.go UpdateHeart), and
+    // HardwareModel is only ever learned from a login's H: field, not from
+    // heart -- a bridge restart resets that knowledge until the device's
+    // next natural reconnect. A fresh login here forces the hub to
+    // (re-)learn HardwareModel immediately, so an orientation button press
+    // always reaches the hub's Portrait state right away instead of
+    // silently no-op'ing until some later unrelated reconnect.
+    sendLogin();
     handleBatteryLevel(sendHeart());
     lastHeartMs = millis();
 }

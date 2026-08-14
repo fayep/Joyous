@@ -380,6 +380,18 @@ func bridgeDeliverInkJoyImage(
 		body.OverlayToken = ""
 		body.Overlay = nil
 	}
+	// useNativeDims: for our own clones (natively portrait-shaped panels),
+	// skip the rotate90CCW-into-fixed-landscape-shape dance entirely for
+	// portrait content -- encode straight to the swapped native dimensions
+	// instead. Firmware only understands this from InkJoyNativeDimsProtocolT
+	// onward (a distinct, higher threshold than InkJoyPNGProtocolT: fielded
+	// firmware at exactly the PNG threshold supports PNG but only at the
+	// fixed shape). See prepareInkJoyFrameFromRaw (bridge_send.go/images.go)
+	// and Firmware/src/panel_tftespi.cpp's renderPngBytes nativeDims branch.
+	useNativeDims := dev.Portrait &&
+		inkjoybridge.LocalOnlyHardware(dev.HardwareModel) &&
+		dev.ProtocolT >= inkjoybridge.InkJoyNativeDimsProtocolT
+	body.NativeDims = useNativeDims
 	bin, err := bridgeEncodeInkJoy(ctx, encodeHub, body, dev)
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
@@ -393,7 +405,11 @@ func bridgeDeliverInkJoyImage(
 	if inkjoybridge.LocalOnlyHardware(dev.HardwareModel) && dev.ProtocolT >= inkjoybridge.InkJoyPNGProtocolT {
 		colorOverride := protocolRGBToPalette(body.ColorOverride)
 		palette := encodeHub.images.devicePaletteRGB(body.ImageID, colorOverride)
-		png, err := EncodeIndexedPNG4(bin, frameW, frameH, palette)
+		pw, ph := frameW, frameH
+		if useNativeDims {
+			pw, ph = frameH, frameW
+		}
+		png, err := EncodeIndexedPNG4(bin, pw, ph, palette)
 		if err != nil {
 			return fmt.Errorf("encode png: %w", err)
 		}
@@ -432,6 +448,9 @@ func bridgeDeliverInkJoyImage(
 	if overlayWire != nil && !inkjoybridge.LocalOnlyHardware(dev.HardwareModel) {
 		overlayWire = nil
 	}
+	if overlayWire != nil && useNativeDims {
+		overlayWire = nativizeOverlayWire(overlayWire, dev.Portrait)
+	}
 	payload, msgid := buildPlayPayload(dev.MAC, imgURL, reuseMsgid, hash, overlayWire)
 	if body.SendID != "" && sendDelivery != nil {
 		sendDelivery.BindInkJoy(body.SendID, msgid)
@@ -444,4 +463,31 @@ func bridgeDeliverInkJoyImage(
 		return err
 	}
 	return nil
+}
+
+// nativizeOverlayWire converts an OverlaySendBody already built in the
+// fixed-landscape wire coordinate space (buildSendImageBody always calls
+// overlayWireLines with nativeDims=false) into the native (upright,
+// zero-rotation) coordinate space a native-dims device actually renders
+// in, via overlayWireCoordNativize (overlay_wire.go -- see its own
+// comment for the math and why the correction lives there, not here).
+// Only ever called when portrait is true (useNativeDims requires
+// dev.Portrait), so dw is always the swapped overlayMetricsDimensions
+// width.
+func nativizeOverlayWire(wire *protocol.OverlaySendBody, portrait bool) *protocol.OverlaySendBody {
+	if wire == nil {
+		return nil
+	}
+	dw, _ := overlayMetricsDimensions(frameW, frameH, portrait)
+	out := &protocol.OverlaySendBody{}
+	for _, ln := range wire.Lines {
+		ln.X, ln.Y = overlayWireCoordNativize(ln.X, ln.Y, dw)
+		out.Lines = append(out.Lines, ln)
+	}
+	if wire.Caption != nil {
+		cap := *wire.Caption
+		cap.X, cap.Y = overlayWireCoordNativize(cap.X, cap.Y, dw)
+		out.Caption = &cap
+	}
+	return out
 }
