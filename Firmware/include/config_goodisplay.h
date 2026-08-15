@@ -111,37 +111,37 @@
 #define BTN_ACTIVE_HIGH 1
 #define BTN_WAKE_MASK ((1ULL << BTN_ORIENT_PIN) | (1ULL << BTN_RESET_PIN) | (1ULL << BTN_MODE_PIN))
 
-// BATTERY_ADC_PIN = GPIO1 (ESP32-S3-WROOM-1 module pin 39, right-hand
-// column, 2nd pin down from the antenna end -- one position above GPIO2,
-// whose own position is independently confirmed, see TFT_DC's comment in
-// tft_setup_goodisplay.h). Found via a deliberate test pad physically
-// present at that exact pin (2026-08-14) -- the kind of thing a board
-// designer adds specifically for probing a calibration-relevant signal
-// like battery voltage, not just an unlabeled via. Also matches
-// config_seeed.h's own BATTERY_ADC_PIN (also GPIO1) -- same reference
-// design convention on both boards.
+// BATTERY_ADC_PIN investigated at length (2026-08-14) and left disabled --
+// GPIO1 (ESP32-S3-WROOM-1 module pin 39) has a real test pad and matches
+// config_seeed.h's own BATTERY_ADC_PIN, but real-hardware testing found
+// its readings wildly inconsistent (a clean, correctly-calibrated
+// reading on some heart cycles -- battery_mv=4179 vs a real measured
+// 4185mV, ~0.14% error -- then 0% on others, even with a rolling-max
+// filter across independent samples spread over a full ~10-minute
+// window, which should have smoothed out ordinary load-based sag). A
+// continuity check found why: GPIO1 has no measured path to battery+ at
+// all -- only ~3MΩ to GND and ~7MΩ to GPIO2 (TFT_DC, actively toggled
+// during every panel SPI transaction). Run the numbers on that divider
+// (3MΩ pulldown + 7MΩ from a 3.3V/0V digital line, further loaded by a
+// multimeter's own ~10MΩ) and it lands right around the ~0.6V this pin
+// consistently multimeter-read -- i.e. what looked like a battery
+// reading may be substantially or entirely DC/X's digital state leaking
+// through, not the battery at all. The one good reading is hard to
+// explain as pure coincidence, but not confirmable as real either.
+// Concluded not safely fixable in software (the raw signal itself is
+// compromised at sample time, not just noisy) without a real hardware
+// isolation fix. GPIO10 (module pin 18, the only other free ADC1-capable
+// pin on this board) is untried if this gets revisited.
 //
-// BATTERY_ADC_EN_PIN stays -1 deliberately, not "not yet found": unlike
-// Seeed's board (real gate pin, GPIO6), this divider has no gating FET at
-// all -- confirmed on real hardware (2026-08-14): a real voltage shows up
-// on BATTERY_ADC_PIN purely from the battery being connected, nothing
-// actively enabling anything. power.cpp's batteryMillivolts() treats -1
-// here as "ungated, just read directly" rather than "feature disabled"
-// (only BATTERY_ADC_PIN < 0 disables the whole feature).
-// Pin re-disabled after a real-hardware test (2026-08-14): enabling it
-// with BATTERY_DIVIDER_RATIO still at Seeed's placeholder (2, unconfirmed
-// for this board's actual divider resistors) computed a falsely-low
-// battery voltage on the very first heart, which handleBatteryLevel()
-// correctly-but-wrongly acted on -- triggered a real low-battery
-// deep-sleep shutdown on a battery that was actually fine. GPIO1 itself
-// is still believed correct (see above), just don't re-enable this until
-// BATTERY_DIVIDER_RATIO is properly calibrated against a real onboard-ADC
-// reading (not a multimeter -- see the loading-artifact reasoning above)
-// -- otherwise every boot risks the same false shutdown.
+// Not a safety-critical gap: standard LiPo packs with a JST connector
+// have their own over-discharge protection circuit built into the pack
+// itself, independent of any firmware-side voltage tracking -- losing
+// this feature only costs a graceful low-battery warning/UX, not a real
+// safety margin.
 #define PANEL_ENABLE_PIN -1
 #define BATTERY_ADC_PIN -1
 #define BATTERY_ADC_EN_PIN -1
-#define BATTERY_DIVIDER_RATIO 2
+#define BATTERY_DIVIDER_RATIO 7
 #define BATTERY_LOW_PCT 10
 #define BATTERY_CRITICAL_PCT 5
 #define BATTERY_LOW_RECHECK_SECONDS 3600UL

@@ -39,6 +39,16 @@ RTC_DATA_ATTR int savedSleepBeginMin = -1;
 RTC_DATA_ATTR int savedSleepEndMin = -1;
 
 static unsigned long lastHeartMs = 0;
+static unsigned long lastBatterySampleMs = 0;
+static constexpr unsigned long BATTERY_SAMPLE_INTERVAL_MS = 60UL * 1000UL;  // 1 min, well under HEART_INTERVAL_MS
+// Ring buffer of recent independent battery samples, ~kBatterySampleWindow
+// minutes deep at one sample per BATTERY_SAMPLE_INTERVAL_MS -- see
+// batteryMvRecentMax()'s own comment for why max-of-window, not
+// last-value, is what sendHeart() actually reports.
+static constexpr int kBatterySampleWindow = 10;
+static int g_batteryMvWindow[kBatterySampleWindow];
+static int g_batteryMvWindowCount = 0;
+static int g_batteryMvWindowNext = 0;
 #if ENABLE_SD_CACHE
 static unsigned long lastPlaylistRenderMs = 0;
 
@@ -230,6 +240,48 @@ static void sendLogin() {
     publish(InkJoy::buildLogin(clientId, minToHHMM(savedSleepBeginMin), minToHHMM(savedSleepEndMin), p2cal));
 }
 
+// Samples battery voltage on its own cadence, decoupled from sendHeart()'s
+// own timing, and feeds a rolling window rather than a single cached
+// value. sendHeart() fires right as MQTT is connecting/logging in -- one
+// obvious source of concurrent-load noise (WiFi TX busiest during
+// association/DHCP/handshake) -- but real hardware testing showed
+// low-outlier readings recurring even well after that specific moment,
+// on an otherwise-decoupled ~1-min cadence (2026-08-14): this board's
+// battery-ADC reading appears sensitive to *some* concurrent load, not
+// only that one identifiable trigger -- the same "sensitive to whatever
+// else is drawing current right now" character as this board's own SD
+// card (see content_cache.cpp's own comment on that). Rather than keep
+// chasing the exact trigger, batteryMvRecentMax() below reports the max
+// of several independent recent samples instead of just the latest one
+// -- robust to sporadic bad reads regardless of what causes them. Also
+// runs during offline mode (WiFi off entirely) -- guaranteed clean
+// samples then, for free.
+static void sampleBatteryIfDue() {
+    unsigned long now = millis();
+    if (lastBatterySampleMs != 0 && now - lastBatterySampleMs < BATTERY_SAMPLE_INTERVAL_MS) return;
+    lastBatterySampleMs = now;
+    g_batteryMvWindow[g_batteryMvWindowNext] = Power::batteryMillivolts();
+    g_batteryMvWindowNext = (g_batteryMvWindowNext + 1) % kBatterySampleWindow;
+    if (g_batteryMvWindowCount < kBatterySampleWindow) g_batteryMvWindowCount++;
+}
+
+// Max of recent independent samples (see sampleBatteryIfDue()), not
+// last-value or average: concurrent-load sag only ever pulls a single
+// sample DOWN from the battery's true resting voltage, never up, so a
+// sporadic bad read is always an outlier-low, never an outlier-high.
+// Genuine battery drain shows up as ALL recent samples trending down
+// together (the max tracks that decline just fine, one window-length
+// behind), not as an isolated low reading -- so this filters out the
+// sporadic-load-noise case without needing to know its exact cause,
+// while still responding to a real, sustained decline.
+static int batteryMvRecentMax() {
+    int best = -1;
+    for (int i = 0; i < g_batteryMvWindowCount; i++) {
+        if (g_batteryMvWindow[i] > best) best = g_batteryMvWindow[i];
+    }
+    return best;
+}
+
 // Returns the battery percent sent with this heart, or -1 if the heart
 // couldn't be sent (wifi/mqtt down) — battery state is unknown in that case,
 // so callers should treat -1 as "don't act on it" rather than "critical".
@@ -264,7 +316,7 @@ static int sendHeart() {
         return -1;
     }
 
-    int mv = Power::batteryMillivolts();
+    int mv = batteryMvRecentMax();  // see sampleBatteryIfDue()/batteryMvRecentMax()
     int pct = Power::batteryPercentFromMillivolts(mv);
     int orient = heartOrientation();
     Serial.printf("heart: battery=%d%% (%dmV) rssi=%d orient=%d\n",
@@ -879,9 +931,16 @@ void setup() {
     }
 
     {
-        int mv = Power::batteryMillivolts();
-        Serial.printf("battery: %d%% (%dmV)\n",
-                      Power::batteryPercentFromMillivolts(mv), mv);
+        // Seeds the sample window (see sampleBatteryIfDue()'s own comment)
+        // before WiFi comes up below -- guaranteed clean, matches
+        // lastBatterySampleMs's own "not sampled yet" sentinel so the
+        // very first loop() iteration doesn't immediately resample.
+        lastBatterySampleMs = millis();
+        g_batteryMvWindow[g_batteryMvWindowNext] = Power::batteryMillivolts();
+        g_batteryMvWindowNext = (g_batteryMvWindowNext + 1) % kBatterySampleWindow;
+        g_batteryMvWindowCount = 1;
+        int mv = batteryMvRecentMax();
+        Serial.printf("battery: %d%% (%dmV)\n", Power::batteryPercentFromMillivolts(mv), mv);
     }
     Power::beginTimeEnv();
 
@@ -927,6 +986,7 @@ void loop() {
     pollOrientationButton();
     pollResetButton();
     pollModeButton();  // may flip g_offlineMode via goOnline()/goOffline() mid-call
+    sampleBatteryIfDue();  // before the offline-mode early return -- runs there too
 
 #if ENABLE_SD_CACHE
     // Offline-mode cycling: a real playlist.json (manually authored,
