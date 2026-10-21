@@ -390,7 +390,16 @@ the Tang Nano 9K) being the most common vehicle.
 - Embedded 8 MB PSRAM (the "R" suffix) — critical, since a 1600×1200 6-color panel
   needs ~960 KB per frame buffer (2 bits/pixel × 2 buffers); discrete RAM would add
   cost and board space
-- IDCODE `0x0100681B` — will be confirmed when `fpga` OTA bitstream is captured
+- IDCODE `0x1100481B` (device JTAG reads `0x0100481B`; high nibble is version/marking) —
+  taken from the captured **binary** OTA blob (`InkJoy/fpga-*.fs`: after `0xFF…`
+  pad + `a5c3` magic, header cmd `0x06` carries `11 00 48 1b`). Tang Nano 9K
+  JTAG detects the same `…481B` / GW1N(R)-9C family. (Earlier notes incorrectly
+  guessed `0x0100681B`, which is GW1NZ-1.) An ASCII `.ascii.fs` sibling exists
+  from our heuristic `inkjoy-bin-convert` tool (geometry/CRC guesses) — treat it
+  as untrusted scaffolding for tools that only accept ASCII `.fs`. **Binary
+  `.fs` is source of truth.** Tang Nano 9K programmed via
+  `openFPGALoader -b tangnano9k -f --external-flash` on the stripped binary
+  (skip leading `0xFF` pad through `a5c3`); first 64 KiB flash dump matched.
 - CS0 / CS1 dual chip-selects match a dual-die panel where each Gowin drives one
   horizontal half (800×1200 each)
 
@@ -554,10 +563,10 @@ initial pairing of a fresh device).
   later) will answer this.
 
 - **FPGA bitstream and `fpga` message shape** — data fields are assumed to be
-  `host`/`port`/`path` (same as `ota`) but not confirmed. The proxy will capture
-  the first `fpga` push to `/tmp/ij-ota/*.fs`. The bitstream header will contain
-  the device IDCODE — predicted `0x0100681B` (GW1NR-9). If confirmed, the soft IP
-  is almost certainly Caster or a fork.
+  `host`/`port`/`path` (same as `ota`) but not confirmed. Captured bitstreams
+  (`InkJoy/fpga-*.fs`) identify **GW1NR-9C** / IDCODE **`0x1100481B`** (JTAG on
+  Tang Nano 9K reads `0x0100481B`). Soft IP is still likely Caster or a fork;
+  the remaining unknown is the MQTT `fpga` action field layout.
 
 - **SPIFFS image format** — assumed to be the same 2-bytes-per-pixel palette format
   as play images, but not confirmed. Capturing `img_set.bin` from the SPIFFS
@@ -572,6 +581,28 @@ initial pairing of a fresh device).
 - **`wifi_sleep` schedule** — the device has a configurable deep-sleep window
   (`sleep_begin_time`, `sleep_end_time`, `sleep_mode`). How `updatetype`,
   `updatedays`, `updatetimelist` interact with this is not yet mapped.
+
+- **Timezone handling [C, partially]** — the firmware has zero timezone-related
+  strings anywhere (no SNTP/tzset/GMT/configTime — checked via `strings` on the
+  full app image), but does have a custom `set_rtc_time` log line ("time
+  synced, wifi_sleep gate re-armed"), so *something* sets the device's clock.
+  Live-captured `msgid` values decode as true UTC (confirmed against real
+  wall-clock time), and only `login`/`heart` (+ acks) are the persistent
+  dialog — a `live` action with a `timingTime` field exists in firmware
+  strings but has never actually been observed on the wire, so it's likely a
+  one-shot/rare push rather than a peer to the login/heart cadence, or unused
+  in this firmware version. Best working theory: the device's clock is plain
+  UTC throughout (no on-device TZ concept at all), and the **cloud/hub
+  converts local→UTC on the server side** before sending `sleep_begin_time`/
+  `sleep_end_time` (login) and `wifi_sleep`'s `beginTime`/`endTime` over the
+  wire — joyous-hub does exactly this (`localHHMMToUTC` in
+  `inkjoy_bridge_ui.go`), converting an operator's local-time input to UTC
+  before transmission, and converts back to local only for its own UI
+  display. This means the frame never needs geolocation or a TZ setting —
+  correctness only requires (a) an accurate UTC clock on the device (however
+  `set_rtc_time` gets fed — NTP, `live`, or something else not yet confirmed)
+  and (b) the sender doing local→UTC conversion once, upstream. Still open:
+  exactly what feeds `set_rtc_time` on a real frame.
 
 - **`sleep` ack name and `reason` enum** — a 2026-07 capture confirmed the
   power-off action is `sleep` (not the previously guessed `shutdown`), with

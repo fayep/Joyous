@@ -1,0 +1,5 @@
+source: ../images/nookie.png (1600x1200)
+raw packed 4bpp panel buffer: 960000 bytes (fixed)
+4-bit indexed PNG (BestCompression): 486382 bytes
+compression ratio vs raw: 1.97x
+round-trip pixel mismatches: 0 / 1920000

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"time"
 
 	"joyous-hub/bridgehub"
@@ -9,9 +10,16 @@ import (
 	"joyous-hub/protocol"
 )
 
-// inkjoyDeviceAdapter forwards frame telemetry from the InkJoy bridge to the registry.
+// inkjoyDeviceAdapter forwards frame telemetry from the InkJoy bridge to the registry
+// and wakes InkJoySendRetry when a frame logs in / hearts (missed play requeue).
 type inkjoyDeviceAdapter struct {
-	reg *DeviceRegistry
+	reg   *DeviceRegistry
+	retry *InkJoySendRetry
+	// srv publishes the corrective wifi_sleep republish on a login sleep-window
+	// mismatch (see UpdateLogin below). Set after inkjoybridge.NewServer
+	// constructs it — this adapter is one of its own constructor args, so the
+	// reference can't be supplied up front.
+	srv *inkjoybridge.Server
 }
 
 func (a *inkjoyDeviceAdapter) MarkConnected(mac string) { a.reg.MarkConnected(mac) }
@@ -19,7 +27,25 @@ func (a *inkjoyDeviceAdapter) MarkConnected(mac string) { a.reg.MarkConnected(ma
 func (a *inkjoyDeviceAdapter) MarkDisconnected(mac string) { a.reg.MarkDisconnected(mac) }
 
 func (a *inkjoyDeviceAdapter) UpdateLogin(mac string, info inkjoybridge.LoginInfo) {
-	a.reg.UpdateLogin(mac, info)
+	mismatch := a.reg.UpdateLogin(mac, info)
+	// Only local-only devices (no real InkJoy cloud managing them) get a
+	// corrective republish — for a cloud-relayed frame, the cloud (not this
+	// hub) is authoritative for its sleep schedule, and fighting it here
+	// would just create a tug-of-war.
+	if mismatch == nil || a.srv == nil || !inkjoybridge.LocalOnlyHardware(info.HardwareModel) {
+		return
+	}
+	payload := buildActionPayloadFor(mac, "wifi_sleep", map[string]any{
+		"beginTime": mismatch.BeginTime,
+		"endTime":   mismatch.EndTime,
+		"mode":      2,
+	})
+	if err := a.srv.PublishToFrame(mac, payload); err != nil {
+		log.Printf("[%s] sleep resync republish failed: %v", mac, err)
+		return
+	}
+	log.Printf("[%s] sleep resync: frame reported %s-%s, hub expects %s-%s — republished wifi_sleep",
+		mac, info.SleepBeginTime, info.SleepEndTime, mismatch.BeginTime, mismatch.EndTime)
 }
 
 func (a *inkjoyDeviceAdapter) UpdateHeart(mac string, info inkjoybridge.HeartInfo) {
@@ -28,11 +54,23 @@ func (a *inkjoyDeviceAdapter) UpdateHeart(mac string, info inkjoybridge.HeartInf
 
 func (a *inkjoyDeviceAdapter) SetHubIP(mac, ip string) { a.reg.SetHubIP(mac, ip) }
 
-func (a *inkjoyDeviceAdapter) OnPlayAck(ackMsgid string, result int) {}
+func (a *inkjoyDeviceAdapter) OnPlayAck(ackMsgid string, result int) {
+	if a.retry != nil {
+		a.retry.OnPlayAck(ackMsgid, result)
+	}
+}
 
-func (a *inkjoyDeviceAdapter) OnDeviceLogin(mac string) {}
+func (a *inkjoyDeviceAdapter) OnDeviceLogin(mac string) {
+	if a.retry != nil {
+		a.retry.OnDeviceLogin(mac)
+	}
+}
 
-func (a *inkjoyDeviceAdapter) OnDeviceHeart(mac string) {}
+func (a *inkjoyDeviceAdapter) OnDeviceHeart(mac string) {
+	if a.retry != nil {
+		a.retry.OnDeviceHeart(mac)
+	}
+}
 
 func (a *inkjoyDeviceAdapter) MarkShutdown(mac string, info inkjoybridge.SleepInfo) {
 	a.reg.MarkShutdown(mac, info)

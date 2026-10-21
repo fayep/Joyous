@@ -1,52 +1,27 @@
 package main
 
 import (
-	"bytes"
-	"image"
-	"image/png"
 	"testing"
-	"time"
 
 	"joyous-hub/protocol"
 )
 
-type retryPublisher struct {
-	publishes int
-}
-
-func (p *retryPublisher) Publish(topic string, payload []byte) error {
-	p.publishes++
-	return nil
-}
-
 func TestInkJoySendRetryOnLogin(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping retry integration in short mode")
-	}
 	h := buildTestHub(t)
-	pub := &retryPublisher{}
-	h.publisher = pub
-	h.inkjoyRetry = NewInkJoySendRetry(h)
-	h.devices.MarkConnected("AABBCCDDEEFF")
+	retry := NewInkJoySendRetry(h)
+	h.inkjoyRetry = retry
+	var resent int
+	retry.SetResender(func(entry *inkjoyRetryEntry) error {
+		resent++
+		return nil
+	})
 
-	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		t.Fatal(err)
-	}
-	imgID, err := h.images.Store(bytes.NewReader(buf.Bytes()), "test.png")
-	if err != nil {
-		t.Fatal(err)
-	}
+	send := h.sendDelivery.Register("AABBCCDDEEFF", "img1")
+	retry.TrackFromBridge(send.ID, "AABBCCDDEEFF", "img1", "", "http://hub", nil)
 
-	send := h.sendDelivery.Register("AABBCCDDEEFF", imgID)
-	h.inkjoyRetry.Track(send.ID, "AABBCCDDEEFF", imgID, "")
-
-	h.inkjoyRetry.OnDeviceLogin("AABBCCDDEEFF")
-	time.Sleep(50 * time.Millisecond)
-
-	if pub.publishes < 1 {
-		t.Fatalf("expected retry publish on login, got %d", pub.publishes)
+	retry.OnDeviceLogin("AABBCCDDEEFF")
+	if resent < 1 {
+		t.Fatalf("expected retry publish on login, got %d", resent)
 	}
 }
 
@@ -87,6 +62,50 @@ func TestInkJoySendRetryInterruptUnbindsMsgid(t *testing.T) {
 	}
 }
 
+func TestInkJoySendRetryAckTimeoutUnbindsMsgid(t *testing.T) {
+	h := buildTestHub(t)
+	retry := NewInkJoySendRetry(h)
+	h.inkjoyRetry = retry
+	var resent bool
+	retry.SetResender(func(entry *inkjoyRetryEntry) error {
+		resent = true
+		return nil
+	})
+
+	send := h.sendDelivery.Register("AABBCCDDEEFF", "img1")
+	h.sendDelivery.BindInkJoy(send.ID, "msg-1")
+	retry.TrackFromBridge(send.ID, "AABBCCDDEEFF", "img1", "", "http://hub", nil)
+
+	retry.onAckTimeout(send.ID)
+
+	if got := h.sendDelivery.InkJoyMsgid(send.ID); got != "" {
+		t.Fatalf("timeout should unbind msgid for a fresh play, got %q", got)
+	}
+	if !resent {
+		t.Fatal("expected resend on ack timeout")
+	}
+}
+
+func TestInkJoyDeviceAdapterLoginTriggersRetry(t *testing.T) {
+	h := buildTestHub(t)
+	retry := NewInkJoySendRetry(h)
+	h.inkjoyRetry = retry
+	var resent bool
+	retry.SetResender(func(entry *inkjoyRetryEntry) error {
+		resent = true
+		return nil
+	})
+	adapter := &inkjoyDeviceAdapter{reg: h.devices, retry: retry}
+
+	send := h.sendDelivery.Register("AABBCCDDEEFF", "img1")
+	retry.TrackFromBridge(send.ID, "AABBCCDDEEFF", "img1", "", "http://hub", nil)
+
+	adapter.OnDeviceLogin("AABBCCDDEEFF")
+	if !resent {
+		t.Fatal("login should requeue pending play")
+	}
+}
+
 func TestInkJoySendRetryProgressResetsTimeout(t *testing.T) {
 	h := buildTestHub(t)
 	h.inkjoyRetry = NewInkJoySendRetry(h)
@@ -109,7 +128,7 @@ func TestInkJoySendRetryBridgeBindNotifiesHub(t *testing.T) {
 		got = append(got, body)
 	})
 	h.sendDelivery.BindInkJoy("bridge-send", "msg-1")
-	retry.TrackFromBridge("bridge-send", "AABBCCDDEEFF", "img1", "", "http://hub")
+	retry.TrackFromBridge("bridge-send", "AABBCCDDEEFF", "img1", "", "http://hub", nil)
 
 	retry.OnPlayAck("msg-1", inkjoyProgressFirst)
 	retry.OnPlayAck("msg-1", inkjoyAckComplete)

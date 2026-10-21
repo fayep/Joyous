@@ -113,6 +113,9 @@ type stuckiOptions struct {
 	DynamicRange       bool
 	ThresholdMod       float64 // 0 = off; else Zhou–Fang midtone threshold jitter (Stucki only)
 	AntiRunBias        float64 // 0 = off; else max thr shift when local ink dominates (Stucki only)
+	// PeachFloyd soft-blends toward Floyd–Steinberg on peach/skin (stuckiPeachWeight):
+	// knobs fade out and error taps lerp Stucki→FS in one scan (no hard face mask).
+	PeachFloyd bool
 }
 
 type ditherKernel int
@@ -122,7 +125,29 @@ const (
 	ditherKernelFloydSteinberg
 )
 
+// stuckiOptionsFloyd is the shared production kernel trial: Floyd–Steinberg on
+// the same 6-ink display palette (swatch bake-off preferred FS over Stucki+knobs).
+func stuckiOptionsFloyd(pipe ColorPipeline) stuckiOptions {
+	return stuckiOptions{
+		Kernel:       ditherKernelFloydSteinberg,
+		Serpentine:   true,
+		PreDither:    true,
+		DynamicRange: pipe.LABDynamicRangeEnabled,
+	}
+}
+
+// stuckiOptionsSamsung: Stucki+knobs for gradients/structure; soft FS on peach/faces.
 func stuckiOptionsSamsung(pipe ColorPipeline) stuckiOptions {
+	return stuckiOptionsPeachFloyd(pipe)
+}
+
+// stuckiOptionsInkJoy matches Samsung: portraits (often portrait-orientation) need the
+// same peach→FS soft blend; Stucki+knobs remain elsewhere.
+func stuckiOptionsInkJoy(pipe ColorPipeline) stuckiOptions {
+	return stuckiOptionsPeachFloyd(pipe)
+}
+
+func stuckiOptionsPeachFloyd(pipe ColorPipeline) stuckiOptions {
 	return stuckiOptions{
 		Kernel:       ditherKernelStucki,
 		Serpentine:   true,
@@ -131,17 +156,7 @@ func stuckiOptionsSamsung(pipe ColorPipeline) stuckiOptions {
 		DynamicRange: pipe.LABDynamicRangeEnabled,
 		ThresholdMod: stuckiThresholdModStrength,
 		AntiRunBias:  stuckiAntiRunBias,
-	}
-}
-
-// stuckiOptionsInkJoy trials Floyd–Steinberg on the same 6-ink display palette
-// (swatch bake-off preferred FS over Stucki+knobs for gradient continuity).
-func stuckiOptionsInkJoy(pipe ColorPipeline) stuckiOptions {
-	return stuckiOptions{
-		Kernel:       ditherKernelFloydSteinberg,
-		Serpentine:   true,
-		PreDither:    true,
-		DynamicRange: pipe.LABDynamicRangeEnabled,
+		PeachFloyd:   true,
 	}
 }
 
@@ -792,11 +807,29 @@ func StuckiDither(img image.Image, palette [6][3]float64, opts stuckiOptions) []
 			pg := clamp255(buf[by][bx+1])
 			pb := clamp255(buf[by][bx+2])
 			rgb := [3]float64{pr, pg, pb}
-			idx := nearestColorThresholdMod(rgb, srcRGB[y][x], palette, x, y, opts.ThresholdMod, out, rtl, opts.AntiRunBias)
+			srcPx := srcRGB[y][x]
+			thrMod := opts.ThresholdMod
+			antiRun := opts.AntiRunBias
+			edge := opts.EdgePreserve
+			fsMix := 0.0
+			peachScale := 1.0
+			if opts.PeachFloyd {
+				fsMix = stuckiPeachWeight(srcPx)
+				if fsMix > 1 {
+					fsMix = 1
+				}
+				// Fade Stucki knobs / peach extras as we lean FS on skin.
+				stay := 1 - fsMix
+				thrMod *= stay
+				antiRun *= stay
+				edge *= stay
+				peachScale = stay
+			}
+			idx := nearestColorThresholdMod(rgb, srcPx, palette, x, y, thrMod, out, rtl, antiRun, peachScale)
 			out[y][x] = byte(idx)
 			stuckiSpreadError(buf, lum, h, w, by, x+2, x, y,
 				pr-palette[idx][0], pg-palette[idx][1], pb-palette[idx][2],
-				rtl, opts.EdgePreserve)
+				rtl, edge, fsMix)
 		}
 		if rtl {
 			for x := w - 1; x >= 0; x-- {
@@ -811,14 +844,27 @@ func StuckiDither(img image.Image, palette [6][3]float64, opts stuckiOptions) []
 	return out
 }
 
-func stuckiSpreadError(buf [][]float64, lum [][]float64, h, w, by, xc, cx, cy int, er, eg, eb float64, rtl bool, edgePreserve float64) {
-	const A, B, C, D = 8.0 / 42, 4.0 / 42, 2.0 / 42, 1.0 / 42
+// stuckiSpreadError distributes quantization error. fsMix in [0,1] lerps Stucki taps
+// toward Floyd–Steinberg (same serpentine polarity). Edge preserve scales with the
+// Stucki share (FS path ignores it via caller passing edge*(1-fsMix)).
+func stuckiSpreadError(buf [][]float64, lum [][]float64, h, w, by, xc, cx, cy int, er, eg, eb float64, rtl bool, edgePreserve, fsMix float64) {
+	if fsMix < 0 {
+		fsMix = 0
+	}
+	if fsMix > 1 {
+		fsMix = 1
+	}
+	const (
+		sA, sB, sC, sD = 8.0 / 42, 4.0 / 42, 2.0 / 42, 1.0 / 42
+		f7, f5, f3, f1 = 7.0 / 16, 5.0 / 16, 3.0 / 16, 1.0 / 16
+	)
+	sm, fm := 1-fsMix, fsMix
 	centerLum := 0.0
 	if lum != nil {
 		centerLum = lum[cy][cx]
 	}
 	addErr := func(ry, rx int, wt float64) {
-		if ry >= h+4 || rx < 0 || rx >= w+4 {
+		if wt == 0 || ry >= h+4 || rx < 0 || rx >= w+4 {
 			return
 		}
 		if lum != nil && edgePreserve > 0 {
@@ -832,33 +878,34 @@ func stuckiSpreadError(buf [][]float64, lum [][]float64, h, w, by, xc, cx, cy in
 		buf[ry][base+1] += eg * wt
 		buf[ry][base+2] += eb * wt
 	}
+	// Blend Stucki (wide) and FS (compact) onto the union of neighbor offsets.
 	if rtl {
-		addErr(by, xc-1, A)
-		addErr(by, xc-2, B)
-		addErr(by+1, xc+2, C)
-		addErr(by+1, xc+1, B)
-		addErr(by+1, xc, A)
-		addErr(by+1, xc-1, B)
-		addErr(by+1, xc-2, C)
-		addErr(by+2, xc+2, D)
-		addErr(by+2, xc+1, C)
-		addErr(by+2, xc, B)
-		addErr(by+2, xc-1, C)
-		addErr(by+2, xc-2, D)
+		addErr(by, xc-1, sm*sA+fm*f7) // left 1
+		addErr(by, xc-2, sm*sB)       // left 2 (Stucki only)
+		addErr(by+1, xc+2, sm*sC)     // Stucki only
+		addErr(by+1, xc+1, sm*sB+fm*f3)
+		addErr(by+1, xc, sm*sA+fm*f5)
+		addErr(by+1, xc-1, sm*sB+fm*f1)
+		addErr(by+1, xc-2, sm*sC)
+		addErr(by+2, xc+2, sm*sD)
+		addErr(by+2, xc+1, sm*sC)
+		addErr(by+2, xc, sm*sB)
+		addErr(by+2, xc-1, sm*sC)
+		addErr(by+2, xc-2, sm*sD)
 		return
 	}
-	addErr(by, xc+1, A)
-	addErr(by, xc+2, B)
-	addErr(by+1, xc-2, C)
-	addErr(by+1, xc-1, B)
-	addErr(by+1, xc, A)
-	addErr(by+1, xc+1, B)
-	addErr(by+1, xc+2, C)
-	addErr(by+2, xc-2, D)
-	addErr(by+2, xc-1, C)
-	addErr(by+2, xc, B)
-	addErr(by+2, xc+1, C)
-	addErr(by+2, xc+2, D)
+	addErr(by, xc+1, sm*sA+fm*f7)
+	addErr(by, xc+2, sm*sB)
+	addErr(by+1, xc-2, sm*sC)
+	addErr(by+1, xc-1, sm*sB+fm*f3)
+	addErr(by+1, xc, sm*sA+fm*f5)
+	addErr(by+1, xc+1, sm*sB+fm*f1)
+	addErr(by+1, xc+2, sm*sC)
+	addErr(by+2, xc-2, sm*sD)
+	addErr(by+2, xc-1, sm*sC)
+	addErr(by+2, xc, sm*sB)
+	addErr(by+2, xc+1, sm*sC)
+	addErr(by+2, xc+2, sm*sD)
 }
 
 func buildLuminanceGrid(img image.Image, h, w int) [][]float64 {
@@ -1520,7 +1567,7 @@ func nearestColor(rgb [3]float64, palette [6][3]float64) int {
 // srcRGB (original pixel), not the error-diffused sample — otherwise anti-run
 // disables itself inside yellow face blotches. Diffusion error still uses the
 // unmodulated sample (caller responsibility).
-func nearestColorThresholdMod(rgb, srcRGB [3]float64, palette [6][3]float64, x, y int, strength float64, out [][]byte, rtl bool, antiRunBias float64) int {
+func nearestColorThresholdMod(rgb, srcRGB [3]float64, palette [6][3]float64, x, y int, strength float64, out [][]byte, rtl bool, antiRunBias, peachScale float64) int {
 	if strength <= 0 && antiRunBias <= 0 {
 		return nearestColor(rgb, palette)
 	}
@@ -1545,7 +1592,10 @@ func nearestColorThresholdMod(rgb, srcRGB [3]float64, palette [6][3]float64, x, 
 	}
 	srcLum := 0.2126*srcRGB[0] + 0.7152*srcRGB[1] + 0.0722*srcRGB[2]
 	mid := stuckiMidtoneModWeight(srcLum)
-	peach := stuckiPeachWeight(srcRGB)
+	if peachScale < 0 {
+		peachScale = 0
+	}
+	peach := stuckiPeachWeight(srcRGB) * peachScale
 	if mid < 0.04 && antiRunBias <= 0 {
 		return best
 	}

@@ -11,6 +11,7 @@ import (
 
 	"joyous-hub/bridgehub"
 	"joyous-hub/inkjoybridge"
+	"joyous-hub/protocol"
 )
 
 // MQTTPublisher is satisfied by the real broker and by test doubles.
@@ -84,8 +85,8 @@ func (h *Hub) handleDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	// Convert stored UTC sleep times → server local time for display.
 	for i := range devs {
-		devs[i].SleepBeginTime = utcHHMMToLocal(devs[i].SleepBeginTime)
-		devs[i].SleepEndTime = utcHHMMToLocal(devs[i].SleepEndTime)
+		devs[i].SleepBeginTime, devs[i].SleepEndTime =
+			sleepWindowToLocal(devs[i].SleepBeginTime, devs[i].SleepEndTime)
 	}
 	h.applySamsungFriendlyNames(devs)
 	for i := range devs {
@@ -103,16 +104,21 @@ func (h *Hub) handleDevices(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(devs)
 }
 
-// devicesSnapshotForUI returns a List() copy with Samsung Connected recomputed.
-// SSE must use this (not raw List()) so live badges match GET /api/devices —
-// TouchSamsung used to leave Connected stale as false after a sleep while
-// LastAction already proved the frame was awake again.
+// devicesSnapshotForUI returns a List() copy with Samsung Connected recomputed
+// and InkJoy sleep-window times converted UTC → local. SSE must use this (not
+// raw List()) so live badges match GET /api/devices — TouchSamsung used to
+// leave Connected stale as false after a sleep while LastAction already
+// proved the frame was awake again; separately, skipping the UTC→local
+// conversion here used to make the sleep-window chip flip back to raw UTC on
+// every live update after showing correct local time on initial page load.
 func (h *Hub) devicesSnapshotForUI() []Device {
 	devs := h.devices.List()
 	if devs == nil {
 		return []Device{}
 	}
 	for i := range devs {
+		devs[i].SleepBeginTime, devs[i].SleepEndTime =
+			sleepWindowToLocal(devs[i].SleepBeginTime, devs[i].SleepEndTime)
 		if devs[i].Type == DeviceTypeSamsung {
 			ApplySamsungConnected(&devs[i])
 		}
@@ -123,7 +129,12 @@ func (h *Hub) devicesSnapshotForUI() []Device {
 // utcHHMMToLocal converts a "HH:MM" string from UTC to the server's local timezone.
 // Returns the input unchanged on any parse error or if it's empty/00:00.
 func utcHHMMToLocal(hhmm string) string {
-	if hhmm == "" || hhmm == "00:00" {
+	// Don't special-case "00:00" — a schedule can legitimately start at
+	// midnight local time. Disabled-schedule detection lives elsewhere
+	// (withinWindow: beginMin == endMin), which still holds after converting
+	// both fields with the same offset, so this only needs to guard the
+	// genuinely-unparseable empty case.
+	if hhmm == "" {
 		return hhmm
 	}
 	now := time.Now()
@@ -135,9 +146,24 @@ func utcHHMMToLocal(hhmm string) string {
 	return t.In(time.Local).Format("15:04")
 }
 
+// sleepWindowToLocal converts a stored UTC begin/end sleep-window pair to
+// local time for display. A disabled window (begin == end — see the
+// firmware's withinWindow, which treats equal begin/end as "no schedule",
+// including the "0:00"/"0:00" a never-configured device reports) is left
+// unconverted, so it still reads as a recognizable "not set" pair rather
+// than converting to some arbitrary-looking equal local time.
+func sleepWindowToLocal(begin, end string) (string, string) {
+	if begin == end {
+		return begin, end
+	}
+	return utcHHMMToLocal(begin), utcHHMMToLocal(end)
+}
+
 // localHHMMToUTC converts a "HH:MM" string from the server's local timezone to UTC.
 func localHHMMToUTC(hhmm string) string {
-	if hhmm == "" || hhmm == "00:00" {
+	// See utcHHMMToLocal — no "00:00" special case; a schedule can
+	// legitimately start at local midnight.
+	if hhmm == "" {
 		return hhmm
 	}
 	now := time.Now()
@@ -451,7 +477,12 @@ func buildAckPayloadFor(mac, ackAction, ackMsgid string, data map[string]any) []
 // (same message replay — frame skips redo for duplicate msgid).
 // Callers should register the msgid via registerInjectedPlay so the
 // corresponding play_ack can be suppressed from upstream forwarding.
-func buildPlayPayload(mac, imgURL, msgid string) ([]byte, string) {
+// hash is the SD-cache content key (see ContentHash) for clone firmware
+// with PNG/ContentCache support (inkjoybridge.InkJoyPNGProtocolT) — pass ""
+// for real InkJoy hardware and older clone builds, which don't understand
+// the field (see content_cache.h's parsePlay comment: absent hash is
+// treated as "no cache key available", same as before this field existed).
+func buildPlayPayload(mac, imgURL, msgid, hash string, overlay *protocol.OverlaySendBody) ([]byte, string) {
 	// imgURL is e.g. "https://192.168.1.7:1443/images/abc.bin"
 	// Strip scheme (http:// or https://)
 	rest := imgURL
@@ -473,17 +504,28 @@ func buildPlayPayload(mac, imgURL, msgid string) ([]byte, string) {
 	if msgid == "" {
 		msgid = fmt.Sprintf("%d", time.Now().UnixMilli())
 	}
+	img0 := map[string]any{"imgid": "local-0", "imgurl": path}
+	if hash != "" {
+		img0["hash"] = hash
+	}
+	data := map[string]any{
+		"host":     host,
+		"port":     port,
+		"imgs":     []any{img0},
+		"mode":     2,
+		"strategy": 1,
+	}
+	if overlay != nil {
+		data["overlay"] = map[string]any{
+			"lines":   overlay.Lines,
+			"caption": overlay.Caption,
+		}
+	}
 	b, _ := json.Marshal(map[string]any{
 		"action": "play",
 		"msgid":  msgid,
 		"stamac": mac,
-		"data": map[string]any{
-			"host":     host,
-			"port":     port,
-			"imgs":     []any{map[string]any{"imgid": "local-0", "imgurl": path}},
-			"mode":     2,
-			"strategy": 1,
-		},
+		"data":   data,
 	})
 	return b, msgid
 }
@@ -2482,7 +2524,17 @@ async function waitSendDelivered(sendId,onTick){
   const deadline=Date.now()+SEND_DELIVERY_TIMEOUT_MS;
   while(Date.now()<deadline){
     const waitSec=Math.min(30, Math.max(1, Math.ceil((deadline-Date.now())/1000)));
-    const r=await fetch('/api/send/'+encodeURIComponent(sendId)+'?wait='+waitSec);
+    const ac=new AbortController();
+    const kill=setTimeout(()=>ac.abort(), (waitSec+5)*1000);
+    let r;
+    try{
+      r=await fetch('/api/send/'+encodeURIComponent(sendId)+'?wait='+waitSec,{signal:ac.signal});
+    }catch(e){
+      if(e&&e.name==='AbortError') continue;
+      throw e;
+    }finally{
+      clearTimeout(kill);
+    }
     if(r.status===404) return false;
     if(!r.ok) throw new Error(await r.text());
     const j=await r.json();
@@ -2505,10 +2557,10 @@ function showSendProgressToast(toastId,j,dev){
   if(!toastId||!j) return;
   if(j.status==='retrying'){
     const hint=(dev&&dev.type==='samsung'&&j.detail==='waiting for frame to wake')?SAMSUNG_DEEP_SLEEP_WAKE_MSG+' — ':'';
-    showToast(toastId,hint+'Retrying ('+j.retry_attempts+')…');
+    showToast(toastId,hint+'Retrying ('+j.retry_attempts+')…',{closable:true});
     return;
   }
-  if(j.status==='downloading') showToast(toastId,'Downloading…');
+  if(j.status==='downloading') showToast(toastId,'Downloading…',{closable:true});
 }
 
 // sendWatches dedupes concurrent watchers of the same sendId — e.g. the code that triggered a
@@ -2516,12 +2568,17 @@ function showSendProgressToast(toastId,j,dev){
 // of each other. Later callers just await the same in-flight watch instead of polling
 // /api/send/{sendId} twice for the same send.
 const sendWatches={};
+// sendWatchDone remembers sendIds this tab already finished watching, so an EventSource
+// reconnect's active-send handshake doesn't resurrect a "Downloading…" toast for a zombie
+// in-flight send the UI already timed out on.
+const sendWatchDone={};
 
 // watchSendProgress polls a send to completion, showing/updating a single toast the whole way
 // (retrying/downloading -> final result) — the one place this happens, used by every send
 // path (manual sends below, and pollActiveSends for sends nobody in this tab initiated).
 function watchSendProgress(sendId,dev){
   if(!sendId) return Promise.resolve(false);
+  if(sendWatchDone[sendId]) return Promise.resolve(false);
   if(sendWatches[sendId]) return sendWatches[sendId];
   const toastId='send-'+sendId;
   const p=(async()=>{
@@ -2529,13 +2586,14 @@ function watchSendProgress(sendId,dev){
       const delivered=await waitSendDelivered(sendId,j=>{
         showSendProgressToast(toastId,j,dev);
       });
-      showToast(toastId,delivered?'✓ Sent':'Sent (unconfirmed)',{type:'success',autoHideMs:2500});
+      showToast(toastId,delivered?'✓ Sent':'Sent (unconfirmed)',{type:'success',autoHideMs:2500,closable:true});
       return delivered;
     }catch(e){
       showToast(toastId,'Send failed: '+e.message,{type:'error',closable:true,autoHideMs:8000});
       throw e;
     }finally{
       delete sendWatches[sendId];
+      sendWatchDone[sendId]=true;
     }
   })();
   sendWatches[sendId]=p;
@@ -2549,7 +2607,7 @@ function watchSendProgress(sendId,dev){
 // skipped rather than popping a toast for something already finished — consistent with the
 // event bus's "if you weren't listening you don't care" design (see event_bus.go).
 function onSendDiscoveryEvent(data){
-  if(!data||!data.send_id||sendWatches[data.send_id]) return;
+  if(!data||!data.send_id||sendWatches[data.send_id]||sendWatchDone[data.send_id]) return;
   if(data.status==='delivered'||data.status==='failed') return;
   watchSendProgress(data.send_id,{type:data.device_type});
 }
@@ -3120,6 +3178,7 @@ function deviceCardHTML(d){
   const label=escHtml(deviceLabel(d));
   const type=d.type||'inkjoy';
   const refreshBtn=type==='inkjoy'?'<button class="btn btn-sm btn-primary" onclick="refreshDevice(\''+d.id+'\')">Refresh display</button> ':'';
+  const colorCalBtn=(type==='inkjoy'||type==='samsung')?'<button class="btn btn-sm" onclick="toggleColorCal(\''+d.id+'\')">Color calibration</button>':'';
   return '<div class="card" id="card-'+d.id+'" data-device-id="'+d.id+'">'+
     '<span class="badge" style="background:#eee;color:#333;margin-right:.5rem">'+type+'</span>'+
     '<strong id="label-'+d.id+'">'+label+'</strong> '+
@@ -3127,9 +3186,11 @@ function deviceCardHTML(d){
     '<span id="meta-'+d.id+'" style="margin-left:.5rem;color:#666;font-size:.9rem">'+deviceMetaHTML(d)+'</span>'+
     '<div style="margin-top:.5rem">'+refreshBtn+
     '<button class="btn btn-sm btn-primary" onclick="sendToFrame(\''+d.id+'\')">Send image</button> '+
-    '<button class="btn btn-sm" onclick="toggleSchedule(\''+d.id+'\')">Scheduled sends</button>'+
+    '<button class="btn btn-sm" onclick="toggleSchedule(\''+d.id+'\')">Scheduled sends</button> '+
+    colorCalBtn+
     '</div>'+
     '<div id="sched-'+d.id+'" style="display:none;margin-top:.6rem;padding-top:.6rem;border-top:1px solid #eee"></div>'+
+    '<div id="colorcal-'+d.id+'" style="display:none;margin-top:.6rem;padding-top:.6rem;border-top:1px solid #eee"></div>'+
     '</div>';
 }
 
@@ -3212,8 +3273,10 @@ function renderSchedule(deviceId){
   const st=schedState[deviceId]||{albumId:'',times:[],enabled:false};
   const albumOpts='<option value="">— choose album —</option>'+
     albums.map(a=>'<option value="'+a.id+'"'+(a.id===st.albumId?' selected':'')+'>'+escHtml(a.name||a.id)+'</option>').join('');
+  // oninput (not only onchange): <input type="time"> often doesn't fire change until
+  // blur, so Add/Save used to re-render from stale 09:00 defaults.
   const timeRows=st.times.map((t,i)=>
-    '<div style="margin:.25rem 0"><input type="time" value="'+t+'" onchange="updateSchedTime(\''+deviceId+'\','+i+',this.value)"> '+
+    '<div style="margin:.25rem 0"><input type="time" data-sched-time="1" value="'+escHtml(t)+'" oninput="updateSchedTime(\''+deviceId+'\','+i+',this.value)"> '+
     '<button type="button" class="btn btn-sm" onclick="removeSchedTime(\''+deviceId+'\','+i+')">✕</button></div>'
   ).join('');
   el.innerHTML=
@@ -3226,13 +3289,49 @@ function renderSchedule(deviceId){
     '<span id="sched-status-'+deviceId+'" style="margin-left:.5rem;color:#666;font-size:.85rem"></span>';
 }
 
+// Pull current <input type="time"> values into schedState before any re-render or save,
+// so a just-picked time isn't lost if the browser hasn't fired a change event yet.
+function syncSchedTimesFromDOM(deviceId){
+  const st=schedState[deviceId];
+  if(!st)return;
+  const el=document.getElementById('sched-'+deviceId);
+  if(!el)return;
+  const inputs=el.querySelectorAll('input[data-sched-time]');
+  if(!inputs.length)return;
+  st.times=Array.from(inputs).map(inp=>inp.value||'').filter(v=>v);
+}
+
 function setSchedAlbum(deviceId,albumId){schedState[deviceId].albumId=albumId;}
 function setSchedEnabled(deviceId,enabled){schedState[deviceId].enabled=enabled;}
-function addSchedTime(deviceId){schedState[deviceId].times.push('09:00');renderSchedule(deviceId);}
-function removeSchedTime(deviceId,i){schedState[deviceId].times.splice(i,1);renderSchedule(deviceId);}
-function updateSchedTime(deviceId,i,v){schedState[deviceId].times[i]=v;}
+function addSchedTime(deviceId){
+  syncSchedTimesFromDOM(deviceId);
+  const st=schedState[deviceId];
+  if(!st)return;
+  // Default new row to one hour after the last time (or 09:00 if empty).
+  let next='09:00';
+  if(st.times.length){
+    const last=st.times[st.times.length-1];
+    const m=last.match(/^(\d{1,2}):(\d{2})/);
+    if(m){
+      const mins=(parseInt(m[1],10)*60+parseInt(m[2],10)+60)%(24*60);
+      next=String(Math.floor(mins/60)).padStart(2,'0')+':'+String(mins%60).padStart(2,'0');
+    }
+  }
+  st.times.push(next);
+  renderSchedule(deviceId);
+}
+function removeSchedTime(deviceId,i){
+  syncSchedTimesFromDOM(deviceId);
+  schedState[deviceId].times.splice(i,1);
+  renderSchedule(deviceId);
+}
+function updateSchedTime(deviceId,i,v){
+  if(!schedState[deviceId])return;
+  schedState[deviceId].times[i]=v;
+}
 
 async function saveSchedule(deviceId){
+  syncSchedTimesFromDOM(deviceId);
   const st=schedState[deviceId];
   if(!st)return;
   if(st.enabled&&!st.albumId){alert('Choose an album first.');return;}
@@ -3244,6 +3343,160 @@ async function saveSchedule(deviceId){
   if(!r.ok){alert('Error: '+(await r.text()));return;}
   const status=document.getElementById('sched-status-'+deviceId);
   if(status){status.textContent='Saved';setTimeout(()=>{if(status)status.textContent='';},1500);}
+}
+
+// ── Color calibration (Devices tab, InkJoy only) ─────────────────────────────
+const colorCalState={};
+
+function toggleColorCal(deviceId){
+  const el=document.getElementById('colorcal-'+deviceId);
+  if(!el)return;
+  if(el.style.display==='none'){
+    el.style.display='block';
+    loadColorCal(deviceId);
+  }else{
+    el.style.display='none';
+  }
+}
+
+async function loadColorCal(deviceId){
+  const el=document.getElementById('colorcal-'+deviceId);
+  if(!el)return;
+  el.innerHTML='Loading…';
+  try{
+    const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/color');
+    if(!r.ok) throw new Error(await r.text());
+    const data=await r.json();
+    colorCalState[deviceId]={
+      names:data.names||['black','white','yellow','red','blue','green'],
+      bridgeDefault:data.bridge_default||[],
+      override:data.override||null
+    };
+    renderColorCal(deviceId);
+  }catch(e){
+    el.innerHTML='<p style="color:#c00;font-size:.85rem">Load failed: '+e.message+'</p>';
+  }
+}
+
+function colorCalRowsHTML(deviceId, palette){
+  const st=colorCalState[deviceId];
+  const names=st&&st.names?st.names:['black','white','yellow','red','blue','green'];
+  return '<table style="width:100%;font-size:.8rem;border-collapse:collapse;margin:.35rem 0 .5rem"><thead><tr><th style="text-align:left;padding:.2rem 0">Ink</th><th>R</th><th>G</th><th>B</th><th></th></tr></thead><tbody>'+
+    names.map((n,i)=>{
+      const rgb=(palette&&palette[i])||[0,0,0];
+      const id='devclr-'+deviceId+'-'+i;
+      return '<tr><td style="padding:.2rem .35rem .2rem 0">'+n+'</td>'+
+        '<td><input id="'+id+'-r" type="number" min="0" max="255" value="'+rgb[0]+'" oninput="updateColorCalSwatch(\''+deviceId+'\','+i+')" style="width:3.2rem;padding:.2rem;border:1px solid #ccc;border-radius:3px"></td>'+
+        '<td><input id="'+id+'-g" type="number" min="0" max="255" value="'+rgb[1]+'" oninput="updateColorCalSwatch(\''+deviceId+'\','+i+')" style="width:3.2rem;padding:.2rem;border:1px solid #ccc;border-radius:3px"></td>'+
+        '<td><input id="'+id+'-b" type="number" min="0" max="255" value="'+rgb[2]+'" oninput="updateColorCalSwatch(\''+deviceId+'\','+i+')" style="width:3.2rem;padding:.2rem;border:1px solid #ccc;border-radius:3px"></td>'+
+        '<td><span id="'+id+'-sw" style="display:inline-block;width:1.4rem;height:1.1rem;border:1px solid #ccc;border-radius:3px;vertical-align:middle;background:rgb('+rgb.join(',')+')"></span></td></tr>';
+    }).join('')+'</tbody></table>';
+}
+
+function updateColorCalSwatch(deviceId, i){
+  const id='devclr-'+deviceId+'-'+i;
+  const r=parseInt(document.getElementById(id+'-r').value,10)||0;
+  const g=parseInt(document.getElementById(id+'-g').value,10)||0;
+  const b=parseInt(document.getElementById(id+'-b').value,10)||0;
+  const sw=document.getElementById(id+'-sw');
+  if(sw) sw.style.background='rgb('+Math.max(0,Math.min(255,r))+','+Math.max(0,Math.min(255,g))+','+Math.max(0,Math.min(255,b))+')';
+}
+
+function readColorCalPalette(deviceId){
+  const st=colorCalState[deviceId];
+  const n=(st&&st.names?st.names.length:6);
+  const out=[];
+  for(let i=0;i<n;i++){
+    const id='devclr-'+deviceId+'-'+i;
+    const r=parseInt(document.getElementById(id+'-r').value,10)||0;
+    const g=parseInt(document.getElementById(id+'-g').value,10)||0;
+    const b=parseInt(document.getElementById(id+'-b').value,10)||0;
+    out.push([Math.max(0,Math.min(255,r)),Math.max(0,Math.min(255,g)),Math.max(0,Math.min(255,b))]);
+  }
+  return out;
+}
+
+function renderColorCal(deviceId){
+  const el=document.getElementById('colorcal-'+deviceId);
+  if(!el)return;
+  const st=colorCalState[deviceId];
+  const usingOverride=!!(st&&st.override);
+  const palette=usingOverride?st.override:(st?st.bridgeDefault:[]);
+  el.innerHTML=
+    '<div style="color:#666;font-size:.85rem;margin-bottom:.4rem">'+
+      (usingOverride?'Custom calibration for this panel.':'Using the bridge default palette (Color tab).')+
+    '</div>'+
+    colorCalRowsHTML(deviceId, palette)+
+    '<div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.4rem">'+
+      '<button type="button" class="btn btn-sm" onclick="sendColorCalChart(\''+deviceId+'\')">Send calibration image</button>'+
+      '<button type="button" class="btn btn-sm btn-primary" onclick="saveColorCal(\''+deviceId+'\')">Save</button>'+
+      '<button type="button" class="btn btn-sm" onclick="resetColorCal(\''+deviceId+'\')"'+(usingOverride?'':' disabled')+'>Reset to bridge default</button>'+
+    '</div>'+
+    '<span id="colorcal-status-'+deviceId+'" style="display:block;margin-top:.4rem;color:#666;font-size:.85rem"></span>';
+}
+
+async function sendColorCalChart(deviceId){
+  const st=document.getElementById('colorcal-status-'+deviceId);
+  if(st) st.textContent='Sending calibration chart…';
+  const dev=devices.find(d=>d.id===deviceId);
+  const type=dev&&dev.type||'inkjoy';
+  try{
+    let delivered=false;
+    if(type==='samsung'){
+      const r=await fetch('/api/samsung/'+encodeURIComponent(deviceId)+'/calibration',{method:'POST',headers:sessionHeaders()});
+      if(!r.ok) throw new Error(await r.text());
+      const j=await r.json();
+      delivered=j.send_id?await watchSendProgress(j.send_id,{type:'samsung'}):false;
+    }else{
+      const j=await readJSONResponse(await fetch('/api/calibration/inkjoy/send',{
+        method:'POST',
+        headers:sessionHeaders({'Content-Type':'application/json'}),
+        body:JSON.stringify({device_id:deviceId})
+      }));
+      delivered=j.send_id?await waitSendDelivered(j.send_id):false;
+    }
+    if(st) st.textContent=delivered?'✓ Chart sent — compare it against the physical panel, then adjust and save.':'Sent (unconfirmed)';
+  }catch(e){
+    if(st) st.textContent='Send failed: '+e.message;
+  }
+}
+
+async function saveColorCal(deviceId){
+  const st=document.getElementById('colorcal-status-'+deviceId);
+  if(st) st.textContent='Saving…';
+  try{
+    const palette=readColorCalPalette(deviceId);
+    const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/color',{
+      method:'PUT',
+      headers:sessionHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({palette})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    if(colorCalState[deviceId]) colorCalState[deviceId].override=palette;
+    renderColorCal(deviceId);
+    const st2=document.getElementById('colorcal-status-'+deviceId);
+    if(st2) st2.textContent='✓ Saved — next send to this panel uses these values.';
+  }catch(e){
+    if(st) st.textContent='Save failed: '+e.message;
+  }
+}
+
+async function resetColorCal(deviceId){
+  const st=document.getElementById('colorcal-status-'+deviceId);
+  if(st) st.textContent='Resetting…';
+  try{
+    const r=await fetch('/api/devices/'+encodeURIComponent(deviceId)+'/color',{
+      method:'PUT',
+      headers:sessionHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({palette:null})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    await loadColorCal(deviceId);
+    const st2=document.getElementById('colorcal-status-'+deviceId);
+    if(st2) st2.textContent='✓ Reset to bridge default.';
+  }catch(e){
+    if(st) st.textContent='Reset failed: '+e.message;
+  }
 }
 
 showTab('album', document.querySelector('nav button.active'));

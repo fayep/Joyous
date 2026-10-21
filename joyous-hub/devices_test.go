@@ -48,6 +48,52 @@ func TestUpdateDeviceHeart(t *testing.T) {
 	}
 }
 
+func TestHardwareModelFromVer(t *testing.T) {
+	if got := inkjoybridge.HardwareModelFromVer("M H:9 F:1.0.0"); got != inkjoybridge.HardwareModelSeeed {
+		t.Fatalf("got %d want %d", got, inkjoybridge.HardwareModelSeeed)
+	}
+	if got := inkjoybridge.HardwareModelFromVer("M H:2 F:0.5.6"); got != 2 {
+		t.Fatalf("got %d want 2", got)
+	}
+	if got := inkjoybridge.HardwareModelFromVer("0.5.6"); got != 0 {
+		t.Fatalf("got %d want 0", got)
+	}
+}
+
+func TestSeeedHeartSyncsPortraitPreference(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.MarkConnected("94A990D08BE0")
+	reg.UpdateLogin("94A990D08BE0", inkjoybridge.LoginInfo{
+		Firmware:      "M H:9 F:1.0.0",
+		HardwareModel: inkjoybridge.HardwareModelSeeed,
+	})
+	reg.UpdateHeart("94A990D08BE0", inkjoybridge.HeartInfo{Orientation: 0, Battery: 80})
+	d, _ := reg.Get("94A990D08BE0")
+	if !d.Portrait {
+		t.Fatal("orientation 0 should set Portrait")
+	}
+	reg.UpdateHeart("94A990D08BE0", inkjoybridge.HeartInfo{Orientation: 90, Battery: 80})
+	d, _ = reg.Get("94A990D08BE0")
+	if d.Portrait {
+		t.Fatal("orientation 90 should clear Portrait")
+	}
+}
+
+func TestRealInkJoyHeartDoesNotOverridePortrait(t *testing.T) {
+	reg := NewDeviceRegistry(t.TempDir())
+	reg.MarkConnected("AABBCCDDEEFF")
+	reg.UpdateLogin("AABBCCDDEEFF", inkjoybridge.LoginInfo{
+		Firmware:      "M H:2 F:0.5.6",
+		HardwareModel: 2,
+	})
+	reg.SetPortrait("AABBCCDDEEFF", true)
+	reg.UpdateHeart("AABBCCDDEEFF", inkjoybridge.HeartInfo{Orientation: 90, Battery: 50})
+	d, _ := reg.Get("AABBCCDDEEFF")
+	if !d.Portrait {
+		t.Fatal("real-frame heart must not clear user Portrait")
+	}
+}
+
 // TestMarkDisconnected: connected → disconnected changes the flag.
 func TestMarkDisconnected(t *testing.T) {
 	reg := NewDeviceRegistry(t.TempDir())

@@ -467,26 +467,65 @@ func TestStuckiEdgeAttenuation(t *testing.T) {
 	}
 }
 
-func TestStuckiOptionsInkJoyUsesFloydSteinberg(t *testing.T) {
+func TestStuckiOptionsProdKernels(t *testing.T) {
 	pipe := ColorPipeline{}
-	ij := stuckiOptionsInkJoy(pipe)
-	if ij.Kernel != ditherKernelFloydSteinberg {
-		t.Fatalf("InkJoy kernel = %v, want Floyd–Steinberg", ij.Kernel)
+	for name, opts := range map[string]stuckiOptions{
+		"InkJoy":  stuckiOptionsInkJoy(pipe),
+		"Samsung": stuckiOptionsSamsung(pipe),
+		"shared":  stuckiOptionsPeachFloyd(pipe),
+	} {
+		if opts.Kernel != ditherKernelStucki || !opts.PeachFloyd {
+			t.Fatalf("%s should be Stucki+PeachFloyd, got %+v", name, opts)
+		}
+		if opts.ThresholdMod == 0 || opts.AntiRunBias == 0 || opts.EdgePreserve == 0 {
+			t.Fatalf("%s should keep Stucki knobs outside peach, got %+v", name, opts)
+		}
+		if !opts.Serpentine || !opts.PreDither {
+			t.Fatalf("%s expected serpentine+pre-dither, got %+v", name, opts)
+		}
 	}
-	if !ij.Serpentine || !ij.PreDither {
-		t.Fatalf("expected serpentine+pre-dither with FS, got %+v", ij)
+	dr := stuckiOptionsFloyd(ColorPipeline{LABDynamicRangeEnabled: true})
+	if !dr.DynamicRange || dr.Kernel != ditherKernelFloydSteinberg || dr.PeachFloyd {
+		t.Fatalf("stuckiOptionsFloyd should stay pure FS, got %+v", dr)
 	}
-	if ij.ThresholdMod != 0 || ij.AntiRunBias != 0 || ij.EdgePreserve != 0 {
-		t.Fatalf("FS trial should not carry Stucki knobs, got %+v", ij)
+}
+
+func TestStuckiPeachFloydFadesKnobs(t *testing.T) {
+	peach := [3]float64{210, 160, 140}
+	if stuckiPeachWeight(peach) < 0.5 {
+		t.Fatalf("fixture should be peachy, weight=%v", stuckiPeachWeight(peach))
 	}
-	sg := stuckiOptionsSamsung(pipe)
-	if sg.Kernel != ditherKernelStucki {
-		t.Fatalf("Samsung should stay on Stucki, got %v", sg.Kernel)
+	gray := [3]float64{128, 128, 128}
+	// Pure Stucki knobs + peach extras can flip; PeachFloyd with fsMix=1 should
+	// force nearest (knobs scaled to 0) — match by dithering a solid peach tile.
+	img := image.NewRGBA(image.Rect(0, 0, 24, 16))
+	for y := 0; y < 16; y++ {
+		for x := 0; x < 24; x++ {
+			img.Set(x, y, color.RGBA{210, 160, 140, 255})
+		}
 	}
-	dr := stuckiOptionsInkJoy(ColorPipeline{LABDynamicRangeEnabled: true})
-	if !dr.DynamicRange || dr.Kernel != ditherKernelFloydSteinberg {
-		t.Fatalf("dynamic range should ride on FS InkJoy base, got %+v", dr)
+	knobs := StuckiDither(img, PaletteSamsungDisplay, stuckiOptions{
+		Serpentine: true, ThresholdMod: stuckiThresholdModStrength, AntiRunBias: stuckiAntiRunBias,
+	})
+	hybrid := StuckiDither(img, PaletteSamsungDisplay, stuckiOptionsSamsung(ColorPipeline{}))
+	fs := FloydSteinbergDither(img, PaletteSamsungDisplay)
+	// Hybrid on solid peach should track FS more closely than knobbed Stucki
+	// (hamming distance), not necessarily byte-identical.
+	dist := func(a, b [][]byte) int {
+		n := 0
+		for y := range a {
+			for x := range a[y] {
+				if a[y][x] != b[y][x] {
+					n++
+				}
+			}
+		}
+		return n
 	}
+	if dFS, dKn := dist(hybrid, fs), dist(hybrid, knobs); dFS >= dKn {
+		t.Fatalf("peach hybrid should be closer to FS than knobs: vsFS=%d vsKnobs=%d", dFS, dKn)
+	}
+	_ = gray
 }
 
 func TestInkJoyTwoPaletteUsesFloydSteinberg(t *testing.T) {
@@ -553,7 +592,7 @@ func TestNearestColorThresholdModCanDiffer(t *testing.T) {
 	flipped := 0
 	for y := 0; y < 32; y++ {
 		for x := 0; x < 32; x++ {
-			if nearestColorThresholdMod(rgb, rgb, PaletteInkJoyDisplay, x, y, stuckiThresholdModStrength, nil, false, 0) != base {
+			if nearestColorThresholdMod(rgb, rgb, PaletteInkJoyDisplay, x, y, stuckiThresholdModStrength, nil, false, 0, 1) != base {
 				flipped++
 			}
 		}
@@ -589,10 +628,10 @@ func TestStuckiAntiRunBiasBreaksLocalDominance(t *testing.T) {
 		{byte(best), byte(best), byte(best), byte(best)},
 		{byte(best), byte(best), byte(best), 0},
 	}
-	if got := nearestColorThresholdMod(rgb, rgb, PaletteInkJoyDisplay, 2, 1, 0, out, false, 0); got != best {
+	if got := nearestColorThresholdMod(rgb, rgb, PaletteInkJoyDisplay, 2, 1, 0, out, false, 0, 1); got != best {
 		t.Fatalf("without bias want nearest %d, got %d", best, got)
 	}
-	if got := nearestColorThresholdMod(rgb, rgb, PaletteInkJoyDisplay, 2, 1, 0, out, false, stuckiAntiRunBias); got == best {
+	if got := nearestColorThresholdMod(rgb, rgb, PaletteInkJoyDisplay, 2, 1, 0, out, false, stuckiAntiRunBias, 1); got == best {
 		t.Fatalf("anti-run bias should flip dominated midtone away from ink %d", best)
 	}
 }
@@ -604,7 +643,7 @@ func TestStuckiMaxMonoRunForcesSecond(t *testing.T) {
 		{0, 0, 0, 0, 0},
 		{byte(best), byte(best), byte(best), byte(best), 0},
 	}
-	got := nearestColorThresholdMod(rgb, rgb, PaletteInkJoyDisplay, 4, 1, 0, out, false, stuckiAntiRunBias)
+	got := nearestColorThresholdMod(rgb, rgb, PaletteInkJoyDisplay, 4, 1, 0, out, false, stuckiAntiRunBias, 1)
 	if got == best {
 		t.Fatalf("run of %d should force second-nearest, still got best %d", stuckiMaxMonoRun, best)
 	}
@@ -622,7 +661,7 @@ func TestStuckiVertMonoRunForcesSecond(t *testing.T) {
 		{0, 0, byte(best)},
 		{0, 0, 0},
 	}
-	got := nearestColorThresholdMod(rgb, rgb, PaletteInkJoyDisplay, 2, 3, 0, out, false, stuckiAntiRunBias)
+	got := nearestColorThresholdMod(rgb, rgb, PaletteInkJoyDisplay, 2, 3, 0, out, false, stuckiAntiRunBias, 1)
 	if got == best {
 		t.Fatalf("vertical run of %d should force second-nearest, still got best %d", stuckiMaxMonoRun, best)
 	}
@@ -637,7 +676,7 @@ func TestStuckiPeachGatingUsesSourceNotDiffused(t *testing.T) {
 		{byte(best), byte(best), byte(best), byte(best), byte(best)},
 	}
 	// Long mono run of diffused yellow + source peach → must still break.
-	got := nearestColorThresholdMod(diffused, src, PaletteInkJoyDisplay, 4, 1, 0, out, false, stuckiAntiRunBias)
+	got := nearestColorThresholdMod(diffused, src, PaletteInkJoyDisplay, 4, 1, 0, out, false, stuckiAntiRunBias, 1)
 	if got == best {
 		t.Fatalf("source peach should keep anti-run active despite diffused yellow, got best %d", best)
 	}
@@ -651,7 +690,10 @@ func TestStuckiAntiRunCapsPeachBlotchRuns(t *testing.T) {
 			img.Set(x, y, color.RGBA{R: 210, G: 160, B: 140, A: 255})
 		}
 	}
-	opts := stuckiOptionsSamsung(ColorPipeline{})
+	opts := stuckiOptions{
+		Serpentine: true, ThresholdMod: stuckiThresholdModStrength,
+		AntiRunBias: stuckiAntiRunBias, EdgePreserve: stuckiEdgePreserve,
+	}
 	idx := StuckiDither(img, PaletteInkJoyDisplay, opts)
 	maxRun := 0
 	for y := 0; y < h; y++ {
@@ -711,7 +753,9 @@ func TestStuckiPreservesLuminanceStep(t *testing.T) {
 			img.Set(x, y, color.RGBA{v, v, v, 255})
 		}
 	}
-	indices := StuckiDither(img, PaletteSamsungDisplay, stuckiOptionsSamsung(ColorPipeline{}))
+	indices := StuckiDither(img, PaletteSamsungDisplay, stuckiOptions{
+		Serpentine: true, EdgePreserve: stuckiEdgePreserve, PreDither: true,
+	})
 	darkIdx := nearestColor([3]float64{35, 35, 35}, PaletteSamsungDisplay)
 	brightIdx := nearestColor([3]float64{230, 230, 230}, PaletteSamsungDisplay)
 	if darkIdx == brightIdx {

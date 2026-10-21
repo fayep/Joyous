@@ -114,22 +114,31 @@ func competingDitherAlgos() []ditherAlgo {
 		EdgePreserve: stuckiEdgePreserve,
 		PreDither:    true,
 	}
-	current := stuckiOptionsSamsung(ColorPipeline{})
-	softEdge := current
+	// Former Samsung Stucki knobs (bake-off); prod is Stucki+PeachFloyd.
+	knobs := stuckiOptions{
+		Serpentine: true, EdgePreserve: stuckiEdgePreserve, PreDither: true,
+		ThresholdMod: stuckiThresholdModStrength, AntiRunBias: stuckiAntiRunBias,
+	}
+	softEdge := knobs
 	softEdge.EdgePreserve = 0.2
-	noAnti := current
+	noAnti := knobs
 	noAnti.AntiRunBias = 0
+	peachFS := stuckiOptionsSamsung(ColorPipeline{})
 	return []ditherAlgo{
 		stuckiAlgo("stucki-classic", classic),
 		stuckiAlgo("stucki-thr", thrOnly),
 		stuckiAlgo("stucki-edge+pre", edgeOnly),
-		stuckiAlgo("stucki-current", current),
+		stuckiAlgo("stucki-knobs", knobs),
 		stuckiAlgo("stucki-softEdge", softEdge),
 		stuckiAlgo("stucki-noAnti", noAnti),
+		stuckiAlgo("stucki-peachFS", peachFS),
 		{Name: "floyd-steinberg", Run: FloydSteinbergDither},
 		{Name: "atkinson", Run: AtkinsonDither},
-		{Name: "inkjoy-prod-FS", Run: func(img image.Image, palette [6][3]float64) [][]byte {
-			return StuckiTwoPalette(img, palette, ColorPipeline{}, false, stuckiOptionsInkJoy(ColorPipeline{}))
+		{Name: "prod-peachFS", Run: func(img image.Image, palette [6][3]float64) [][]byte {
+			return StuckiTwoPalette(img, palette, ColorPipeline{}, false, stuckiOptionsPeachFloyd(ColorPipeline{}))
+		}},
+		{Name: "floyd-only", Run: func(img image.Image, palette [6][3]float64) [][]byte {
+			return StuckiTwoPalette(img, palette, ColorPipeline{}, false, stuckiOptionsFloyd(ColorPipeline{}))
 		}},
 	}
 }

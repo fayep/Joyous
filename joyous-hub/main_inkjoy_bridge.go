@@ -128,6 +128,7 @@ func main() {
 		displayPreview: displayPreview,
 		images:         imageStore,
 	}}
+	deviceEvents := &inkjoyDeviceAdapter{reg: devices}
 	srv := inkjoybridge.NewServer(inkjoybridge.Config{
 		ListenMQTT:      *listenMQTT,
 		Upstream:        *upstream,
@@ -136,12 +137,13 @@ func main() {
 		UpstreamAllow:   inkjoybridge.ParseAllowList(*upstreamAllow),
 		DownstreamAllow: inkjoybridge.ParseAllowList(*downstreamAllow),
 		Intercept:       inkjoybridge.ParseAllowList(*intercept),
-		Devices:         &inkjoyDeviceAdapter{reg: devices},
+		Devices:         deviceEvents,
 		PlayRelay:       relay,
 		Capture:         &captureAdapter{c: capture},
 		OTA:             &otaAdapter{o: otaCapture},
 		MQTTLog:         &mqttLogAdapter{l: mqttLog},
 	})
+	deviceEvents.srv = srv
 	inkjoyRetry := NewInkJoySendRetry(&Hub{
 		devices: devices, sendDelivery: sendDelivery, publisher: srvPublisher{srv: srv},
 		// overlay/images/color are wired so a hub-mode retry (r.resend unset)
@@ -149,6 +151,7 @@ func main() {
 		// hard-errors on a nil h.overlay when the entry's overlayToken is set.
 		overlay: overlayStore, images: imageStore, color: colorStore,
 	})
+	deviceEvents.retry = inkjoyRetry
 	srv.SetInjectedPlayCheck(isInjectedPlay, func(ackMsgid string, result int) {
 		inkjoyRetry.OnPlayAck(ackMsgid, result)
 	})
@@ -198,12 +201,25 @@ func main() {
 		if !ok {
 			return fmt.Errorf("device %q not found", entry.deviceID)
 		}
-		return bridgeDeliverInkJoyImage(bridgeCtx, srv, encodeHub, sendDelivery, inkjoyRetry, hubInkjoyCache, dev, protocol.SendImageBody{
-			ImageID:      entry.imageID,
-			OverlayToken: entry.overlayToken,
-			SendID:       entry.sendID,
-			HubBaseURL:   entry.hubBaseURL,
-		})
+		// Rebuild the full body via buildSendImageBody (the same
+		// constructor a fresh send uses) rather than hand-assembling a
+		// partial protocol.SendImageBody{} literal here -- a second,
+		// independent construction site is exactly how this drifted out
+		// of sync with the real one and silently dropped both Overlay and
+		// OverlayWire on every retry (found 2026-08-13, chasing why a
+		// device-embedded overlay wasn't showing up: it turned out an
+		// earlier attempt in this same test had gone through a retry,
+		// which used this literal and carried no overlay data at all).
+		// Recomputes overlay config/weather/color-override fresh at retry
+		// time instead of reusing what was captured at the original send
+		// -- more correct than a stale snapshot, and this is the only
+		// path that ever reaches here now, so there's nothing left to
+		// drift.
+		body, err := buildSendImageBody(encodeHub, dev, entry.imageID, entry.overlayToken, entry.sendID, nil, nil)
+		if err != nil {
+			return err
+		}
+		return bridgeDeliverInkJoyImage(bridgeCtx, srv, encodeHub, sendDelivery, inkjoyRetry, hubInkjoyCache, dev, body)
 	})
 
 	if err := srv.Start(ctx); err != nil {
@@ -304,6 +320,17 @@ func handleInkJoyBridgeCommand(
 			return
 		}
 		_ = srv.PublishToFrame(dev.MAC, buildWifiSleepPayloadFromBody(dev.MAC, cmd.Body))
+	case protocol.CmdSendOverlay:
+		dev, ok := devices.Get(cmd.DeviceID)
+		if !ok || dev.Type != DeviceTypeInkJoy {
+			return
+		}
+		var body protocol.OverlaySendBody
+		if err := json.Unmarshal(cmd.Body, &body); err != nil {
+			log.Printf("inkjoy-bridge send.overlay: bad body: %v", err)
+			return
+		}
+		_ = srv.PublishToFrame(dev.MAC, buildOverlayPayload(dev.MAC, body))
 	case protocol.CmdRedirect:
 		dev, ok := devices.Get(cmd.DeviceID)
 		if !ok {
@@ -338,23 +365,69 @@ func bridgeDeliverInkJoyImage(
 	dev *Device,
 	body protocol.SendImageBody,
 ) error {
+	// Baked-in overlay compositing is only for real InkJoy vendor hardware
+	// (H:2/H:3) and any other hardware we don't specifically recognize as
+	// our own -- never our own Seeed/GooDisplay clones (H:9/H:10), which
+	// render overlay text themselves on-device instead (see body.OverlayWire
+	// and Panel::drawOverlayLines). Cleared here, in this bridge-tagged
+	// file where dev.HardwareModel is legitimately known, rather than as a
+	// hardware check inside bridgeEncodeInkJoy itself (bridge_send.go has
+	// no build tag and compiles into the hub binary too -- see this same
+	// fix already made once for OverlayWire's own gating, 2026-08-13).
+	// body is a value parameter, so this only affects the copy passed to
+	// bridgeEncodeInkJoy below, not the caller's original.
+	if inkjoybridge.LocalOnlyHardware(dev.HardwareModel) {
+		body.OverlayToken = ""
+		body.Overlay = nil
+	}
+	// useNativeDims: for our own clones (natively portrait-shaped panels),
+	// skip the rotate90CCW-into-fixed-landscape-shape dance entirely for
+	// portrait content -- encode straight to the swapped native dimensions
+	// instead. Firmware only understands this from InkJoyNativeDimsProtocolT
+	// onward (a distinct, higher threshold than InkJoyPNGProtocolT: fielded
+	// firmware at exactly the PNG threshold supports PNG but only at the
+	// fixed shape). See prepareInkJoyFrameFromRaw (bridge_send.go/images.go)
+	// and Firmware/src/panel_tftespi.cpp's renderPngBytes nativeDims branch.
+	useNativeDims := dev.Portrait &&
+		inkjoybridge.LocalOnlyHardware(dev.HardwareModel) &&
+		dev.ProtocolT >= inkjoybridge.InkJoyNativeDimsProtocolT
+	body.NativeDims = useNativeDims
 	bin, err := bridgeEncodeInkJoy(ctx, encodeHub, body, dev)
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
 	}
 	cacheName := inkjoyAlbumCacheName(body.ImageID, body.OverlayToken, dev.Portrait)
-	if err := cache.Save(dev.MAC, cacheName, bin); err != nil {
+
+	// PNG/ContentCache (Firmware/include/content_cache.h) only for clone
+	// firmware new enough to decode it -- see InkJoyPNGProtocolT. Real
+	// InkJoy hardware and older clone builds always get .bin, unchanged.
+	ext, cacheBytes, hash := ".bin", bin, ""
+	if inkjoybridge.LocalOnlyHardware(dev.HardwareModel) && dev.ProtocolT >= inkjoybridge.InkJoyPNGProtocolT {
+		colorOverride := protocolRGBToPalette(body.ColorOverride)
+		palette := encodeHub.images.devicePaletteRGB(body.ImageID, colorOverride)
+		pw, ph := frameW, frameH
+		if useNativeDims {
+			pw, ph = frameH, frameW
+		}
+		png, err := EncodeIndexedPNG4(bin, pw, ph, palette)
+		if err != nil {
+			return fmt.Errorf("encode png: %w", err)
+		}
+		ext, cacheBytes, hash = ".png", png, ContentHash(bin)
+	}
+
+	if err := cache.SaveExt(dev.MAC, cacheName, ext, cacheBytes); err != nil {
 		return fmt.Errorf("cache: %w", err)
 	}
-	cachePath := cache.FilePath(dev.MAC, cacheName)
+	cachePath := cache.extPath(dev.MAC, cacheName, ext)
 	hubHost := dev.HubIP
 	if hubHost == "" {
 		hubHost = encodeHub.hubIP
 	}
-	imgURL := inkjoyPlayURL(body.HubBaseURL, dev.IP, dev.MAC, cacheName, hubHost)
-	log.Printf("[%s] cache write %s (%dB) play url %s hub_host=%s", dev.MAC, cachePath, len(bin), imgURL, hubHost)
+	imgURL := inkjoyPlayURLExt(body.HubBaseURL, dev.IP, dev.MAC, cacheName, hubHost, ext)
+	log.Printf("[%s] cache write %s (%dB) play url %s hub_host=%s", dev.MAC, cachePath, len(cacheBytes), imgURL, hubHost)
 	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	err = ProbeHubURL(probeCtx, imgURL, int64(len(bin)))
+	err = ProbeHubURL(probeCtx, imgURL, int64(len(cacheBytes)))
 	cancel()
 	if err != nil {
 		return fmt.Errorf("hub cache probe %s: %w", imgURL, err)
@@ -364,11 +437,25 @@ func bridgeDeliverInkJoyImage(
 	if body.SendID != "" && sendDelivery != nil {
 		reuseMsgid = sendDelivery.InkJoyMsgid(body.SendID)
 	}
-	payload, msgid := buildPlayPayload(dev.MAC, imgURL, reuseMsgid)
+	// The hub attaches OverlayWire unconditionally (see buildSendImageBody's
+	// own comment) -- deciding whether this specific device can actually
+	// act on it belongs here, not there: this file is the one tagged
+	// `inkjoybridge`, only ever compiled into the bridge binary, where
+	// LocalOnlyHardware/dev.HardwareModel are legitimately known (this
+	// dev came straight from the bridge's own registry, populated by real
+	// login messages -- no hub-side sync involved at all).
+	overlayWire := body.OverlayWire
+	if overlayWire != nil && !inkjoybridge.LocalOnlyHardware(dev.HardwareModel) {
+		overlayWire = nil
+	}
+	if overlayWire != nil && useNativeDims {
+		overlayWire = nativizeOverlayWire(overlayWire, dev.Portrait)
+	}
+	payload, msgid := buildPlayPayload(dev.MAC, imgURL, reuseMsgid, hash, overlayWire)
 	if body.SendID != "" && sendDelivery != nil {
 		sendDelivery.BindInkJoy(body.SendID, msgid)
 		if inkjoyRetry != nil {
-			inkjoyRetry.TrackFromBridge(body.SendID, dev.ID, body.ImageID, body.OverlayToken, body.HubBaseURL)
+			inkjoyRetry.TrackFromBridge(body.SendID, dev.ID, body.ImageID, body.OverlayToken, body.HubBaseURL, body.ColorOverride)
 		}
 	}
 	registerInjectedPlay(msgid)
@@ -376,4 +463,31 @@ func bridgeDeliverInkJoyImage(
 		return err
 	}
 	return nil
+}
+
+// nativizeOverlayWire converts an OverlaySendBody already built in the
+// fixed-landscape wire coordinate space (buildSendImageBody always calls
+// overlayWireLines with nativeDims=false) into the native (upright,
+// zero-rotation) coordinate space a native-dims device actually renders
+// in, via overlayWireCoordNativize (overlay_wire.go -- see its own
+// comment for the math and why the correction lives there, not here).
+// Only ever called when portrait is true (useNativeDims requires
+// dev.Portrait), so dw is always the swapped overlayMetricsDimensions
+// width.
+func nativizeOverlayWire(wire *protocol.OverlaySendBody, portrait bool) *protocol.OverlaySendBody {
+	if wire == nil {
+		return nil
+	}
+	dw, _ := overlayMetricsDimensions(frameW, frameH, portrait)
+	out := &protocol.OverlaySendBody{}
+	for _, ln := range wire.Lines {
+		ln.X, ln.Y = overlayWireCoordNativize(ln.X, ln.Y, dw)
+		out.Lines = append(out.Lines, ln)
+	}
+	if wire.Caption != nil {
+		cap := *wire.Caption
+		cap.X, cap.Y = overlayWireCoordNativize(cap.X, cap.Y, dw)
+		out.Caption = &cap
+	}
+	return out
 }

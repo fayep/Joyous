@@ -19,7 +19,9 @@ var injectedPlays sync.Map
 
 func registerInjectedPlay(msgid string) {
 	injectedPlays.Store(msgid, struct{}{})
-	time.AfterFunc(5*time.Minute, func() { injectedPlays.Delete(msgid) })
+	// Keep longer than a single ack timeout so late play_acks during the
+	// retry window still suppress upstream and complete send delivery.
+	time.AfterFunc(inkjoySendMaxAge, func() { injectedPlays.Delete(msgid) })
 }
 
 func isInjectedPlay(ackMsgid string) bool {
@@ -31,7 +33,7 @@ func (h *Hub) sendInkJoyImage(dev *Device, imageID, overlayToken, sendID string,
 	if h.bridgeCoord == nil || !h.bridgeCoord.BridgeOnline(string(DeviceTypeInkJoy)) {
 		return fmt.Errorf("inkjoy bridge offline")
 	}
-	body, err := buildSendImageBody(h, imageID, overlayToken, sendID, overlayCfg, overlayWeather)
+	body, err := buildSendImageBody(h, dev, imageID, overlayToken, sendID, overlayCfg, overlayWeather)
 	if err != nil {
 		return err
 	}
@@ -57,7 +59,7 @@ func (h *Hub) sendSamsungImage(dev *Device, imageID, overlayToken, sendID string
 	if h.bridgeCoord == nil || !h.bridgeCoord.BridgeOnline(string(DeviceTypeSamsung)) {
 		return fmt.Errorf("samsung bridge offline")
 	}
-	body, err := buildSendImageBody(h, imageID, overlayToken, sendID, overlayCfg, overlayWeather)
+	body, err := buildSendImageBody(h, dev, imageID, overlayToken, sendID, overlayCfg, overlayWeather)
 	if err != nil {
 		return err
 	}
@@ -87,7 +89,7 @@ func (h *Hub) sendNixplayImage(dev *Device, imageID, overlayToken, sendID string
 	if h.bridgeCoord == nil || !h.bridgeCoord.BridgeOnline(string(DeviceTypeNixplay)) {
 		return fmt.Errorf("nixplay bridge offline")
 	}
-	body, err := buildSendImageBody(h, imageID, overlayToken, sendID, overlayCfg, overlayWeather)
+	body, err := buildSendImageBody(h, dev, imageID, overlayToken, sendID, overlayCfg, overlayWeather)
 	if err != nil {
 		return err
 	}

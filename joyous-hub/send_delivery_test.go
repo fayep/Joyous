@@ -69,12 +69,12 @@ func TestBindInkJoyWithoutRegister(t *testing.T) {
 }
 
 func TestBuildPlayPayloadReusesMsgid(t *testing.T) {
-	_, a := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "fixed-msgid")
-	_, b := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "fixed-msgid")
+	_, a := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "fixed-msgid", "", nil)
+	_, b := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "fixed-msgid", "", nil)
 	if a != "fixed-msgid" || b != "fixed-msgid" {
 		t.Fatalf("reuse: got %q %q", a, b)
 	}
-	_, c := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "")
+	_, c := buildPlayPayload("AA:BB:CC:DD:EE:FF", "http://h/x.bin", "", "", nil)
 	if c == "" || c == "fixed-msgid" {
 		t.Fatalf("empty should mint fresh msgid, got %q", c)
 	}
@@ -229,6 +229,49 @@ func TestActiveSendsOnlyIncludesInFlight(t *testing.T) {
 	}
 	if len(active) != 2 || !got[pending.ID] || !got[downloading.ID] {
 		t.Fatalf("got %+v, want only the pending and downloading sends", active)
+	}
+}
+
+func TestActiveSendsOmitsStaleInFlight(t *testing.T) {
+	tr := NewSendDeliveryTracker()
+	stale := tr.Register("dev1", "img1")
+	tr.MarkInkJoyDownloading(stale.ID)
+	tr.mu.Lock()
+	tr.byID[stale.ID].LastTouch = time.Now().Add(-sendActiveAdvertiseMaxAge - time.Second)
+	tr.mu.Unlock()
+
+	fresh := tr.Register("dev2", "img2")
+	retrying := tr.Register("dev3", "img3")
+	tr.IncrementRetry(retrying.ID, "waiting for frame to wake")
+	tr.mu.Lock()
+	tr.byID[retrying.ID].LastTouch = time.Now().Add(-sendActiveAdvertiseMaxAge - time.Second)
+	// Retrying sends stay advertised via LastTouch refresh on IncrementRetry; age them only
+	// after that bump so a mid-wake retry older than the window still drops once idle.
+	tr.mu.Unlock()
+
+	active := tr.ActiveSends()
+	got := map[string]bool{}
+	for _, a := range active {
+		got[a.SendID] = true
+	}
+	if got[stale.ID] {
+		t.Fatalf("stale downloading send still advertised: %+v", active)
+	}
+	if !got[fresh.ID] {
+		t.Fatalf("fresh pending missing: %+v", active)
+	}
+	if got[retrying.ID] {
+		t.Fatalf("idle retrying send past advertise window should drop: %+v", active)
+	}
+
+	tr.IncrementRetry(retrying.ID, "waiting for frame to wake")
+	active = tr.ActiveSends()
+	got = map[string]bool{}
+	for _, a := range active {
+		got[a.SendID] = true
+	}
+	if !got[retrying.ID] {
+		t.Fatalf("IncrementRetry should refresh advertise window: %+v", active)
 	}
 }
 

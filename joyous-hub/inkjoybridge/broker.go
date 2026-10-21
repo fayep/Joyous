@@ -81,18 +81,94 @@ func ParseHeartPayload(payload []byte) (HeartInfo, error) {
 type LoginInfo struct {
 	ClientID       string
 	Firmware       string
+	HardwareModel  int // H from login ver "M H:%d F:..."; 0 if absent
 	SleepBeginTime string
 	SleepEndTime   string
+	// P2 is the device's own factory/NVS-stored P2 dither-target calibration
+	// (login's "p2": [[r,g,b]x6]), if this firmware reports one. nil for
+	// firmware that doesn't send it (older builds, real InkJoy hardware).
+	P2 *[6][3]int
+	// ProtocolT is the "T" clone-firmware protocol/feature version parsed
+	// from ver ("T:%d", see HardwareModelFromVer's H). 0 if absent (real
+	// InkJoy hardware never sends it, nor do clone builds predating it).
+	// See InkJoyPNGProtocolT: T < InkJoyPNGProtocolT means the device has
+	// no PNG content-cache support and must only ever be sent .bin.
+	ProtocolT int
 }
+
+// HardwareModelSeeed is the H value used by Seeed EE02 custom firmware.
+// These frames speak InkJoy MQTT locally but must not be published to InkJoy cloud.
+const HardwareModelSeeed = 9
+
+// HardwareModelGooDisplay is the H value used by GooDisplay ESP32-133C02
+// custom firmware — same local-only situation as Seeed, distinct model so
+// the hub can tell the two clone hardware types apart (e.g. P2 pre-fill).
+const HardwareModelGooDisplay = 10
+
+// LocalOnlyHardware reports whether this model must stay on the local bridge
+// (never open an upstream cloud session / forward frame→cloud traffic).
+func LocalOnlyHardware(model int) bool {
+	return model == HardwareModelSeeed || model == HardwareModelGooDisplay
+}
+
+// verIntField parses the integer following prefix (e.g. "H:", "T:") in an
+// InkJoy login ver string ("M H:%d T:%d F:..."). Returns 0 if prefix is
+// absent (older firmware, or real InkJoy hardware which sends neither H
+// nor T).
+func verIntField(ver, prefix string) int {
+	i := strings.Index(ver, prefix)
+	if i < 0 {
+		return 0
+	}
+	rest := ver[i+len(prefix):]
+	n := 0
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
+// HardwareModelFromVer parses H from an InkJoy login ver string ("M H:%d F:...").
+func HardwareModelFromVer(ver string) int {
+	return verIntField(ver, "H:")
+}
+
+// ProtocolTFromVer parses T (clone-firmware protocol/feature version) from
+// an InkJoy login ver string. 0 if absent -- see LoginInfo.ProtocolT.
+func ProtocolTFromVer(ver string) int {
+	return verIntField(ver, "T:")
+}
+
+// InkJoyPNGProtocolT is the minimum ProtocolT that supports the PNG
+// content-cache format (see content_cache.h / panel.h's renderPngBytes in
+// Firmware/). Devices below this must only ever be sent .bin. Keep in
+// lockstep with Firmware/include/config.h's FW_PROTOCOL_T -- they gate the
+// same capability from opposite ends of the wire and must never drift.
+const InkJoyPNGProtocolT = 9
+
+// InkJoyNativeDimsProtocolT is the minimum ProtocolT whose firmware can
+// decode/render a PNG at native (swapped) panel dimensions under
+// epaper.setRotation(0), instead of always assuming the fixed
+// frameW x frameH landscape wire shape (see panel_tftespi.cpp's
+// renderPngBytes, nativeDims handling). Deliberately a separate, higher
+// threshold than InkJoyPNGProtocolT: firmware already in the field at
+// T==InkJoyPNGProtocolT supports PNG but only at the fixed shape, and must
+// keep getting exactly that until it's upgraded. Keep in lockstep with
+// Firmware/include/config.h's FW_PROTOCOL_T, same as InkJoyPNGProtocolT.
+const InkJoyNativeDimsProtocolT = 10
 
 // ParseLoginPayload extracts login info from a login MQTT payload.
 func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 	var msg struct {
 		Data struct {
-			ClientID       string `json:"clientid"`
-			Ver            string `json:"ver"`
-			SleepBeginTime string `json:"sleep_begin_time"`
-			SleepEndTime   string `json:"sleep_end_time"`
+			ClientID       string     `json:"clientid"`
+			Ver            string     `json:"ver"`
+			SleepBeginTime string     `json:"sleep_begin_time"`
+			SleepEndTime   string     `json:"sleep_end_time"`
+			P2             *[6][3]int `json:"p2"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
@@ -101,6 +177,9 @@ func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 	return LoginInfo{
 		ClientID:       msg.Data.ClientID,
 		Firmware:       msg.Data.Ver,
+		HardwareModel:  HardwareModelFromVer(msg.Data.Ver),
+		ProtocolT:      ProtocolTFromVer(msg.Data.Ver),
+		P2:             msg.Data.P2,
 		SleepBeginTime: msg.Data.SleepBeginTime,
 		SleepEndTime:   msg.Data.SleepEndTime,
 	}, nil

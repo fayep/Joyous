@@ -207,14 +207,25 @@ func handleSamsungBridgeCommand(ctx context.Context, hub *Hub, client *bridgehub
 			}
 			return
 		}
-		if err := bridgeDeliverSamsungImage(ctx, hub, client, dev, body); err != nil {
-			log.Printf("samsung-bridge send.image: %v", err)
+		err := samsungSendGate.Run(ctx, cmd.DeviceID, func(jobCtx context.Context) error {
+			return bridgeDeliverSamsungImage(jobCtx, hub, client, dev, body)
+		})
+		if err != nil {
+			if errors.Is(err, errBridgeSendSuperseded) || errors.Is(err, context.Canceled) {
+				log.Printf("samsung-bridge send.image: superseded device=%s image=%s", cmd.DeviceID, body.ImageID)
+			} else {
+				log.Printf("samsung-bridge send.image: %v", err)
+			}
 			if body.SendID != "" && client != nil {
+				detail := err.Error()
+				if errors.Is(err, errBridgeSendSuperseded) || errors.Is(err, context.Canceled) {
+					detail = errBridgeSendSuperseded.Error()
+				}
 				_ = client.PublishSendComplete(protocol.SendCompletePayload{
 					SendID:   body.SendID,
 					DeviceID: dev.ID,
 					Success:  false,
-					Detail:   err.Error(),
+					Detail:   detail,
 				})
 			}
 		}
@@ -236,14 +247,25 @@ func handleSamsungBridgeCommand(ctx context.Context, hub *Hub, client *bridgehub
 			}
 			return
 		}
-		if err := bridgePushExistingSamsungPNG(ctx, hub, client, dev, body.SendID); err != nil {
-			log.Printf("samsung-bridge samsung.push: %v", err)
+		err := samsungSendGate.Run(ctx, cmd.DeviceID, func(jobCtx context.Context) error {
+			return bridgePushExistingSamsungPNG(jobCtx, hub, client, dev, body.SendID)
+		})
+		if err != nil {
+			if errors.Is(err, errBridgeSendSuperseded) || errors.Is(err, context.Canceled) {
+				log.Printf("samsung-bridge samsung.push: superseded device=%s", cmd.DeviceID)
+			} else {
+				log.Printf("samsung-bridge samsung.push: %v", err)
+			}
 			if body.SendID != "" && client != nil {
+				detail := err.Error()
+				if errors.Is(err, errBridgeSendSuperseded) || errors.Is(err, context.Canceled) {
+					detail = errBridgeSendSuperseded.Error()
+				}
 				_ = client.PublishSendComplete(protocol.SendCompletePayload{
 					SendID:   body.SendID,
 					DeviceID: dev.ID,
 					Success:  false,
-					Detail:   err.Error(),
+					Detail:   detail,
 				})
 			}
 		}
@@ -273,10 +295,17 @@ func handleSamsungBridgeCommand(ctx context.Context, hub *Hub, client *bridgehub
 	}
 }
 
+// samsungSendGate serializes encode+push per frame so a newer send cannot be
+// overwritten by an older in-flight encode finishing later.
+var samsungSendGate bridgeDeviceGate
+
 func bridgeDeliverSamsungImage(ctx context.Context, hub *Hub, client *bridgehub.Client, dev *Device, body protocol.SendImageBody) error {
 	pngData, err := bridgeEncodeSamsung(ctx, hub, body, dev)
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %v", errBridgeSendSuperseded, err)
 	}
 	frameID := SamsungFrameID(dev)
 	if err := hub.samsung.writePNGLocked(frameID, pngData); err != nil {
@@ -351,7 +380,7 @@ func bridgeProbeAndPushSamsung(ctx context.Context, hub *Hub, client *bridgehub.
 	}
 	log.Printf("samsung-bridge hub cache probe ok frame=%s url=%s", frameID, imgURL)
 
-	if err := pushSamsungFrameReportingProgress(hub, client, frameID, dev, sendID); err != nil {
+	if err := pushSamsungFrameReportingProgress(hub, client, frameID, dev, sendID, ctx); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 	return nil
@@ -424,9 +453,9 @@ func bridgeSleepSamsung(hub *Hub, dev *Device) error {
 // someone to hold its power button for ~3s. When remote wake gives up and the manual phase
 // starts, also fires a one-shot protocol.EventNotify toast so the user sees the button hint
 // even if they aren't watching send progress.
-func pushSamsungFrameReportingProgress(hub *Hub, client *bridgehub.Client, frameID string, dev *Device, sendID string) error {
+func pushSamsungFrameReportingProgress(hub *Hub, client *bridgehub.Client, frameID string, dev *Device, sendID string, ctx context.Context) error {
 	notifiedManual := false
-	return hub.pushSamsungFrameWithProgress(frameID, dev, func(phase string, attempt int) {
+	return hub.pushSamsungFrameWithProgressCtx(ctx, frameID, dev, func(phase string, attempt int) {
 		if phase == wakePhaseManual && !notifiedManual {
 			notifiedManual = true
 			publishSamsungManualWakeNotify(client, dev.ID)

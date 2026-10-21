@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	mochi "github.com/mochi-mqtt/server/v2"
@@ -139,12 +140,13 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Publish sends a command to a frame on /inkjoyap/{mac}.
+// Publish sends a command to a frame on /inkjoyap/{mac} at QoS1 so the
+// broker retries while the frame is momentarily radio-napping (modem-sleep).
 func (s *Server) Publish(topic string, payload []byte) error {
 	if s.cfg.MQTTLog != nil {
 		s.cfg.MQTTLog.AddLocal("bridge→frame", topic, payload, "")
 	}
-	return s.broker.Publish(topic, payload, false, 0)
+	return s.broker.Publish(topic, payload, false, 1)
 }
 
 // PublishToFrame publishes to /inkjoyap/{mac}.
@@ -169,6 +171,16 @@ type bridgeSet struct {
 	onExternalPlay  func(mac string, payload []byte)
 	rewritePlay     func(mac string, payload []byte) ([]byte, error)
 	m               map[string]*upstreamBridge
+	localOnly       sync.Map // mac → struct{} for Seeed H:9 etc. (no cloud upstream)
+}
+
+func (bs *bridgeSet) markLocalOnly(mac string) {
+	bs.localOnly.Store(mac, struct{}{})
+}
+
+func (bs *bridgeSet) isLocalOnly(mac string) bool {
+	_, ok := bs.localOnly.Load(mac)
+	return ok
 }
 
 func (bs *bridgeSet) get(mac string) *upstreamBridge {
@@ -297,7 +309,7 @@ func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
 		}
 		b.set.mqttLog.AddLocal("bridge→frame", topic, forwardPayload, note)
 	}
-	b.set.broker.Publish(topic, forwardPayload, false, 0)
+	b.set.broker.Publish(topic, forwardPayload, false, 1)
 	if action == "play" && b.set.onExternalPlay != nil {
 		b.set.onExternalPlay(b.mac, forwardPayload)
 	}
@@ -393,13 +405,20 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 	}
 	writeCaptureErr("upstream", h.bridges.capture, h.bridges.captureRecordUpstream(mac, action, payload))
 
-	skipUpstream := false
+	skipUpstream := h.bridges.isLocalOnly(mac)
 	switch action {
 	case "login":
 		info, err := ParseLoginPayload(payload)
-		if err == nil && h.devices != nil {
-			h.devices.MarkConnected(mac)
-			h.devices.UpdateLogin(mac, info)
+		if err == nil {
+			if LocalOnlyHardware(info.HardwareModel) {
+				h.bridges.markLocalOnly(mac)
+				skipUpstream = true
+				log.Printf("[%s] H:%d login: local-only (not publishing to InkJoy cloud)", mac, info.HardwareModel)
+			}
+			if h.devices != nil {
+				h.devices.MarkConnected(mac)
+				h.devices.UpdateLogin(mac, info)
+			}
 		}
 		if cl != nil && cl.Net.Conn != nil && h.devices != nil {
 			if localIP, _, err := net.SplitHostPort(cl.Net.Conn.LocalAddr().String()); err == nil && localIP != "" {
@@ -442,15 +461,53 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		if h.devices != nil {
 			h.devices.MarkShutdown(mac, info)
 		}
+	case "overlay_ack":
+		// Logged, not otherwise acted on -- this is a manual comparison
+		// workflow (see joyous-hub's CmdSendOverlay), the operator is
+		// looking at the panel, not a UI, for the actual result.
+		var ack struct {
+			Data struct {
+				AckMsgid string `json:"ack_msgid"`
+				Result   int    `json:"result"`
+			} `json:"data"`
+		}
+		_ = json.Unmarshal(payload, &ack)
+		log.Printf("[%s] overlay_ack result=%d", mac, ack.Data.Result)
+		if h.devices != nil {
+			h.devices.MarkConnected(mac)
+		}
 	default:
 		if h.devices != nil {
 			h.devices.MarkConnected(mac)
 		}
 	}
 
+	if skipUpstream && h.bridges.isLocalOnly(mac) {
+		// Cloud won't reply; ack login/heart locally so the frame session stays healthy.
+		switch action {
+		case "login":
+			h.bridges.publishLocalAck(mac, BuildLoginAck(mac, MQTTMsgid(payload)))
+		case "heart":
+			h.bridges.publishLocalAck(mac, BuildHeartAck(mac, MQTTMsgid(payload)))
+		}
+	}
+
 	if !skipUpstream && h.upstreamAllow.Allows(action) && h.bridges.upstreamHost != "" {
 		bridge := h.bridges.get(mac)
 		bridge.forward(payload)
+	}
+}
+
+func (bs *bridgeSet) publishLocalAck(mac string, payload []byte) {
+	if bs.broker == nil {
+		return
+	}
+	topic := "/inkjoyap/" + mac
+	if bs.mqttLog != nil {
+		bs.mqttLog.AddLocal("bridge→frame", topic, payload, "local-only self-ack")
+	}
+	if err := bs.broker.Publish(topic, payload, false, 1); err != nil {
+		log.Printf("[%s] local-only ack publish: %v", mac, err)
 	}
 }
 

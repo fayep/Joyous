@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -116,7 +117,7 @@ func TestWaitForMDCAwakeManualReportsEveryAttempt(t *testing.T) {
 	ip := closedLocalIP(t)
 	var attempts []int
 	var phases []string
-	err := waitForMDCAwakeManual(ip, "", 35*time.Millisecond, 10*time.Millisecond, func(phase string, attempt int) {
+	err := waitForMDCAwakeManual(context.Background(), ip, "", 35*time.Millisecond, 10*time.Millisecond, func(phase string, attempt int) {
 		phases = append(phases, phase)
 		attempts = append(attempts, attempt)
 	})
@@ -140,7 +141,7 @@ func TestWaitForMDCAwakeManualReportsEveryAttempt(t *testing.T) {
 
 func TestWaitForMDCAwakeManualNilCallbackIsSafe(t *testing.T) {
 	ip := closedLocalIP(t)
-	err := waitForMDCAwakeManual(ip, "", 15*time.Millisecond, 10*time.Millisecond, nil)
+	err := waitForMDCAwakeManual(context.Background(), ip, "", 15*time.Millisecond, 10*time.Millisecond, nil)
 	if err == nil {
 		t.Fatal("expected an error: nothing is listening on this address")
 	}
@@ -158,7 +159,7 @@ func TestWaitMDCAwakeReportsRemotePhaseFromFirstAttempt(t *testing.T) {
 	ip := closedLocalIP(t)
 	var attempts []int
 	var phases []string
-	err := waitMDCAwake(ip, "", "", 35*time.Millisecond, func(phase string, attempt int) {
+	err := waitMDCAwake(context.Background(), ip, "", "", 35*time.Millisecond, func(phase string, attempt int) {
 		phases = append(phases, phase)
 		attempts = append(attempts, attempt)
 	})
@@ -180,7 +181,7 @@ func TestWaitMDCAwakeReportsRemotePhaseFromFirstAttempt(t *testing.T) {
 
 func TestWaitMDCAwakeNilCallbackIsSafe(t *testing.T) {
 	ip := closedLocalIP(t)
-	err := waitMDCAwake(ip, "", "", 15*time.Millisecond, nil)
+	err := waitMDCAwake(context.Background(), ip, "", "", 15*time.Millisecond, nil)
 	if err == nil {
 		t.Fatal("expected wake to fail: nothing is listening on this address")
 	}
@@ -199,7 +200,7 @@ func TestClassifyMDCTargetRefusedIsForeign(t *testing.T) {
 func TestWakeSamsungDisplayForeignFailsFast(t *testing.T) {
 	ip := closedLocalIP(t)
 	start := time.Now()
-	err := WakeSamsungDisplayWithProgress(ip, "", "AABBCCDDEEFF", nil)
+	err := WakeSamsungDisplayWithProgress(context.Background(), ip, "", "AABBCCDDEEFF", nil)
 	elapsed := time.Since(start)
 	if !errors.Is(err, errMDCForeignHost) {
 		t.Fatalf("want errMDCForeignHost, got %v", err)

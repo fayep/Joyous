@@ -30,15 +30,16 @@ type InkJoySendRetry struct {
 }
 
 type inkjoyRetryEntry struct {
-	sendID       string
-	deviceID     string
-	imageID      string
-	overlayToken string
-	hubBaseURL   string
-	attempts     int
-	created      time.Time
-	lastAttempt  time.Time
-	ackTimer     *time.Timer
+	sendID        string
+	deviceID      string
+	imageID       string
+	overlayToken  string
+	hubBaseURL    string
+	colorOverride *[6]protocol.RGB
+	attempts      int
+	created       time.Time
+	lastAttempt   time.Time
+	ackTimer      *time.Timer
 }
 
 // InkJoyRetryResender re-publishes a pending InkJoy send (bridge mode).
@@ -83,15 +84,16 @@ func (r *InkJoySendRetry) deviceIDForSend(sendID string) string {
 
 // Track watches an InkJoy send until play_ack completes or retries are exhausted.
 func (r *InkJoySendRetry) Track(sendID, deviceID, imageID, overlayToken string) {
-	r.track(sendID, deviceID, imageID, overlayToken, "")
+	r.track(sendID, deviceID, imageID, overlayToken, "", nil)
 }
 
-// TrackFromBridge is Track with hub_base_url for bridge-side encode retries.
-func (r *InkJoySendRetry) TrackFromBridge(sendID, deviceID, imageID, overlayToken, hubBaseURL string) {
-	r.track(sendID, deviceID, imageID, overlayToken, hubBaseURL)
+// TrackFromBridge is Track with hub_base_url and the hub-resolved color
+// override for bridge-side encode retries — see protocol.SendImageBody.ColorOverride.
+func (r *InkJoySendRetry) TrackFromBridge(sendID, deviceID, imageID, overlayToken, hubBaseURL string, colorOverride *[6]protocol.RGB) {
+	r.track(sendID, deviceID, imageID, overlayToken, hubBaseURL, colorOverride)
 }
 
-func (r *InkJoySendRetry) track(sendID, deviceID, imageID, overlayToken, hubBaseURL string) {
+func (r *InkJoySendRetry) track(sendID, deviceID, imageID, overlayToken, hubBaseURL string, colorOverride *[6]protocol.RGB) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if oldSendID, ok := r.byDevice[deviceID]; ok && oldSendID != sendID {
@@ -114,14 +116,15 @@ func (r *InkJoySendRetry) track(sendID, deviceID, imageID, overlayToken, hubBase
 		}
 	}
 	entry := &inkjoyRetryEntry{
-		sendID:       sendID,
-		deviceID:     deviceID,
-		imageID:      imageID,
-		overlayToken: overlayToken,
-		hubBaseURL:   hubBaseURL,
-		attempts:     attempts,
-		created:      created,
-		lastAttempt:  time.Now(),
+		sendID:        sendID,
+		deviceID:      deviceID,
+		imageID:       imageID,
+		overlayToken:  overlayToken,
+		hubBaseURL:    hubBaseURL,
+		colorOverride: colorOverride,
+		attempts:      attempts,
+		created:       created,
+		lastAttempt:   time.Now(),
 	}
 	r.pending[sendID] = entry
 	r.byDevice[deviceID] = sendID
@@ -295,6 +298,11 @@ func (r *InkJoySendRetry) onAckTimeout(sendID string) {
 	imageID := entry.imageID
 	attempts := entry.attempts
 	r.mu.Unlock()
+	// Mint a fresh play msgid — reusing the unacked id can be ignored by the
+	// frame if it saw the first publish but never got far enough to ack.
+	if r.hub.sendDelivery != nil {
+		r.hub.sendDelivery.UnbindInkJoy(sendID)
+	}
 	log.Printf("inkjoy send no play_ack device=%s image=%s attempt=%d — retrying", devID, imageID, attempts)
 	r.notifySendComplete(protocol.SendCompletePayload{
 		SendID: sendID, DeviceID: devID, Success: true, Detail: "timeout", Phase: "retrying",

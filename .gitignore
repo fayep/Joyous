@@ -23,13 +23,20 @@ joyous-hub/data/
 *.swp
 InkJoy/com.inkjoyframe.domus/
 inkjoy-0.*
-firmware*
+firmware*.bin
+firmware*.bndb
+*.bndb
 # Captured / unpacked Gowin FPGA bitstreams (large; keep local)
 fpga-*
 # Windows offline-tool binary + extracted firmware SPIFFS images (large, reproducible; keep local)
 ISFR-lite.exe
 InkJoy/spiffs_extracted/
 Samsung/epaper-decompiled
+# GooDisplay vendor firmware dumps/binaries + re-downloaded vendor example
+# archive (large, reproducible from the vendor's own downloads; keep local)
+GooDisplay/dumps/
+GooDisplay/docs/GDEP133C02-ESP32_code_example.zip
+GooDisplay/docs/vendor_code_example_full/
 # Nixplay captures / dumps (docs stay tracked)
 Nixplay/captures/
 Nixplay/db/

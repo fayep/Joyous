@@ -176,6 +176,7 @@ func bridgeEncodeInkJoy(
 		return nil, fmt.Errorf("bridge encode: hub_base_url required")
 	}
 	portrait := dev.Portrait
+	nativeDims := body.NativeDims
 	syncColorFromHub(hub.color, body.HubBaseURL)
 
 	meta, raw, err := fetchHubImage(ctx, body.HubBaseURL, body.ImageID)
@@ -187,17 +188,47 @@ func bridgeEncodeInkJoy(
 		return nil, err
 	}
 
+	// ColorOverride travels in the send command itself (resolved by the hub from
+	// its own Device.ColorOverride at send time) rather than the bridge's local
+	// Device copy — the bridge has no calibration state of its own to keep in
+	// sync. See protocol.SendImageBody.ColorOverride.
+	colorOverride := protocolRGBToPalette(body.ColorOverride)
 	if body.OverlayToken != "" {
 		cfg, weather, err := bridgeOverlayContext(ctx, hub, body, portrait)
 		if err != nil {
 			return nil, err
 		}
 		photoName := overlayPhotoNameFromMeta(meta, cfg)
-		return hub.images.ServeBinOrientationOverlay(body.ImageID, portrait, body.OverlayToken, func(img image.Image, flatRGB bool) (image.Image, error) {
+		return hub.images.ServeBinOrientationOverlayForDevice(body.ImageID, portrait, body.OverlayToken, func(img image.Image, flatRGB bool) (image.Image, error) {
 			return drawWeatherOverlay(img, cfg, weather, photoName, portrait), nil
-		})
+		}, colorOverride, dev.ID, nativeDims)
 	}
-	return hub.images.ServeBinOrientation(body.ImageID, portrait)
+	return hub.images.ServeBinOrientationForDevice(body.ImageID, portrait, colorOverride, dev.ID, nativeDims)
+}
+
+// paletteToProtocolRGB / protocolRGBToPalette convert between the hub's
+// Device.ColorOverride storage type and the protocol wire type ([6]RGB),
+// which has no dependency on the main package's PaletteRGB.
+func paletteToProtocolRGB(p *[6]PaletteRGB) *[6]protocol.RGB {
+	if p == nil {
+		return nil
+	}
+	var out [6]protocol.RGB
+	for i, c := range p {
+		out[i] = protocol.RGB{c[0], c[1], c[2]}
+	}
+	return &out
+}
+
+func protocolRGBToPalette(p *[6]protocol.RGB) *[6]PaletteRGB {
+	if p == nil {
+		return nil
+	}
+	var out [6]PaletteRGB
+	for i, c := range p {
+		out[i] = PaletteRGB{c[0], c[1], c[2]}
+	}
+	return &out
 }
 
 func overlayPhotoNameFromMeta(meta ImageMeta, cfg OverlayConfig) string {
@@ -230,12 +261,13 @@ func cropsToProtocol(crops map[string]CropRect) map[string]protocol.CropRect {
 	return out
 }
 
-func buildSendImageBody(h *Hub, imageID, overlayToken, sendID string, overlayCfg *OverlayConfig, overlayWeather *WeatherSnapshot) (protocol.SendImageBody, error) {
+func buildSendImageBody(h *Hub, dev *Device, imageID, overlayToken, sendID string, overlayCfg *OverlayConfig, overlayWeather *WeatherSnapshot) (protocol.SendImageBody, error) {
 	body := protocol.SendImageBody{
-		ImageID:      imageID,
-		OverlayToken: overlayToken,
-		SendID:       sendID,
-		HubBaseURL:   hubBaseURL(h.serverAddr),
+		ImageID:       imageID,
+		OverlayToken:  overlayToken,
+		SendID:        sendID,
+		HubBaseURL:    hubBaseURL(h.serverAddr),
+		ColorOverride: paletteToProtocolRGB(dev.ColorOverride),
 	}
 	if h.images != nil {
 		crops, err := h.images.GetCrops(imageID)
@@ -268,6 +300,34 @@ func buildSendImageBody(h *Hub, imageID, overlayToken, sendID string, overlayCfg
 			return body, err
 		}
 		body.Overlay = info
+
+		// Also attach already-positioned line geometry for devices that
+		// render overlay text themselves -- see OverlayWire's own comment.
+		// Computed unconditionally, for every InkJoy send, regardless of
+		// hardware model -- the hub has no business deciding which vendor
+		// hardware can act on this (that's exactly the LocalOnlyHardware
+		// check, which belongs to the bridge; this file has no build tag
+		// and compiles straight into the hub binary, so calling it here
+		// would put hardware-specific vendor knowledge in hub-compiled
+		// code, breaking the hub/bridge separation this whole project
+		// otherwise holds to -- caught 2026-08-13). The bridge decides
+		// whether to actually forward this into the real play message;
+		// see bridgeDeliverInkJoyImage in main_inkjoy_bridge.go (tagged
+		// inkjoybridge, only ever compiled into that bridge).
+		photoName := ""
+		if h.images != nil {
+			if meta, err := h.images.GetMeta(imageID); err == nil {
+				photoName = overlayPhotoNameFromMeta(meta, *cfg)
+			}
+		}
+		// Always nativeDims=false here -- see overlayWireLines's own comment.
+		// bridgeDeliverInkJoyImage applies a coordinate correction after the
+		// fact for devices that turn out to be native-dims-eligible.
+		wire, err := overlayWireLines(*cfg, *weather, photoName, dev.Portrait, false)
+		if err != nil {
+			return body, err
+		}
+		body.OverlayWire = &wire
 	}
 	return body, nil
 }
@@ -333,6 +393,14 @@ func bridgeEncodeSamsung(
 		return nil, err
 	}
 	pipe := hub.colorPipelineForImage(body.ImageID)
+	// Per-device calibration overrides only the P2 dither-target palette (what
+	// each ink actually looks like on this panel, used to pick the nearest ink
+	// per pixel) — never SamsungSend (P1, the fixed RGB written into the PNG
+	// that the panel firmware itself recognizes as "ink N"; overriding that
+	// would make the panel mis-identify inks and re-process/re-dither).
+	if colorOverride := protocolRGBToPalette(body.ColorOverride); colorOverride != nil {
+		pipe.SamsungDisplay = paletteFromRGB(*colorOverride)
+	}
 	if body.OverlayToken != "" {
 		cfg, weather, err := bridgeOverlayContext(ctx, hub, body, dev.Portrait)
 		if err != nil {

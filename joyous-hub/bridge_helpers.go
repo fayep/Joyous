@@ -45,6 +45,16 @@ func buildImageRefreshPayload(mac string) []byte {
 	return buildActionPayloadFor(mac, "image_refresh", nil)
 }
 
+// buildOverlayPayload relays the hub's already-positioned overlay lines
+// (protocol.OverlaySendBody) to a frame verbatim -- see that type's comment
+// for why layout math stays hub-side, never redone here or on-device.
+func buildOverlayPayload(mac string, body protocol.OverlaySendBody) []byte {
+	return buildActionPayloadFor(mac, "overlay", map[string]any{
+		"lines":   body.Lines,
+		"caption": body.Caption,
+	})
+}
+
 func buildWifiSleepPayloadFromBody(mac string, body json.RawMessage) []byte {
 	var req struct {
 		BeginTime string `json:"beginTime"`
