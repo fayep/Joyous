@@ -77,10 +77,13 @@ own `color.go` `PaletteReflection` ink RGBs for the InkJoy Spectra6 panel.
 
 ## Files in dumps/
 
-- `firmware-a4cb8fc7b684-20260807-123054.full.bin` — full 16MB flash dump
-- `app0.bin` — extracted app partition (3MB)
+- `firmware-a4cb8fc7b684-20260807-123054.full.bin` — full 16MB flash dump (WiFi / -3)
+- `app0.bin` — extracted WiFi app partition (3MB)
 - `spiffs.bin` — extracted spiffs partition (896KB, all-blank on this unit)
 - `extracted/webui.html` — extracted embedded web UI
+- `firmware-sd-flash-utility.full.bin` — 4MB flash image of the SD-card firmware variant (was misnamed `sd_app0.bin`; bootloader at `0x0`, same partition table as the WiFi unit)
+- `sd_app0.bin` — app0 cut from that image (`0x10000`, 3MB, entry `0x40375f34`)
+- `sd_flash_utility_app0_segments/` — loadable segments from that app0
 
 ## Not yet done
 
