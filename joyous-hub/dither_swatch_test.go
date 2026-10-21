@@ -16,7 +16,7 @@ func TestWriteDitherSwatches(t *testing.T) {
 	const cellW, cellH = 200, 56
 	swatches := defaultDitherSwatches(cellW, cellH)
 	algos := competingDitherAlgos()
-	sheet := RenderDitherSwatchSheet(swatches, algos, PaletteInkJoyDisplay)
+	sheet := RenderDitherSwatchSheet(swatches, algos, PaletteInkJoyDisplay[:])
 	dir := "testdata"
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -32,14 +32,14 @@ func TestWriteDitherSwatches(t *testing.T) {
 	}
 	t.Logf("wrote %s (%dx%d)", path, sheet.Bounds().Dx(), sheet.Bounds().Dy())
 	for _, a := range algos {
-		t.Logf("score %-18s %.3f (lower better on peach)", a.Name, peachSwatchScore(a, PaletteInkJoyDisplay))
+		t.Logf("score %-18s %.3f (lower better on peach)", a.Name, peachSwatchScore(a, PaletteInkJoyDisplay[:]))
 	}
 }
 
 func TestDitherSwatchSheetShape(t *testing.T) {
 	swatches := defaultDitherSwatches(64, 24)
 	algos := competingDitherAlgos()[:3]
-	sheet := RenderDitherSwatchSheet(swatches, algos, PaletteInkJoyDisplay)
+	sheet := RenderDitherSwatchSheet(swatches, algos, PaletteInkJoyDisplay[:])
 	wantW := 8*2 + 4*64 + 3*4
 	wantH := 8*2 + len(swatches)*(24+16) + (len(swatches)-1)*4
 	if sheet.Bounds().Dx() != wantW || sheet.Bounds().Dy() != wantH {
@@ -49,11 +49,11 @@ func TestDitherSwatchSheetShape(t *testing.T) {
 
 func TestFloydAndAtkinsonSmoke(t *testing.T) {
 	img := makeLinearGradient(80, 24, color.RGBA{R: 20, G: 20, B: 20, A: 255}, color.RGBA{R: 240, G: 240, B: 240, A: 255})
-	for name, fn := range map[string]func(image.Image, [6][3]float64) [][]byte{
+	for name, fn := range map[string]func(image.Image, [][3]float64) [][]byte{
 		"floyd":    FloydSteinbergDither,
 		"atkinson": AtkinsonDither,
 	} {
-		idx := fn(img, PaletteInkJoyDisplay)
+		idx := fn(img, PaletteInkJoyDisplay[:])
 		seen := map[byte]bool{}
 		for y := range idx {
 			for x := range idx[y] {
@@ -69,7 +69,7 @@ func TestFloydAndAtkinsonSmoke(t *testing.T) {
 func TestPeachSwatchScoreOrdering(t *testing.T) {
 	// Classic nearest+Stucki should not explode; score is finite.
 	a := stuckiAlgo("x", stuckiOptions{Serpentine: true})
-	s := peachSwatchScore(a, PaletteInkJoyDisplay)
+	s := peachSwatchScore(a, PaletteInkJoyDisplay[:])
 	if s < 0 || s > 3 {
 		t.Fatalf("unexpected score %v", s)
 	}

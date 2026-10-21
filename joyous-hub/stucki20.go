@@ -11,7 +11,7 @@ var stucki20LabCache sync.Map // paletteCacheKey → [][3]float64
 
 // stucki20Labs returns unique LAB colors achievable as the average of four P2 inks
 // in a 2×2 Stucki tile (6^4 tuples, deduped — 126 multisets for six inks).
-func stucki20Labs(display [6][3]float64) [][3]float64 {
+func stucki20Labs(display [][3]float64) [][3]float64 {
 	key := paletteCacheKey(display)
 	if v, ok := stucki20LabCache.Load(key); ok {
 		return v.([][3]float64)
@@ -21,13 +21,14 @@ func stucki20Labs(display [6][3]float64) [][3]float64 {
 	return labs
 }
 
-func buildStucki20Labs(display [6][3]float64) [][3]float64 {
+func buildStucki20Labs(display [][3]float64) [][3]float64 {
 	seen := make(map[[3]uint32]struct{})
 	var labs [][3]float64
-	for i := 0; i < 6; i++ {
-		for j := 0; j < 6; j++ {
-			for k := 0; k < 6; k++ {
-				for l := 0; l < 6; l++ {
+	n := len(display)
+	for i := 0; i < n; i++ {
+		for j := 0; j < n; j++ {
+			for k := 0; k < n; k++ {
+				for l := 0; l < n; l++ {
 					rgb := averagePaletteRGB(display[i], display[j], display[k], display[l])
 					key := quantizeRGB255(rgb)
 					if _, ok := seen[key]; ok {
@@ -58,15 +59,12 @@ func quantizeRGB255(rgb [3]float64) [3]uint32 {
 	}
 }
 
-func paletteCacheKey(pal [6][3]float64) string {
-	return fmt.Sprintf("%.0f,%.0f,%.0f|%.0f,%.0f,%.0f|%.0f,%.0f,%.0f|%.0f,%.0f,%.0f|%.0f,%.0f,%.0f|%.0f,%.0f,%.0f",
-		pal[0][0], pal[0][1], pal[0][2],
-		pal[1][0], pal[1][1], pal[1][2],
-		pal[2][0], pal[2][1], pal[2][2],
-		pal[3][0], pal[3][1], pal[3][2],
-		pal[4][0], pal[4][1], pal[4][2],
-		pal[5][0], pal[5][1], pal[5][2],
-	)
+func paletteCacheKey(pal [][3]float64) string {
+	s := ""
+	for _, c := range pal {
+		s += fmt.Sprintf("%.0f,%.0f,%.0f|", c[0], c[1], c[2])
+	}
+	return s
 }
 
 func nearestStucki20LAB(lab [3]float64, mixLabs [][3]float64) [3]float64 {
@@ -86,7 +84,7 @@ func nearestStucki20LAB(lab [3]float64, mixLabs [][3]float64) [3]float64 {
 
 // ApplyInkAffinityMix nudges hues toward the nearest 2×2 Stucki mixture (four-ink average)
 // instead of a single primary — better for browns and mid-tones Stucki will actually render.
-func ApplyInkAffinityMix(img image.Image, displayPalette [6][3]float64, strength float64, portraitEnhance bool) image.Image {
+func ApplyInkAffinityMix(img image.Image, displayPalette [][3]float64, strength float64, portraitEnhance bool) image.Image {
 	if strength <= 0 {
 		return img
 	}

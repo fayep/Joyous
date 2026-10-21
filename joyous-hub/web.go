@@ -1007,6 +1007,14 @@ const indexHTML = `<!DOCTYPE html>
         <span id="clr-lab-ink-affinity-mix-strength-val" style="font-family:monospace">1</span>
       </label>
       <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Runs after primary ink affinity. Targets colors Stucki can actually render in a 2×2 tile (e.g. brown from black+red+yellow), not just the six primaries.</p>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-ink-affinity-ray"> High-DPI ray affinity (7″ GooDisplay — K/W carry lightness)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Ray affinity strength
+        <input type="range" id="clr-lab-ink-affinity-ray-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-ink-affinity-ray-strength-val').textContent=this.value">
+        <span id="clr-lab-ink-affinity-ray-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">For the 7.09″ 282&nbsp;PPI panel. Labels face vs sky fields first (same peach in a cloud is not a forehead). Histograms skin L* only on faces, keeps the modal band, and merges the highlight tail into it. Pale skies keep their lightness and get a blue dust. Replaces primary and 2×2 mix affinity while on. Leave off on 13″.</p>
       <div class="section-label">InkJoy refresh wipe</div>
       <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Transition pattern
         <select id="clr-inkjoy-wipe" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px" onchange="onInkJoyWipePatternChange()"></select>
@@ -3827,6 +3835,10 @@ function applyColorForm(cfg){
   const inkMixStrength=cfg.lab_ink_affinity_mix_strength||1;
   document.getElementById('clr-lab-ink-affinity-mix-strength').value=inkMixStrength;
   document.getElementById('clr-lab-ink-affinity-mix-strength-val').textContent=String(inkMixStrength);
+  document.getElementById('clr-lab-ink-affinity-ray').checked=!!cfg.lab_ink_affinity_ray_enabled;
+  const inkRayStrength=cfg.lab_ink_affinity_ray_strength||1;
+  document.getElementById('clr-lab-ink-affinity-ray-strength').value=inkRayStrength;
+  document.getElementById('clr-lab-ink-affinity-ray-strength-val').textContent=String(inkRayStrength);
   fillInkJoyWipeSelect(cfg.inkjoy_wipe||'uniform:248');
   applyInkJoyUniformWipe(cfg.inkjoy_wipe||'uniform:248');
   for(const g of COLOR_GROUPS){
@@ -3853,6 +3865,8 @@ function colorFormValues(){
     lab_ink_affinity_strength:parseFloat(document.getElementById('clr-lab-ink-affinity-strength').value)||1,
     lab_ink_affinity_mix_enabled:document.getElementById('clr-lab-ink-affinity-mix').checked,
     lab_ink_affinity_mix_strength:parseFloat(document.getElementById('clr-lab-ink-affinity-mix-strength').value)||1,
+    lab_ink_affinity_ray_enabled:document.getElementById('clr-lab-ink-affinity-ray').checked,
+    lab_ink_affinity_ray_strength:parseFloat(document.getElementById('clr-lab-ink-affinity-ray-strength').value)||1,
     inkjoy_wipe:inkjoyWipeFormValue(),
     inkjoy_display_preset:document.getElementById('clr-inkjoy-display-preset').value,
     samsung_display_preset:document.getElementById('clr-samsung-display-preset').value,
@@ -4512,6 +4526,8 @@ sz.addEventListener('drop',async e=>{
       <option value="16:9">Landscape 16:9</option>
       <option value="9:16">Portrait 9:16</option>
       <option value="1:1">Square 1:1</option>
+      <option value="√2:1">Landscape √2:1</option>
+      <option value="1:√2">Portrait 1:√2</option>
     </select>
     <label id="crop-chroma-wrap" style="display:none;align-items:center;gap:.35rem;font-size:.8rem;color:#aaa">
       Chroma
@@ -4548,6 +4564,8 @@ const FORMATS = {
   '16:9': {ar:16/9},
   '9:16': {ar:9/16},
   '1:1':  {ar:1},
+  '√2:1': {ar:Math.SQRT2},   // landscape A-paper (e.g. A4 on its side)
+  '1:√2': {ar:1/Math.SQRT2}, // portrait A-paper — matches the 28.5" panel (2160×3060, 12:17 ≈ 1:√2)
 };
 
 let cropId=null, cropAR=4/3, cropFmt='4:3';

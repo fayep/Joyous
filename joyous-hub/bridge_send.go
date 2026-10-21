@@ -183,6 +183,14 @@ func bridgeEncodeInkJoy(
 	if err != nil {
 		return nil, err
 	}
+	// Pre-built IJI3 content (28.5"/H:3 RAW8|LZ4 playback container) is already
+	// panel-native and in the exact format the frame decodes, so it must bypass
+	// both overlay compositing and the 10" hi/lo decode/re-encode pipeline (both
+	// assume 1600x1200x2 and cannot operate on an 8bpp IJI3 blob). Return the
+	// stored bytes verbatim; the frame validates/LZ4-decodes/CRC-checks it.
+	if len(raw) >= 4 && string(raw[:4]) == "IJI3" {
+		return raw, nil
+	}
 	mergeSendCrops(&meta, body.Crops)
 	if err := hub.images.CacheHubImage(body.ImageID, meta, raw); err != nil {
 		return nil, err
@@ -193,6 +201,14 @@ func bridgeEncodeInkJoy(
 	// Device copy — the bridge has no calibration state of its own to keep in
 	// sync. See protocol.SendImageBody.ColorOverride.
 	colorOverride := protocolRGBToPalette(body.ColorOverride)
+	// 28.5"/H:3: emit a 2160x3060 single-plane 8bpp IJI3 blob (its own scan
+	// transform + color pipeline) instead of the 10" hi/lo .bin. Gated by the
+	// bridge-set flag, not a hardware test here. Overlay compositing for this
+	// panel is not yet wired (would need a 2160x3060 mutate-then-dither like
+	// the Samsung path); the photo path is handled first.
+	if body.InkJoy28 {
+		return hub.images.ServeInkJoy28IJI3(body.ImageID, colorOverride)
+	}
 	if body.OverlayToken != "" {
 		cfg, weather, err := bridgeOverlayContext(ctx, hub, body, portrait)
 		if err != nil {

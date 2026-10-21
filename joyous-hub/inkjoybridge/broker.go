@@ -79,9 +79,15 @@ func ParseHeartPayload(payload []byte) (HeartInfo, error) {
 
 // LoginInfo holds data extracted from a login message.
 type LoginInfo struct {
-	ClientID       string
-	Firmware       string
-	HardwareModel  int // H from login ver "M H:%d F:..."; 0 if absent
+	ClientID      string
+	Firmware      string
+	HardwareModel int // H from login ver "M H:%d F:..."; 0 if absent
+	// Panel is the frame's self-reported panel SKU string from the login
+	// "panel" field (e.g. "10", "28.5"), added in firmware v1.3.x. "" for
+	// older firmware that doesn't report it. This is the authoritative source
+	// for a frame's geometry — see PanelGeometries — since a given H can in
+	// principle ship with different panels.
+	Panel          string
 	SleepBeginTime string
 	SleepEndTime   string
 	// P2 is the device's own factory/NVS-stored P2 dither-target calibration
@@ -104,6 +110,48 @@ const HardwareModelSeeed = 9
 // custom firmware — same local-only situation as Seeed, distinct model so
 // the hub can tell the two clone hardware types apart (e.g. P2 pre-fill).
 const HardwareModelGooDisplay = 10
+
+// Known real-InkJoy hardware models (H in the login ver). Observed mappings:
+// H:2 ships the 10" panel, H:3 the 28.5" panel (firmware v1.3.x). These are
+// not local-only (they're genuine InkJoy frames). The authoritative geometry
+// is the login "panel" field, not H — see PanelGeometries.
+const (
+	HardwareModelInkJoy10 = 2 // 10" panel ("10")
+	HardwareModelInkJoy28 = 3 // 28.5" panel ("28.5")
+)
+
+// PanelGeometry is an InkJoy panel SKU's native framebuffer geometry, taken
+// from the frame firmware's panel→geometry table (ij_epd v1.3.8 function at
+// 0x4201eb06, reverse-engineered 2026-10-20). Width/Height are the firmware's
+// native (portrait) pixel dimensions. BufferBytes is the exact full-panel
+// framebuffer size the frame expects; note the per-pixel size varies by SKU
+// (e.g. "10" is 2 B/px, "28.5"/"25.3" are 1 B/px, and "13.3"/"7.09" are ~4bpp
+// plus a 4-byte header), so derive bit depth from BufferBytes/(W*H), not a
+// fixed assumption.
+type PanelGeometry struct {
+	Width       int
+	Height      int
+	BufferBytes int
+}
+
+// PanelGeometries maps the login "panel" SKU string to its geometry. Keep in
+// lockstep with the frame firmware's table (see PanelGeometry's doc for the
+// traced source).
+var PanelGeometries = map[string]PanelGeometry{
+	"13.3": {Width: 1200, Height: 1600, BufferBytes: 960004},
+	"7.09": {Width: 1200, Height: 1600, BufferBytes: 960004},
+	"10":   {Width: 1200, Height: 1600, BufferBytes: 3840000},
+	"25.3": {Width: 3200, Height: 1800, BufferBytes: 5760000},
+	"28.5": {Width: 2160, Height: 3060, BufferBytes: 6609600},
+	"31.5": {Width: 2560, Height: 1440, BufferBytes: 2304000},
+}
+
+// LookupPanelGeometry returns the native geometry for a login panel SKU
+// string, and whether that SKU is known.
+func LookupPanelGeometry(panel string) (PanelGeometry, bool) {
+	g, ok := PanelGeometries[panel]
+	return g, ok
+}
 
 // LocalOnlyHardware reports whether this model must stay on the local bridge
 // (never open an upstream cloud session / forward frame→cloud traffic).
@@ -166,6 +214,7 @@ func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 		Data struct {
 			ClientID       string     `json:"clientid"`
 			Ver            string     `json:"ver"`
+			Panel          string     `json:"panel"`
 			SleepBeginTime string     `json:"sleep_begin_time"`
 			SleepEndTime   string     `json:"sleep_end_time"`
 			P2             *[6][3]int `json:"p2"`
@@ -178,6 +227,7 @@ func ParseLoginPayload(payload []byte) (LoginInfo, error) {
 		ClientID:       msg.Data.ClientID,
 		Firmware:       msg.Data.Ver,
 		HardwareModel:  HardwareModelFromVer(msg.Data.Ver),
+		Panel:          msg.Data.Panel,
 		ProtocolT:      ProtocolTFromVer(msg.Data.Ver),
 		P2:             msg.Data.P2,
 		SleepBeginTime: msg.Data.SleepBeginTime,

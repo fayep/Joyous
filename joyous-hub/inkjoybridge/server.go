@@ -482,14 +482,18 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		}
 	}
 
-	if skipUpstream && h.bridges.isLocalOnly(mac) {
-		// Cloud won't reply; ack login/heart locally so the frame session stays healthy.
-		switch action {
-		case "login":
-			h.bridges.publishLocalAck(mac, BuildLoginAck(mac, MQTTMsgid(payload)))
-		case "heart":
-			h.bridges.publishLocalAck(mac, BuildHeartAck(mac, MQTTMsgid(payload)))
-		}
+	// Ack login/heart locally so the frame session stays healthy regardless of
+	// the cloud. Local-only clones have no cloud to reply; and real-InkJoy H:3
+	// frames relayed upstream don't get a timely cloud login_ack either (the
+	// cloud's newer registration needs a device-pubkey attestation the relay
+	// can't satisfy), so without a local ack they login-loop every keepalive
+	// and never receive plays. A duplicate ack to a cloud-relayed frame (whose
+	// cloud also replies) is benign — the frame treats login_ack idempotently.
+	switch action {
+	case "login":
+		h.bridges.publishLocalAck(mac, BuildLoginAck(mac, MQTTMsgid(payload)))
+	case "heart":
+		h.bridges.publishLocalAck(mac, BuildHeartAck(mac, MQTTMsgid(payload)))
 	}
 
 	if !skipUpstream && h.upstreamAllow.Allows(action) && h.bridges.upstreamHost != "" {

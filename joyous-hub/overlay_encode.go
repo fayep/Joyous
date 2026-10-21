@@ -23,7 +23,7 @@ func encodeInkJoyBinWithOverlay(photo image.Image, flatRGB bool, pipe ColorPipel
 		return ToBin(hi, lo), nil
 	}
 
-	indices := StuckiTwoPalette(photo, pipe.InkJoyDisplay, pipe, false, stuckiOptionsInkJoy(pipe))
+	indices := StuckiTwoPalette(photo, pipe.InkJoyDisplay[:], pipe, false, stuckiOptionsInkJoy(pipe))
 	hi := indicesToHi(indices)
 	lo := resolveWipeGridForEncode(photo, wipeSelection)
 
@@ -44,15 +44,15 @@ func pinOverlayPixels(hi [][]byte, before, after image.Image, display [6][3]floa
 				continue
 			}
 			ar, ag, ab, _ := after.At(x, y).RGBA()
-			idx := nearestColor([3]float64{float64(ar >> 8), float64(ag >> 8), float64(ab >> 8)}, display)
+			idx := nearestColor([3]float64{float64(ar >> 8), float64(ag >> 8), float64(ab >> 8)}, display[:])
 			hi[y][x] = hiBytes[idx]
 		}
 	}
 }
 
 func encodeSamsungPNGWithOverlay(photo image.Image, mutate func(image.Image) image.Image, pipe ColorPipeline) ([]byte, error) {
-	indices := StuckiTwoPalette(photo, pipe.SamsungDisplay, pipe, false, stuckiOptionsSamsung(pipe))
-	base := renderIndicesToRGB(indices, pipe.SamsungSend)
+	indices := StuckiTwoPalette(photo, pipe.SamsungDisplay[:], pipe, false, stuckiOptionsSamsung(pipe))
+	base := renderIndicesToRGB(indices, pipe.SamsungSend[:])
 	if mutate == nil {
 		return encodePNG(base), nil
 	}
@@ -69,7 +69,7 @@ func pinSamsungOverlayPixels(before, after *image.RGBA, send [6][3]float64) {
 				continue
 			}
 			c := after.RGBAAt(x, y)
-			idx := nearestColor([3]float64{float64(c.R), float64(c.G), float64(c.B)}, send)
+			idx := nearestColor([3]float64{float64(c.R), float64(c.G), float64(c.B)}, send[:])
 			p := send[idx]
 			after.SetRGBA(x, y, color.RGBA{R: uint8(p[0]), G: uint8(p[1]), B: uint8(p[2]), A: 255})
 		}

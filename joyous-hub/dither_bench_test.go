@@ -26,7 +26,7 @@ func BenchmarkStuckiInkJoyFull(b *testing.B) {
 	opts := stuckiOptionsInkJoy(pipe)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = StuckiTwoPalette(img, PaletteInkJoyDisplay, pipe, false, opts)
+		_ = StuckiTwoPalette(img, PaletteInkJoyDisplay[:], pipe, false, opts)
 	}
 }
 
@@ -35,7 +35,7 @@ func BenchmarkStuckiInkJoyDitherOnly(b *testing.B) {
 	opts := stuckiOptions{Serpentine: true}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = StuckiDither(img, PaletteInkJoyDisplay, opts)
+		_ = StuckiDither(img, PaletteInkJoyDisplay[:], opts)
 	}
 }
 
@@ -44,7 +44,7 @@ func BenchmarkStuckiInkJoyDitherEdge(b *testing.B) {
 	opts := stuckiOptions{Serpentine: true, EdgePreserve: stuckiEdgePreserve}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = StuckiDither(img, PaletteInkJoyDisplay, opts)
+		_ = StuckiDither(img, PaletteInkJoyDisplay[:], opts)
 	}
 }
 
@@ -62,6 +62,6 @@ func BenchmarkStuckiSamsungFull(b *testing.B) {
 	opts := stuckiOptionsSamsung(pipe)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = StuckiTwoPalette(img, PaletteSamsungDisplay, pipe, false, opts)
+		_ = StuckiTwoPalette(img, PaletteSamsungDisplay[:], pipe, false, opts)
 	}
 }

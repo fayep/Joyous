@@ -392,6 +392,11 @@ func bridgeDeliverInkJoyImage(
 		inkjoybridge.LocalOnlyHardware(dev.HardwareModel) &&
 		dev.ProtocolT >= inkjoybridge.InkJoyNativeDimsProtocolT
 	body.NativeDims = useNativeDims
+	// The 28.5"/H:3 panel uses a 2160x3060 single-plane 8bpp IJI3 format with a
+	// bespoke scan transform, not the 10" hi/lo .bin. Decide here (tagged file,
+	// dev.HardwareModel legitimately known) and let bridgeEncodeInkJoy act on
+	// the flag alone -- same split as NativeDims above.
+	body.InkJoy28 = dev.HardwareModel == inkjoybridge.HardwareModelInkJoy28
 	bin, err := bridgeEncodeInkJoy(ctx, encodeHub, body, dev)
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)

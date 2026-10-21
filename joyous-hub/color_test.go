@@ -90,8 +90,8 @@ func TestShouldApplyLABProcessing(t *testing.T) {
 func TestLABProcessingChromaOnly(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.Set(0, 0, color.RGBA{240, 240, 240, 255})
-	chroma := ApplyLABProcessing(img, ColorPipeline{LABChromaEnabled: true, LABChromaStrength: 1}, PaletteSamsungDisplay, false)
-	highlight := ApplyLABProcessing(img, ColorPipeline{LABHighlightEnabled: true, LABHighlightStrength: 1}, PaletteSamsungDisplay, false)
+	chroma := ApplyLABProcessing(img, ColorPipeline{LABChromaEnabled: true, LABChromaStrength: 1}, PaletteSamsungDisplay[:], false)
+	highlight := ApplyLABProcessing(img, ColorPipeline{LABHighlightEnabled: true, LABHighlightStrength: 1}, PaletteSamsungDisplay[:], false)
 	cr, _, _, _ := chroma.At(0, 0).RGBA()
 	hr, _, _, _ := highlight.At(0, 0).RGBA()
 	if hr>>8 < 238 {
@@ -103,7 +103,7 @@ func TestLABProcessingChromaOnly(t *testing.T) {
 
 	blueSky := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	blueSky.Set(0, 0, color.RGBA{151, 182, 240, 255})
-	compressed := ApplyLABProcessing(blueSky, ColorPipeline{LABHighlightEnabled: true, LABHighlightStrength: 1}, PaletteSamsungDisplay, false)
+	compressed := ApplyLABProcessing(blueSky, ColorPipeline{LABHighlightEnabled: true, LABHighlightStrength: 1}, PaletteSamsungDisplay[:], false)
 	br, _, _, _ := compressed.At(0, 0).RGBA()
 	if br>>8 >= 150 {
 		t.Fatalf("highlight should compress bright blue sky, got %d", br>>8)
@@ -113,7 +113,7 @@ func TestLABProcessingChromaOnly(t *testing.T) {
 func TestLABProcessingShadowLift(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.Set(0, 0, color.RGBA{15, 15, 15, 255})
-	out := ApplyLABProcessing(img, ColorPipeline{LABShadowEnabled: true, LABShadowStrength: 1}, PaletteSamsungDisplay, false)
+	out := ApplyLABProcessing(img, ColorPipeline{LABShadowEnabled: true, LABShadowStrength: 1}, PaletteSamsungDisplay[:], false)
 	r, _, _, _ := out.At(0, 0).RGBA()
 	if r>>8 <= 15 {
 		t.Fatalf("shadow lift should brighten dark pixel, got %d", r>>8)
@@ -162,7 +162,7 @@ func TestLABDynamicRangeFit(t *testing.T) {
 	pipe := ResolveColorPipeline(defaultColorConfig())
 	pipe.LABDynamicRangeEnabled = true
 	pipe.LABDynamicRangeStops = 4
-	out := ApplyLABProcessing(img, pipe, PaletteSamsungDisplay, true)
+	out := ApplyLABProcessing(img, pipe, PaletteSamsungDisplay[:], true)
 	outLo, outHi := luminancePercentiles(out, 0.01, 0.99)
 	got := labLSpanStops(outLo, outHi)
 	if got > 4.6 || got < 2.8 {
@@ -170,7 +170,7 @@ func TestLABDynamicRangeFit(t *testing.T) {
 	}
 
 	pipe.InkJoyDisplay = PaletteInkJoyDisplay
-	inkOut := ApplyLABProcessing(img, pipe, PaletteInkJoyDisplay, true)
+	inkOut := ApplyLABProcessing(img, pipe, PaletteInkJoyDisplay[:], true)
 	inkOutLo, inkOutHi := luminancePercentiles(inkOut, 0.01, 0.99)
 	inkGot := labLSpanStops(inkOutLo, inkOutHi)
 	if inkGot > 4.6 || inkGot < 2.8 {
@@ -179,7 +179,7 @@ func TestLABDynamicRangeFit(t *testing.T) {
 }
 
 func TestDisplayPaletteDRRangeValid(t *testing.T) {
-	for _, pal := range [][6][3]float64{PaletteInkJoyDisplay, PaletteSamsungDisplay} {
+	for _, pal := range [][][3]float64{PaletteInkJoyDisplay[:], PaletteSamsungDisplay[:]} {
 		lo, hi := displayPaletteDRRange(pal)
 		if hi <= lo || lo < 0 || hi > 100 {
 			t.Fatalf("bad DR range %.1f–%.1f", lo, hi)
@@ -188,8 +188,8 @@ func TestDisplayPaletteDRRangeValid(t *testing.T) {
 }
 
 func TestDisplayPaletteLABRangeInkJoyVsSamsung(t *testing.T) {
-	inkLo, inkHi := displayPaletteLABRange(PaletteInkJoyDisplay)
-	samLo, samHi := displayPaletteLABRange(PaletteSamsungDisplay)
+	inkLo, inkHi := displayPaletteLABRange(PaletteInkJoyDisplay[:])
+	samLo, samHi := displayPaletteLABRange(PaletteSamsungDisplay[:])
 	// Click-calibrated InkJoy may be within ~2 L* of Samsung reference black.
 	if inkLo < samLo-2.0 {
 		t.Fatalf("inkjoy black L* %.1f much darker than samsung %.1f", inkLo, samLo)

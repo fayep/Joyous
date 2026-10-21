@@ -330,7 +330,7 @@ func prepareSamsungFrameRGBA(raw []byte, profile SamsungDisplayProfile, crop Cro
 }
 
 func encodeSamsungPNGFromRGBA(img image.Image, pipe ColorPipeline) ([]byte, error) {
-	indices := StuckiTwoPalette(img, pipe.SamsungDisplay, pipe, false, stuckiOptionsSamsung(pipe))
-	out := RenderIndicesToRGB(indices, pipe.SamsungSend)
+	indices := StuckiTwoPalette(img, pipe.SamsungDisplay[:], pipe, false, stuckiOptionsSamsung(pipe))
+	out := RenderIndicesToRGB(indices, pipe.SamsungSend[:])
 	return encodePNG(out), nil
 }

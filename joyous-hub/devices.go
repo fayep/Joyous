@@ -28,47 +28,48 @@ const SamsungRecentWindow = 5 * time.Minute
 
 // Device holds runtime state for a connected or discovered frame.
 type Device struct {
-	ID         string     `json:"id"`
-	Type       DeviceType `json:"type"`
-	Name       string     `json:"name,omitempty"`
-	MAC        string     `json:"mac,omitempty"`
-	IP         string     `json:"ip,omitempty"`
+	ID   string     `json:"id"`
+	Type DeviceType `json:"type"`
+	Name string     `json:"name,omitempty"`
+	MAC  string     `json:"mac,omitempty"`
+	IP   string     `json:"ip,omitempty"`
 	// LastIP is the most recent Samsung LAN address used for WoL/magic wake.
 	// Kept across network sleep, deep-sleep IP clear, and process Load — clearing
 	// live IP must not erase the only address wake can target.
-	LastIP     string     `json:"last_ip,omitempty"`
-	USN        string     `json:"usn,omitempty"`
-	Location   string     `json:"location,omitempty"`
-	Firmware   string     `json:"firmware,omitempty"`
-	Battery     int        `json:"battery"`
-	PowerSource string     `json:"power_source,omitempty"` // samsung: ac, usb, wireless
+	LastIP      string `json:"last_ip,omitempty"`
+	USN         string `json:"usn,omitempty"`
+	Location    string `json:"location,omitempty"`
+	Firmware    string `json:"firmware,omitempty"`
+	Battery     int    `json:"battery"`
+	PowerSource string `json:"power_source,omitempty"` // samsung: ac, usb, wireless
 	// Samsung battery history (API-only; not persisted on Device in devices.json).
-	BatterySamples   int                    `json:"battery_samples,omitempty"`
-	BatteryDelta     *int                   `json:"battery_delta,omitempty"`
-	BatteryPushDelta *int                   `json:"battery_push_delta,omitempty"`
-	BatteryAt        time.Time              `json:"battery_at,omitempty"`
-	BatteryHistory   []SamsungBatterySample `json:"battery_history,omitempty"`
-	RSSI        int        `json:"rssi"`
-	Connected   bool       `json:"connected"`
-	LastSeen    time.Time  `json:"last_seen"`
-	LastAction string     `json:"last_action,omitempty"`
-	MDCPin            string     `json:"mdc_pin,omitempty"`
-	MDCMAC            string     `json:"mdc_mac,omitempty"` // optional WoL target
-	DisplayCropFormat string     `json:"display_crop_format,omitempty"` // e.g. "16:9"
-	DisplayWidth      int        `json:"display_width,omitempty"`
-	DisplayHeight     int        `json:"display_height,omitempty"`
+	BatterySamples    int                    `json:"battery_samples,omitempty"`
+	BatteryDelta      *int                   `json:"battery_delta,omitempty"`
+	BatteryPushDelta  *int                   `json:"battery_push_delta,omitempty"`
+	BatteryAt         time.Time              `json:"battery_at,omitempty"`
+	BatteryHistory    []SamsungBatterySample `json:"battery_history,omitempty"`
+	RSSI              int                    `json:"rssi"`
+	Connected         bool                   `json:"connected"`
+	LastSeen          time.Time              `json:"last_seen"`
+	LastAction        string                 `json:"last_action,omitempty"`
+	MDCPin            string                 `json:"mdc_pin,omitempty"`
+	MDCMAC            string                 `json:"mdc_mac,omitempty"`             // optional WoL target
+	DisplayCropFormat string                 `json:"display_crop_format,omitempty"` // e.g. "16:9"
+	DisplayWidth      int                    `json:"display_width,omitempty"`
+	DisplayHeight     int                    `json:"display_height,omitempty"`
 	// InkJoy-specific
-	SleepBeginTime string `json:"sleep_begin_time,omitempty"`
-	SleepEndTime   string `json:"sleep_end_time,omitempty"`
-	LastImageID       string    `json:"last_image_id,omitempty"`
-	LastOverlayHash   string    `json:"last_overlay_hash,omitempty"`
-	DisplayPreviewAt  time.Time `json:"display_preview_at,omitempty"`
-	HubIP          string `json:"hub_ip,omitempty"`   // hub's LAN IP as seen via this frame's MQTT socket
-	Portrait       bool   `json:"portrait,omitempty"` // frame orientation preference (UI and/or Seeed KEY1)
-	Orientation    int    `json:"orientation"`        // heart orientation (0/90/180/270); accel unreliable on real frames
-	HardwareModel  int    `json:"hardware_model,omitempty"` // H from login ver; see inkjoybridge.HardwareModelSeeed
-	ProtocolT      int    `json:"protocol_t,omitempty"`     // T from login ver; see inkjoybridge.InkJoyPNGProtocolT
-	DeepSleepActive bool  `json:"deep_sleep_active,omitempty"` // samsung: overnight deep sleep (button wake)
+	SleepBeginTime   string    `json:"sleep_begin_time,omitempty"`
+	SleepEndTime     string    `json:"sleep_end_time,omitempty"`
+	LastImageID      string    `json:"last_image_id,omitempty"`
+	LastOverlayHash  string    `json:"last_overlay_hash,omitempty"`
+	DisplayPreviewAt time.Time `json:"display_preview_at,omitempty"`
+	HubIP            string    `json:"hub_ip,omitempty"`            // hub's LAN IP as seen via this frame's MQTT socket
+	Portrait         bool      `json:"portrait,omitempty"`          // frame orientation preference (UI and/or Seeed KEY1)
+	Orientation      int       `json:"orientation"`                 // heart orientation (0/90/180/270); accel unreliable on real frames
+	HardwareModel    int       `json:"hardware_model,omitempty"`    // H from login ver; see inkjoybridge.HardwareModelSeeed
+	Panel            string    `json:"panel,omitempty"`             // panel SKU from login (e.g. "10", "28.5"); see inkjoybridge.PanelGeometries
+	ProtocolT        int       `json:"protocol_t,omitempty"`        // T from login ver; see inkjoybridge.InkJoyPNGProtocolT
+	DeepSleepActive  bool      `json:"deep_sleep_active,omitempty"` // samsung: overnight deep sleep (button wake)
 	// ColorOverride is a per-device snapshot of the 6 ink RGB values, captured at
 	// save time. nil means "use the bridge's current InkJoy display palette."
 	// Unlike the bridge-wide ColorConfig, this does not track later bridge edits —
@@ -81,7 +82,7 @@ type Device struct {
 	// other non-real-InkJoy panel) starts from a value tuned for its own panel
 	// instead of the real-InkJoy-panel bridge default.
 	DeviceReportedP2 *[6]PaletteRGB `json:"device_reported_p2,omitempty"`
-	bridgeID        string `json:"-"` // owning bridge when synced via joyous protocol
+	bridgeID         string         `json:"-"` // owning bridge when synced via joyous protocol
 }
 
 // DeviceRegistry tracks known frames in memory and persists them to disk.
@@ -306,6 +307,9 @@ func (r *DeviceRegistry) UpdateLogin(mac string, info inkjoybridge.LoginInfo) *L
 	}
 	if info.HardwareModel > 0 {
 		d.HardwareModel = info.HardwareModel
+	}
+	if info.Panel != "" {
+		d.Panel = info.Panel
 	}
 	if info.ProtocolT > 0 {
 		d.ProtocolT = info.ProtocolT

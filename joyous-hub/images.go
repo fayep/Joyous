@@ -1228,7 +1228,7 @@ func encodeInkJoyBinFromRGBA(img image.Image, flatRGB bool, pipe ColorPipeline, 
 		}
 		hi, lo = snapToPaletteWithWipe(img, flatWipe)
 	} else {
-		indices := StuckiTwoPalette(img, pipe.InkJoyDisplay, pipe, flatRGB, stuckiOptionsInkJoy(pipe))
+		indices := StuckiTwoPalette(img, pipe.InkJoyDisplay[:], pipe, flatRGB, stuckiOptionsInkJoy(pipe))
 		hi = indicesToHi(indices)
 		lo = resolveWipeGridForEncode(img, wipeSelection)
 	}
@@ -1436,7 +1436,7 @@ func snapToPaletteWithWipe(img image.Image, wipe [][]byte) (hi, lo [][]byte) {
 		hi[y] = make([]byte, w)
 		for x := range w {
 			r, g, bv, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
-			idx := nearestColor([3]float64{float64(r >> 8), float64(g >> 8), float64(bv >> 8)}, PaletteInkJoySend)
+			idx := nearestColor([3]float64{float64(r >> 8), float64(g >> 8), float64(bv >> 8)}, PaletteInkJoySend[:])
 			hi[y][x] = hiBytes[idx]
 		}
 		lo[y] = wipe[y]

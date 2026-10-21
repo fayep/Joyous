@@ -10,7 +10,7 @@ import (
 func TestInkAffinityPullsSkyTowardBlue(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.Set(0, 0, color.RGBA{R: 151, G: 182, B: 240, A: 255})
-	out := ApplyInkAffinity(img, PaletteSamsungDisplay, 1.0, false)
+	out := ApplyInkAffinity(img, PaletteSamsungDisplay[:], 1.0, false)
 	r8, g8, b8, _ := out.At(0, 0).RGBA()
 	before := srgbToLAB([3]float64{151.0 / 255, 182.0 / 255, 240.0 / 255})
 	after := srgbToLAB([3]float64{float64(r8>>8) / 255, float64(g8>>8) / 255, float64(b8>>8) / 255})
@@ -27,7 +27,7 @@ func TestInkAffinityPullsSkyTowardBlue(t *testing.T) {
 func TestInkAffinityPreservesNeutralGrey(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.Set(0, 0, color.RGBA{R: 128, G: 128, B: 128, A: 255})
-	out := ApplyInkAffinity(img, PaletteSamsungDisplay, 1.0, false)
+	out := ApplyInkAffinity(img, PaletteSamsungDisplay[:], 1.0, false)
 	r8, g8, b8, _ := out.At(0, 0).RGBA()
 	dr := int(r8>>8) - 128
 	dg := int(g8>>8) - 128
@@ -49,8 +49,8 @@ func TestInkAffinityPreservesNeutralGrey(t *testing.T) {
 func TestInkAffinityReducedOnSkin(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.Set(0, 0, color.RGBA{R: 180, G: 120, B: 90, A: 255})
-	full := ApplyInkAffinity(img, PaletteSamsungDisplay, 1.0, true)
-	none := ApplyInkAffinity(img, PaletteSamsungDisplay, 1.0, false)
+	full := ApplyInkAffinity(img, PaletteSamsungDisplay[:], 1.0, true)
+	none := ApplyInkAffinity(img, PaletteSamsungDisplay[:], 1.0, false)
 	fullLab := srgbToLAB(pixelRGB01(full.At(0, 0)))
 	noneLab := srgbToLAB(pixelRGB01(none.At(0, 0)))
 	srcLab := srgbToLAB(pixelRGB01(img.At(0, 0)))

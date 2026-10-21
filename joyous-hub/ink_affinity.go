@@ -13,7 +13,7 @@ const (
 
 // ApplyInkAffinity nudges each pixel's hue toward the nearest P2 ink in LAB space,
 // keeping L* mostly intact so the scene reads as the same lighting with cleaner dither.
-func ApplyInkAffinity(img image.Image, displayPalette [6][3]float64, strength float64, portraitEnhance bool) image.Image {
+func ApplyInkAffinity(img image.Image, displayPalette [][3]float64, strength float64, portraitEnhance bool) image.Image {
 	if strength <= 0 {
 		return img
 	}
@@ -23,15 +23,15 @@ func ApplyInkAffinity(img image.Image, displayPalette [6][3]float64, strength fl
 	}, strength, portraitEnhance)
 }
 
-func displayPaletteLAB(pal [6][3]float64) [6][3]float64 {
-	var labs [6][3]float64
+func displayPaletteLAB(pal [][3]float64) [][3]float64 {
+	labs := make([][3]float64, len(pal))
 	for i := range labs {
 		labs[i] = srgbToLAB(paletteRGB01(pal[i]))
 	}
 	return labs
 }
 
-func nearestInkLAB(lab [3]float64, palLabs [6][3]float64) int {
+func nearestInkLAB(lab [3]float64, palLabs [][3]float64) int {
 	best := 0
 	bestD := math.MaxFloat64
 	for i, p := range palLabs {
@@ -45,7 +45,7 @@ func nearestInkLAB(lab [3]float64, palLabs [6][3]float64) int {
 
 // inkAffinityTargetLAB picks the P2 ink hue to lean toward. Low-chroma pixels use
 // full ΔE (black/white); saturated pixels match hue among chromatic inks.
-func inkAffinityTargetLAB(lab [3]float64, palLabs [6][3]float64) [3]float64 {
+func inkAffinityTargetLAB(lab [3]float64, palLabs [][3]float64) [3]float64 {
 	chroma := math.Hypot(lab[1], lab[2])
 	if chroma < 8 {
 		return palLabs[nearestInkLAB(lab, palLabs)]
@@ -53,7 +53,7 @@ func inkAffinityTargetLAB(lab [3]float64, palLabs [6][3]float64) [3]float64 {
 	return palLabs[nearestChromaticInkHue(lab, palLabs)]
 }
 
-func nearestChromaticInkHue(lab [3]float64, palLabs [6][3]float64) int {
+func nearestChromaticInkHue(lab [3]float64, palLabs [][3]float64) int {
 	hue := math.Atan2(lab[2], lab[1])
 	best := 0
 	bestD := math.MaxFloat64

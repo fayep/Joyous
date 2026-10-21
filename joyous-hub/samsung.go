@@ -307,12 +307,12 @@ func convertToSamsungPNG(raw []byte, profile SamsungDisplayProfile, crop CropRec
 		img = centerCropToSize(img, tw, th)
 	}
 	img = resizeTo(img, tw, th)
-	indices := StuckiTwoPalette(img, pipe.SamsungDisplay, pipe, false, stuckiOptionsSamsung(pipe))
-	out := RenderIndicesToRGB(indices, pipe.SamsungSend)
+	indices := StuckiTwoPalette(img, pipe.SamsungDisplay[:], pipe, false, stuckiOptionsSamsung(pipe))
+	out := RenderIndicesToRGB(indices, pipe.SamsungSend[:])
 	return encodePNG(out), nil
 }
 
-func renderIndicesToRGB(indices [][]byte, palette [6][3]float64) image.Image {
+func renderIndicesToRGB(indices [][]byte, palette [][3]float64) image.Image {
 	h := len(indices)
 	if h == 0 {
 		return image.NewRGBA(image.Rect(0, 0, 0, 0))
