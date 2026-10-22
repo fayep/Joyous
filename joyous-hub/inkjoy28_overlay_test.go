@@ -57,9 +57,15 @@ func countInk(plane []byte, code byte) int {
 // storeSynthInkJoy28 stores a ~1:√2 portrait gradient as an album image.
 func storeSynthInkJoy28(t *testing.T, store *ImageStore) string {
 	t.Helper()
-	img := image.NewRGBA(image.Rect(0, 0, 1080, 1527))
-	for y := 0; y < 1527; y++ {
-		for x := 0; x < 1080; x++ {
+	return storeSynthImage(t, store, 1080, 1527)
+}
+
+// storeSynthImage stores a w×h gradient as an album image.
+func storeSynthImage(t *testing.T, store *ImageStore, w, h int) string {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
 			img.Set(x, y, color.RGBA{uint8(x % 256), uint8(y % 256), 128, 255})
 		}
 	}
@@ -83,14 +89,14 @@ func TestServeInkJoy28IJI3OverlayCompositesAndStaysValid(t *testing.T) {
 	store := NewImageStore(t.TempDir())
 	id := storeSynthInkJoy28(t, store)
 
-	plain, err := store.ServeInkJoy28IJI3(id, nil)
+	plain, err := store.ServeInkJoy28IJI3(id, true, nil)
 	if err != nil {
 		t.Fatalf("plain serve: %v", err)
 	}
 	plainPlane := decodeIJI3Plane(t, plain)
 
 	called := false
-	overlaid, err := store.ServeInkJoy28IJI3Overlay(id, func(img image.Image, flatRGB bool) (image.Image, error) {
+	overlaid, err := store.ServeInkJoy28IJI3Overlay(id, true, func(img image.Image, flatRGB bool) (image.Image, error) {
 		called = true
 		if flatRGB {
 			t.Error("flatRGB must be false on the 28.5\" photo path")

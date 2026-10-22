@@ -214,17 +214,18 @@ func bridgeEncodeInkJoy(
 				return nil, err
 			}
 			photoName := overlayPhotoNameFromMeta(meta, cfg)
-			return hub.images.ServeInkJoy28IJI3Overlay(body.ImageID, func(img image.Image, flatRGB bool) (image.Image, error) {
-				// portrait=false: the 2160x3060 image is already upright/native
-				// portrait, so the overlay draws directly on its true bottom edge.
-				// (drawWeatherOverlay's portrait flag rotates landscape sources
-				// like the 10"; doing that here would bake text along a side.)
+			return hub.images.ServeInkJoy28IJI3Overlay(body.ImageID, portrait, func(img image.Image, flatRGB bool) (image.Image, error) {
+				// The panel is natively portrait, so the orientation flag is
+				// inverted vs the 10": a portrait frame's 2160x3060 image is
+				// already upright and the overlay draws on its true bottom edge,
+				// while a landscape frame's photo was rotated CCW onto the panel
+				// and drawWeatherOverlay's rotate flag must undo that to draw.
 				// ij28OverlayScale enlarges the overlay so it isn't tiny on this
 				// large panel (the engine would otherwise shrink it ~0.78x).
-				return drawWeatherOverlayScaled(img, cfg, weather, photoName, false, ij28OverlayScale), nil
+				return drawWeatherOverlayScaled(img, cfg, weather, photoName, !portrait, ij28OverlayScale), nil
 			}, colorOverride)
 		}
-		return hub.images.ServeInkJoy28IJI3(body.ImageID, colorOverride)
+		return hub.images.ServeInkJoy28IJI3(body.ImageID, portrait, colorOverride)
 	}
 	if body.OverlayToken != "" {
 		cfg, weather, err := bridgeOverlayContext(ctx, hub, body, portrait)
