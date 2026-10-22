@@ -31,6 +31,11 @@ const (
 	ij28H = 3060
 )
 
+// ij28OverlayScale is the overlay size boost for the 28.5" panel: it cancels the
+// engine's ~0.78x diagonal shrink so overlay text renders at ~Samsung's absolute
+// size (scale ≈ 1.0) rather than proportionally tiny on this large panel. Tunable.
+const ij28OverlayScale = 1.28
+
 // paletteInkJoy28Display is the measured 8-ink appearance of the 28.5" (H:3)
 // panel, white-balanced off the panel's own white and with black de-skied (the
 // chart was shot under cool overcast light). Order follows the hub's palette-

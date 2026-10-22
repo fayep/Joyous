@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+xtroadmap_registry.json
+xtroadmap_registry.json.tmp
+.pytest_cache/

@@ -48,13 +48,13 @@ func overlayMetricsForLines(lines []overlayLine, w, h int) OverlayBoxMetrics {
 	}
 	m.Content.WidthPx = overlayContentWidth(lines)
 	m.Content.HeightPx = overlayContentHeight(lines)
-	m.Box.WidthPx, m.Box.HeightPx = overlayBoxSize(lines, w, h)
-	m.Box.BorderPx = overlayScaledPx(overlayPadMinPt, w, h)
+	m.Box.WidthPx, m.Box.HeightPx = overlayBoxSize(lines, w, h, 1.0)
+	m.Box.BorderPx = overlayScaledPx(overlayPadMinPt, w, h, 1.0)
 	return m
 }
 
 func overlayMetrics(cfg OverlayConfig, weather WeatherSnapshot, w, h int) OverlayBoxMetrics {
-	lines, err := overlayRenderedLines(cfg, weather, w, h)
+	lines, err := overlayRenderedLines(cfg, weather, w, h, 1.0)
 	if err != nil {
 		return OverlayBoxMetrics{Error: err.Error()}
 	}

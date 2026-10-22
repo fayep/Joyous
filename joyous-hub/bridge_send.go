@@ -219,7 +219,9 @@ func bridgeEncodeInkJoy(
 				// portrait, so the overlay draws directly on its true bottom edge.
 				// (drawWeatherOverlay's portrait flag rotates landscape sources
 				// like the 10"; doing that here would bake text along a side.)
-				return drawWeatherOverlay(img, cfg, weather, photoName, false), nil
+				// ij28OverlayScale enlarges the overlay so it isn't tiny on this
+				// large panel (the engine would otherwise shrink it ~0.78x).
+				return drawWeatherOverlayScaled(img, cfg, weather, photoName, false, ij28OverlayScale), nil
 			}, colorOverride)
 		}
 		return hub.images.ServeInkJoy28IJI3(body.ImageID, colorOverride)

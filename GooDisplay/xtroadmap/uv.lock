@@ -1,0 +1,116 @@
+version = 1
+revision = 3
+requires-python = ">=3.11"
+
+[options]
+prerelease-mode = "allow"
+
+[[package]]
+name = "capstone"
+version = "6.0.0a10"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/b7/f355a6060e29c76319400bf5f808fe5d6f63c07092c0ada1c8e51e5f5185/capstone-6.0.0a10.tar.gz", hash = "sha256:7df0fac8c181fccc32f55c52de164bbac4e7beebf61a5df32dcf7c2588a66f5f", size = 5708152, upload-time = "2026-07-21T17:40:17.605Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/43/af/9cac04f27ce2f8c684e3dd5fe9a47e1ac5e27891f598d171e260cdc36e2c/capstone-6.0.0a10-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:a5501f66ce628f2433b8ff74101bfdd1a0b40ce7df5b81efe51acf9369b09cdf", size = 2079483, upload-time = "2026-07-21T17:39:42.507Z" },
+    { url = "https://files.pythonhosted.org/packages/91/21/99dc2f6825f5883eacfd86535d49761a27c3309c0537c7d13152baa0f2e6/capstone-6.0.0a10-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:b4aa0d16c341e96c9a62e56ac053642dba628c33b4899c5bb94f231672cdedd1", size = 2243735, upload-time = "2026-07-21T17:39:44.97Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/4c/e19ac8ba5aeabccb97972ff5d7ae321619c1866566b932a9422947126a81/capstone-6.0.0a10-cp314-cp314t-manylinux1_i686.manylinux_2_28_i686.manylinux_2_5_i686.whl", hash = "sha256:173de7606c063e401180ba658da5eda4dc14c423aa701e5cef3c144bb624545a", size = 2510928, upload-time = "2026-07-21T17:39:46.605Z" },
+    { url = "https://files.pythonhosted.org/packages/36/8d/b323ab69cad6430565cb5801589ea45bd9377c15b719eaf7dc7d58f81fbb/capstone-6.0.0a10-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:42983381ea242bcf402b897c3cc90cb2aa3dbc08bdd22ddde19c318b559f03d7", size = 2499387, upload-time = "2026-07-21T17:39:48.255Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/e2/9c21493d9a4d110bc26885dc182b22e7c140faff9cf9fde5e3d2f8a8804c/capstone-6.0.0a10-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:56af21c4e1c45ac1304428737c04f267741855e731836ad36abd0acb1e39b063", size = 2553929, upload-time = "2026-07-21T17:39:49.705Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/b8/10745a7064bba546cdf6ac6fb8cb3a73aa7d53d75bf3f8852526e3fd00b4/capstone-6.0.0a10-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:095dd14a29927d1b0aaa0cce71c32f5b220a0629793c090e6270742074c35cae", size = 2504970, upload-time = "2026-07-21T17:39:51.433Z" },
+    { url = "https://files.pythonhosted.org/packages/72/7c/64b06048b498155e737469e624bb6de86ab91e30e3d635055e784b5456e7/capstone-6.0.0a10-cp314-cp314t-musllinux_1_2_i686.whl", hash = "sha256:8974735ea0f1bbd22d4a2296446820be33f19b0650d24c8929914ccd85c6c724", size = 2510139, upload-time = "2026-07-21T17:39:53.389Z" },
+    { url = "https://files.pythonhosted.org/packages/36/31/ec2bcce27c94f0cc7e2799d9ee16741f2b75fb6a1dab85cbc8f399ca5ca4/capstone-6.0.0a10-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:1a68cd37c26c96ff7c008f0062ea4f42c92a75808ec58ec33a26470b5469ac09", size = 2554725, upload-time = "2026-07-21T17:39:55.158Z" },
+    { url = "https://files.pythonhosted.org/packages/a9/5e/01a70e09724231a59153363d6e9f18383da3ba65e71aba663a2b14a220fb/capstone-6.0.0a10-cp314-cp314t-win32.whl", hash = "sha256:854b118c28e5c52a1b1a7125d207d4001b5e18e3864bb1de15333afd472e308b", size = 2523076, upload-time = "2026-07-21T17:39:56.759Z" },
+    { url = "https://files.pythonhosted.org/packages/94/ab/1a95965109c6aae91d11f4cf59d35c0e366be0014fd8d311840209a731e9/capstone-6.0.0a10-cp314-cp314t-win_amd64.whl", hash = "sha256:c4feb509190fcf0448fc7387423d4a634fead486c12621b10ea49e11de16fafa", size = 2555527, upload-time = "2026-07-21T17:39:58.27Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/78/d2bdba32051c8b80f2323ad5c18942af3ba9e4fcdf93c3cc04d7fc5fb71e/capstone-6.0.0a10-cp314-cp314t-win_arm64.whl", hash = "sha256:0d72e992b2bd4805e72cf04ce573ab140cd8b9b18a151d8ebd1dd51d6f5a77b1", size = 2482399, upload-time = "2026-07-21T17:39:59.677Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/31/859644372e10ec47bf70510668b7d8e7fbe7325f52cf3dc4ed6c9e1a3a8b/capstone-6.0.0a10-cp38-abi3-macosx_10_9_x86_64.whl", hash = "sha256:b8590b4c9e06056b5f9267309a16f061eb65e60cceee715247da810e41eeebf9", size = 2079478, upload-time = "2026-07-21T17:40:01.369Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/79/82e8c66be36fa4dbd9d87e5603f801b3f89eb525a2deb2e7db2300223e09/capstone-6.0.0a10-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:8176aeb63553867088411f7158e188567cc8eec1639a826a8e0b6e8ad8ceb151", size = 2243737, upload-time = "2026-07-21T17:40:02.898Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/55/3d68d9b2900fe2aaa211f1a5bf41c350cf3299527bc26c90fc29917abad7/capstone-6.0.0a10-cp38-abi3-manylinux1_i686.manylinux_2_28_i686.manylinux_2_5_i686.whl", hash = "sha256:9ef3f737887b865c20ef45f679272587405be7841725ca9b432edcbd0eaea5ca", size = 2510926, upload-time = "2026-07-21T17:40:04.314Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/42/5888d6ce7ab43188f5209157df89d725f12bf03a6414cedda270931ef478/capstone-6.0.0a10-cp38-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:940465a0fea9d405ffbc670a9ddc296cbb28894568a206187e9589946e62b3c8", size = 2499386, upload-time = "2026-07-21T17:40:05.707Z" },
+    { url = "https://files.pythonhosted.org/packages/97/61/5a9fabf5ee6596fe04b0bcf98d1422bba2cd7c33ebabce06a41c7f25008f/capstone-6.0.0a10-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1aaf1545dc8a909273d4f372546b8b85231f868944e65e7d728bba450469e4a5", size = 2553931, upload-time = "2026-07-21T17:40:07.14Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/3f/537ac7aae5132930b8802a6eee75e9c1944b1d739c7df46b5376e6bd8344/capstone-6.0.0a10-cp38-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:81540dfa512b5ce45a159265494d284846f69a19f649e703f9c234366b0ca2ee", size = 2504970, upload-time = "2026-07-21T17:40:08.513Z" },
+    { url = "https://files.pythonhosted.org/packages/19/ea/3fdf29f2c0e32a57f463c2a52704e22f233fd8473709878ddb33b3d3d97e/capstone-6.0.0a10-cp38-abi3-musllinux_1_2_i686.whl", hash = "sha256:7dc4f51ba9df5e4e40f4c73cfe47f3d143e04dc6e4b3a49de02f5623cbc905a7", size = 2510135, upload-time = "2026-07-21T17:40:10.05Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/31/f4f68e05b64452dd8b9913cda91d735dd16c6a4a3d269175f75ff33a26ff/capstone-6.0.0a10-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:14e51ba63ac620f16dfbc833e947304af1f417092520179e807136810a38f10a", size = 2554722, upload-time = "2026-07-21T17:40:11.564Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/d3/fdebfb1db68f663d78991cc57cfa34c9a698d09fb7f865f7a046a4962ee1/capstone-6.0.0a10-cp38-abi3-win32.whl", hash = "sha256:a3ec0a4f7a308252a029469991be6d4a45f74348efbd38ea17467f6bcde501ad", size = 2437547, upload-time = "2026-07-21T17:40:13.191Z" },
+    { url = "https://files.pythonhosted.org/packages/10/ff/216e6d21d6a297417d085fd8aa1689550d891c342a579af70ee6a12d7f07/capstone-6.0.0a10-cp38-abi3-win_amd64.whl", hash = "sha256:7e4f14c868aa11e7fdd39f7fd65d02446c1a7bf0c6be2e5e79bd196a9b86cbcd", size = 2492319, upload-time = "2026-07-21T17:40:14.67Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/1d/8522e9c2582535bec6345d36ed8744a5e2243aa221d5f72d1b55aebeb367/capstone-6.0.0a10-cp38-abi3-win_arm64.whl", hash = "sha256:10f3138c6c2276e19eeb0a5216ede9166b9d3d35cdf1cb9e629f4abf4f1f0b50", size = 2424182, upload-time = "2026-07-21T17:40:16.106Z" },
+]
+
+[[package]]
+name = "colorama"
+version = "0.4.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
+]
+
+[[package]]
+name = "iniconfig"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
+name = "packaging"
+version = "26.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/fa/3944b40b07da9ce895c0e6303a5ab7d53da063554f534556b134a54d6093/packaging-26.3.tar.gz", hash = "sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79", size = 313412, upload-time = "2026-08-04T18:15:28.737Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl", hash = "sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c", size = 129956, upload-time = "2026-08-04T18:15:27.159Z" },
+]
+
+[[package]]
+name = "pluggy"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
+]
+
+[[package]]
+name = "pygments"
+version = "2.20.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c3/b2/bc9c9196916376152d655522fdcebac55e66de6603a76a02bca1b6414f6c/pygments-2.20.0.tar.gz", hash = "sha256:6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f", size = 4955991, upload-time = "2026-03-29T13:29:33.898Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f4/7e/a72dd26f3b0f4f2bf1dd8923c85f7ceb43172af56d63c7383eb62b332364/pygments-2.20.0-py3-none-any.whl", hash = "sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176", size = 1231151, upload-time = "2026-03-29T13:29:30.038Z" },
+]
+
+[[package]]
+name = "pytest"
+version = "9.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
+    { name = "pygments" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
+]
+
+[[package]]
+name = "xtroadmap"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "capstone" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "capstone", specifier = "==6.0.0a10" }]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.0" }]

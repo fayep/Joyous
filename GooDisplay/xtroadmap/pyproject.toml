@@ -1,0 +1,27 @@
+[project]
+name = "xtroadmap"
+version = "0.1.0"
+description = "Static Capstone roadmap for ESP32-S3 (Xtensa) firmware — Gerald-shaped map, no emulator."
+requires-python = ">=3.11"
+dependencies = [
+    "capstone==6.0.0a10",
+]
+
+[project.scripts]
+xtroadmap = "xtroadmap.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.1,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.uv]
+prerelease = "allow"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

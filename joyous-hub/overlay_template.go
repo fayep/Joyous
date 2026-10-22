@@ -125,7 +125,7 @@ func executeOverlayTemplate(cfg OverlayConfig, weather WeatherSnapshot) (string,
 	return buf.String(), nil
 }
 
-func overlayRenderedLines(cfg OverlayConfig, weather WeatherSnapshot, w, h int) ([]overlayLine, error) {
+func overlayRenderedLines(cfg OverlayConfig, weather WeatherSnapshot, w, h int, boost float64) ([]overlayLine, error) {
 	raw, err := executeOverlayTemplate(cfg, weather)
 	if err != nil {
 		return nil, err
@@ -136,28 +136,28 @@ func overlayRenderedLines(cfg OverlayConfig, weather WeatherSnapshot, w, h int) 
 		if line == "" {
 			continue
 		}
-		face := overlayLineFace(i, w, h)
+		face := overlayLineFace(i, w, h, boost)
 		if face == nil {
 			return nil, fmt.Errorf("overlay font unavailable")
 		}
 		lines = append(lines, overlayLine{
 			text:   line,
 			face:   face,
-			stepPx: overlayLineStepAfter(i, w, h),
-			fontPx: overlayLineFontSizePx(i, w, h),
+			stepPx: overlayLineStepAfter(i, w, h, boost),
+			fontPx: overlayLineFontSizePx(i, w, h, boost),
 		})
 	}
 	return lines, nil
 }
 
-func overlayLineFace(index, w, h int) font.Face {
+func overlayLineFace(index, w, h int, boost float64) font.Face {
 	switch index {
 	case 0:
-		return overlayFacePt(overlayFontMediumPt, w, h)
+		return overlayFacePt(overlayFontMediumPt, w, h, boost)
 	case 1:
-		return overlayFacePt(overlayFontLargePt, w, h)
+		return overlayFacePt(overlayFontLargePt, w, h, boost)
 	default:
-		return overlayFacePt(overlayFontMediumPt, w, h)
+		return overlayFacePt(overlayFontMediumPt, w, h, boost)
 	}
 }
 
@@ -182,8 +182,8 @@ func overlayContentHeight(lines []overlayLine) int {
 }
 
 // overlayBoxSize returns the content box plus a small border on all sides.
-func overlayBoxSize(lines []overlayLine, w, h int) (width, height int) {
-	pad := overlayScaledPx(overlayPadMinPt, w, h)
+func overlayBoxSize(lines []overlayLine, w, h int, boost float64) (width, height int) {
+	pad := overlayScaledPx(overlayPadMinPt, w, h, boost)
 	if len(lines) == 0 {
 		return pad * 2, pad * 2
 	}
