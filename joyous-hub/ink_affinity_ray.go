@@ -2,7 +2,6 @@ package main
 
 import (
 	"image"
-	"image/color"
 	"math"
 )
 
@@ -15,39 +14,26 @@ func ApplyInkAffinityRay(img image.Image, displayPalette [][3]float64, strength 
 	}
 	_ = displayPalette
 	_ = portraitEnhance
-	field := buildRayField(img)
-	mask := buildRayFaceMask(img, field)
-	guide := buildRayLGuide(img, field, mask)
-	b := img.Bounds()
-	out := image.NewRGBA(b)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r8, g8, b8, a8 := img.At(x, y).RGBA()
-			rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
-			lab := srgbToLAB(rgb)
-			w := mask.weight(x, y)
-			if w > strength {
-				w = strength
-			}
-			newLab := lab
-			// Shadow half is already right — do not recolor it. Only the
-			// blown half (L* above the face band) is pulled down.
-			if w > 0.02 && lab[0] > 58 {
-				inkLab := skinRayTarget(lab, [3]float64{}, [3]float64{}, guide)
-				newLab[0] = lab[0] + w*(inkLab[0]-lab[0])
-				newLab[1] = lab[1] + w*(inkLab[1]-lab[1])
-				newLab[2] = lab[2] + w*(inkLab[2]-lab[2])
-			}
-			mapped := labToSRGB(newLab)
-			out.SetRGBA(x, y, color.RGBA{
-				R: floatTo8(mapped[0]),
-				G: floatTo8(mapped[1]),
-				B: floatTo8(mapped[2]),
-				A: uint8(a8 >> 8),
-			})
+	lab := newLabGrid(img)
+	field := buildRayFieldLAB(lab)
+	mask := buildRayFaceMaskLAB(lab, field)
+	guide := buildRayLGuideLAB(lab, field, mask)
+	return labMapImage(img, func(x, y int, p *[3]float64) bool {
+		lab := *p
+		w := mask.weight(x, y)
+		if w > strength {
+			w = strength
 		}
-	}
-	return out
+		// Shadow half is already right — do not recolor it. Only the
+		// blown half (L* above the face band) is pulled down.
+		if w > 0.02 && lab[0] > 58 {
+			inkLab := skinRayTarget(lab, [3]float64{}, [3]float64{}, guide)
+			p[0] = lab[0] + w*(inkLab[0]-lab[0])
+			p[1] = lab[1] + w*(inkLab[1]-lab[1])
+			p[2] = lab[2] + w*(inkLab[2]-lab[2])
+		}
+		return true
+	})
 }
 
 func inkAffinityRayTargetLAB(lab [3]float64, pal [][3]float64, guide rayLGuide, role rayRole) [3]float64 {
@@ -125,12 +111,14 @@ type rayCell struct {
 	warmHighlight bool
 }
 
+func buildRayField(img image.Image) rayField { return buildRayFieldLAB(newLabGrid(img)) }
+
 // buildRayField labels coarse cells as sky-field vs face-field. Large connected
 // bright regions are atmosphere even when their LAB overlaps skin. Compact
 // midtone skin clusters are faces; warm highlights touching those clusters
 // (foreheads) join the face, but the same tone in the middle of a cloud does not.
-func buildRayField(img image.Image) rayField {
-	b := img.Bounds()
+func buildRayFieldLAB(g *labGrid) rayField {
+	b := g.rect
 	w, h := b.Dx(), b.Dy()
 	if w < 1 || h < 1 {
 		return rayField{}
@@ -157,7 +145,7 @@ func buildRayField(img image.Image) rayField {
 		cy := (y - b.Min.Y) / cell
 		for x := b.Min.X; x < b.Max.X; x += step {
 			cx := (x - b.Min.X) / cell
-			lab := pixelLABAt(img, x, y)
+			lab := g.at(x, y)
 			i := cy*gw + cx
 			c := &cells[i]
 			c.l += lab[0]
@@ -294,11 +282,15 @@ func isFaceWalkableLAB(lab [3]float64, role rayRole) bool {
 	return true
 }
 
+func buildRayFaceMask(img image.Image, field rayField) rayMask {
+	return buildRayFaceMaskLAB(newLabGrid(img), field)
+}
+
 // buildRayFaceMask walks the chromatic face from flesh seeds, then grows
 // up the same columns onto sunlit forehead chalk. It does not dilate into
 // pale sky beside the head or down into a grey jacket.
-func buildRayFaceMask(img image.Image, field rayField) rayMask {
-	b := img.Bounds()
+func buildRayFaceMaskLAB(g *labGrid, field rayField) rayMask {
+	b := g.rect
 	w, h := b.Dx(), b.Dy()
 	if w < 1 || h < 1 {
 		return rayMask{}
@@ -308,7 +300,7 @@ func buildRayFaceMask(img image.Image, field rayField) rayMask {
 	nSeed := 0
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		for x := b.Min.X; x < b.Max.X; x++ {
-			if !isRayFleshSeedLAB(pixelLABAt(img, x, y)) {
+			if !isRayFleshSeedLAB(g.at(x, y)) {
 				continue
 			}
 			if field.gw > 0 && field.at(x, y) != rayRoleFace {
@@ -331,7 +323,7 @@ func buildRayFaceMask(img image.Image, field rayField) rayMask {
 		if !hasSky {
 			for y := b.Min.Y; y < b.Max.Y; y++ {
 				for x := b.Min.X; x < b.Max.X; x++ {
-					lab := pixelLABAt(img, x, y)
+					lab := g.at(x, y)
 					if !isSkinRayLAB(lab) && !isFaceSkinLAB(lab) {
 						continue
 					}
@@ -415,7 +407,7 @@ func buildRayFaceMask(img image.Image, field rayField) rayMask {
 		}
 		var sumL, sumA float64
 		for _, idx := range comp {
-			lab := pixelLABAt(img, b.Min.X+idx%w, b.Min.Y+idx/w)
+			lab := g.at(b.Min.X+idx%w, b.Min.Y+idx/w)
 			sumL += lab[0]
 			sumA += lab[1]
 		}
@@ -452,7 +444,7 @@ func buildRayFaceMask(img image.Image, field rayField) rayMask {
 				if inside[ni] {
 					continue
 				}
-				lab := pixelLABAt(img, b.Min.X+nx, b.Min.Y+ny)
+				lab := g.at(b.Min.X+nx, b.Min.Y+ny)
 				if isFoliageLAB(lab) || isRayPaleHighlightLAB(lab) {
 					continue
 				}
@@ -544,7 +536,7 @@ func buildRayFaceMask(img image.Image, field rayField) rayMask {
 			}
 			feather := 16
 			for yy := y0; yy < colTop[xx]; yy++ {
-				lab := pixelLABAt(img, b.Min.X+xx, b.Min.Y+yy)
+				lab := g.at(b.Min.X+xx, b.Min.Y+yy)
 				if lab[0] < 50 || isFoliageLAB(lab) {
 					continue
 				}
@@ -575,7 +567,7 @@ func buildRayFaceMask(img image.Image, field rayField) rayMask {
 				y1 = h - 1
 			}
 			for yy := colBot[xx] + 1; yy <= y1; yy++ {
-				lab := pixelLABAt(img, b.Min.X+xx, b.Min.Y+yy)
+				lab := g.at(b.Min.X+xx, b.Min.Y+yy)
 				if isFoliageLAB(lab) || isRayPaleHighlightLAB(lab) {
 					continue
 				}
@@ -697,12 +689,16 @@ func defaultRayLGuide() rayLGuide {
 }
 
 func buildRayLGuide(img image.Image, field rayField, mask rayMask) rayLGuide {
+	return buildRayLGuideLAB(newLabGrid(img), field, mask)
+}
+
+func buildRayLGuideLAB(labs *labGrid, field rayField, mask rayMask) rayLGuide {
 	g := defaultRayLGuide()
 	var hist [101]int
 	n := 0
 	var sumA, sumB float64
 	nMid := 0
-	b := img.Bounds()
+	b := labs.rect
 	step := 2
 	if b.Dx()*b.Dy() < 400 {
 		step = 1
@@ -714,7 +710,7 @@ func buildRayLGuide(img image.Image, field rayField, mask rayMask) rayLGuide {
 			} else if mask.w == 0 && field.gw > 0 && field.at(x, y) != rayRoleFace {
 				continue
 			}
-			lab := pixelLABAt(img, x, y)
+			lab := labs.at(x, y)
 			if lab[0] < 16 || isFoliageLAB(lab) {
 				continue
 			}
@@ -1021,7 +1017,10 @@ func inkAffinityRayWeight(lab [3]float64, strength float64, portraitEnhance bool
 // raySkinForbidsGreen is the remapped-face band: peach at panel-safe L*,
 // far enough from green ink that G is only a luminance crutch.
 func raySkinForbidsGreen(rgb [3]float64) bool {
-	lab := srgbToLAB(paletteRGB01(rgb))
+	return raySkinForbidsGreenLAB(srgbToLAB(paletteRGB01(rgb)))
+}
+
+func raySkinForbidsGreenLAB(lab [3]float64) bool {
 	return lab[0] >= 16 && lab[0] <= 72 && lab[1] >= 6 && lab[2] >= 2
 }
 

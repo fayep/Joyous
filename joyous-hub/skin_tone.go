@@ -2,7 +2,6 @@ package main
 
 import (
 	"image"
-	"image/color"
 	"math"
 )
 
@@ -59,51 +58,36 @@ func ApplySkinToneProcessing(img image.Image, strength float64) image.Image {
 	if strength <= 0 {
 		return img
 	}
-	b := img.Bounds()
-	out := image.NewRGBA(b)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r8, g8, b8, a8 := img.At(x, y).RGBA()
-			rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
-			lab := srgbToLAB(rgb)
-			w := skinToneWeight(lab) * strength
-			if w <= 0 {
-				out.SetRGBA(x, y, color.RGBA{uint8(r8 >> 8), uint8(g8 >> 8), uint8(b8 >> 8), uint8(a8 >> 8)})
-				continue
-			}
-			L, a, bv := lab[0], lab[1], lab[2]
-			origL := L
-
-			// Warm shadows: more red, less green (counteracts sage ink in Stucki mixes).
-			if L < 52 {
-				t := (52 - L) / 52
-				if t > 1 {
-					t = 1
-				}
-				a += w * t * 5.0
-				bv -= w * t * 3.5
-			}
-			// Mid skin: gentle warmth without brightening.
-			if L >= 32 && L <= 72 {
-				a += w * 1.2
-				bv -= w * 0.6
-			}
-			// Preserve depth on darker skin — resist prior shadow lift / DR flattening.
-			if origL < 44 && L > origL+1.5 {
-				L = origL + (L-origL)*0.25
-			}
-
-			lab[0], lab[1], lab[2] = L, a, bv
-			enhanced := labToSRGB(lab)
-			out.SetRGBA(x, y, color.RGBA{
-				R: floatTo8(enhanced[0]),
-				G: floatTo8(enhanced[1]),
-				B: floatTo8(enhanced[2]),
-				A: uint8(a8 >> 8),
-			})
+	return labMapImage(img, func(_, _ int, lab *[3]float64) bool {
+		w := skinToneWeight(*lab) * strength
+		if w <= 0 {
+			return false
 		}
-	}
-	return out
+		L, a, bv := lab[0], lab[1], lab[2]
+		origL := L
+
+		// Warm shadows: more red, less green (counteracts sage ink in Stucki mixes).
+		if L < 52 {
+			t := (52 - L) / 52
+			if t > 1 {
+				t = 1
+			}
+			a += w * t * 5.0
+			bv -= w * t * 3.5
+		}
+		// Mid skin: gentle warmth without brightening.
+		if L >= 32 && L <= 72 {
+			a += w * 1.2
+			bv -= w * 0.6
+		}
+		// Preserve depth on darker skin — resist prior shadow lift / DR flattening.
+		if origL < 44 && L > origL+1.5 {
+			L = origL + (L-origL)*0.25
+		}
+
+		lab[0], lab[1], lab[2] = L, a, bv
+		return true
+	})
 }
 
 func shadowLiftOnSkin(lab [3]float64, lift float64, portrait bool) float64 {

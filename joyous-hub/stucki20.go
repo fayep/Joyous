@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"image"
-	"image/color"
 	"sync"
 )
 
@@ -95,31 +94,17 @@ func ApplyInkAffinityMix(img image.Image, displayPalette [][3]float64, strength 
 }
 
 func applyInkAffinityToward(img image.Image, target func([3]float64) [3]float64, strength float64, portraitEnhance bool) image.Image {
-	b := img.Bounds()
-	out := image.NewRGBA(b)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r8, g8, b8, a8 := img.At(x, y).RGBA()
-			rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
-			lab := srgbToLAB(rgb)
-			inkLab := target(lab)
+	return labMapImage(img, func(_, _ int, p *[3]float64) bool {
+		lab := *p
+		inkLab := target(lab)
 
-			t := inkAffinityWeight(lab, strength, portraitEnhance)
-			newLab := lab
-			newLab[1] = lab[1] + t*(inkLab[1]-lab[1])
-			newLab[2] = lab[2] + t*(inkLab[2]-lab[2])
-			newLab = capInkAffinityShift(lab, newLab, inkAffinityMaxDeltaE*strength)
-
-			mapped := labToSRGB(newLab)
-			out.SetRGBA(x, y, color.RGBA{
-				R: floatTo8(mapped[0]),
-				G: floatTo8(mapped[1]),
-				B: floatTo8(mapped[2]),
-				A: uint8(a8 >> 8),
-			})
-		}
-	}
-	return out
+		t := inkAffinityWeight(lab, strength, portraitEnhance)
+		newLab := lab
+		newLab[1] = lab[1] + t*(inkLab[1]-lab[1])
+		newLab[2] = lab[2] + t*(inkLab[2]-lab[2])
+		*p = capInkAffinityShift(lab, newLab, inkAffinityMaxDeltaE*strength)
+		return true
+	})
 }
 
 func shouldApplyInkAffinityMix(pipe ColorPipeline, img image.Image, flatRGB bool) bool {
