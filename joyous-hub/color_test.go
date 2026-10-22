@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"image"
 	"image/color"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -208,6 +209,33 @@ func TestLABDynamicRangeFitTopIsPanelWhite(t *testing.T) {
 				t.Errorf("%s %.1f stops: scene black -> L*%.1f, below panel black L*%.1f", name, stops, outLo, lo)
 			}
 		}
+	}
+}
+
+// People photos (the ray pass) keep the black-anchored fit the ray pass was
+// tuned on: the span climbs N stops from panel black, so scene white lands N
+// stops above black, not at panel white.
+func TestLABDynamicRangeFitFromBlackForRay(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 256, 8))
+	for x := range 256 {
+		for y := range 8 {
+			img.Set(x, y, color.RGBA{uint8(x), uint8(x), uint8(x), 255})
+		}
+	}
+	pal := PaletteInkJoyDisplay[:]
+	lo, hi := displayPaletteDRRange(pal)
+	pipe := ResolveColorPipeline(defaultColorConfig())
+	pipe.LABDynamicRangeEnabled = true
+	pipe.LABDynamicRangeStops = 3.5
+	pipe.LABDynamicRangeFromBlack = true
+	out := ApplyLABProcessing(img, pipe, pal, true)
+	outLo, outHi := luminancePercentiles(out, 0.01, 0.99)
+	wantHi := linearYToLabL(math.Min(labLToLinearY(lo)*math.Pow(2, 3.5), labLToLinearY(hi)))
+	if math.Abs(outLo-lo) > 1.5 || math.Abs(outHi-wantHi) > 1.5 {
+		t.Errorf("from black: L* %.1f-%.1f, want %.1f-%.1f", outLo, outHi, lo, wantHi)
+	}
+	if wantHi > hi-5 {
+		t.Fatalf("fixture should leave headroom under panel white (%.1f vs %.1f)", wantHi, hi)
 	}
 }
 

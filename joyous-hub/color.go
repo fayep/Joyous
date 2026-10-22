@@ -64,6 +64,9 @@ type ColorPipeline struct {
 	LABShadowStrength    float64
 	LABDynamicRangeEnabled bool
 	LABDynamicRangeStops   float64
+	// LABDynamicRangeFromBlack anchors the DR fit's output span at panel black
+	// instead of panel white; set per image by StuckiTwoPalette, not configured.
+	LABDynamicRangeFromBlack bool
 	PortraitEnhance        bool
 	// PeopleLikely is the album image's people detection (ImageMeta.PeopleLikely),
 	// independent of whether the skin-tone pass (PortraitEnhance) is enabled.
