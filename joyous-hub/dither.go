@@ -1190,13 +1190,17 @@ func preDitherGradientWeightLum(lum []float64, w, h, x, y int) float64 {
 	return wt
 }
 
+// preDitherNoiseSample returns dither jitter in [-1,1) for pixel (x,y), channel
+// c. Backed by a blue-noise mask (see dither_bluenoise.go) rather than a white-
+// noise hash, so the pre-dither and Zhou–Fang threshold jitter read as fine
+// high-frequency texture instead of low-frequency grain in smooth regions.
 func preDitherNoiseSample(x, y, c int) float64 {
-	n := uint32(x*73856093 ^ y*19349663 ^ c*83492791)
-	n ^= n << 13
-	n ^= n >> 17
-	n ^= n << 5
-	return float64(n%1000)/499.5 - 1.0
+	return ditherNoise(x, y, c)
 }
+
+// ditherNoise is the jitter source behind preDitherNoiseSample; a var only so
+// tests can A/B it against white noise.
+var ditherNoise = blueNoiseSample
 
 // RenderIndicesToRGB writes sendPalette (P1) RGB for each ink index.
 func RenderIndicesToRGB(indices [][]byte, sendPalette [][3]float64) image.Image {
