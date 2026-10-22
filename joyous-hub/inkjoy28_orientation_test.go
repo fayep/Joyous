@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"image"
 	"image/color"
 	"image/png"
@@ -76,18 +77,15 @@ func inkCodeToIndex(code byte) int {
 // inkjoy28UnscanIndices inverts scanWrapInkJoy28's panel scan, returning the
 // upright 2160x3060 grid of panel ink codes.
 func inkjoy28UnscanIndices(plane []byte) [][]byte {
-	const half = ij28W / 2
 	idx := make([][]byte, ij28H)
 	for i := range idx {
 		idx[i] = make([]byte, ij28W)
 	}
 	for i := 0; i < ij28H/2; i++ {
-		b0, b1 := (2*i)*ij28W, (2*i+1)*ij28W
-		for c := 0; c < half; c++ {
-			idx[2*i][ij28W-1-c] = plane[b0+2*c] & 7
-			idx[2*i+1][ij28W-1-c] = plane[b0+2*c+1] & 7
-			idx[2*i][ij28W-1-half-c] = plane[b1+2*c] & 7
-			idx[2*i+1][ij28W-1-half-c] = plane[b1+2*c+1] & 7
+		for c := 0; c < ij28W; c++ {
+			w := binary.BigEndian.Uint16(plane[(i*ij28W+c)*2:])
+			idx[2*i][ij28W-1-c] = byte(w>>8) & 7
+			idx[2*i+1][ij28W-1-c] = byte(w) & 7
 		}
 	}
 	return idx
