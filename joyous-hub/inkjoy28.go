@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"os"
+	"sync"
 
 	"github.com/pierrec/lz4/v4"
 )
@@ -75,10 +76,43 @@ func (s *ImageStore) ServeInkJoy28IJI3Overlay(id string, mutate overlayFrameMuta
 	return s.serveInkJoy28IJI3(id, mutate, colorOverride)
 }
 
-// serveInkJoy28IJI3 is the shared decode→crop→resize→(overlay)→dither→IJI3 path.
-// mutate is nil for the plain photo path; when set it runs on the upright
-// 2160x3060 RGB image just before the dither.
+// serveInkJoy28IJI3 produces the IJI3 for the photo, optionally with an overlay.
+//
+// The photo dither (the expensive part) is computed once and cached as an ink-
+// index grid. The clean path scans+wraps that grid directly. The overlay path
+// does NOT re-dither: the overlay marks are flat, absolute colours (black-
+// outlined white text — no translucent box in outline style), so they need no
+// error diffusion. We rebuild the dithered photo's display colours, let the
+// existing drawer stamp the overlay onto them, then map back to the nearest ink.
+// Non-overlay pixels are already exact palette colours, so they map to
+// themselves (untouched); only the overlay marks change, landing as crisp flat
+// black/white ink. Reusing the cached base dither makes overlay renders fast.
 func (s *ImageStore) serveInkJoy28IJI3(id string, mutate overlayFrameMutator, colorOverride *[6]PaletteRGB) ([]byte, error) {
+	base, err := s.inkjoy28BaseIndices(id, colorOverride)
+	if err != nil {
+		return nil, err
+	}
+	if mutate == nil {
+		return scanWrapInkJoy28(base)
+	}
+	display := inkjoy28IndicesToDisplayRGBA(base)
+	// flatRGB=false: the 28.5" path has no flat-calibration-wipe concept.
+	overlaid, err := mutate(display, false)
+	if err != nil {
+		return nil, err
+	}
+	return scanWrapInkJoy28(inkjoy28RequantizeIndices(overlaid))
+}
+
+// inkjoy28BaseIndices returns the dithered 8-ink index grid for the photo,
+// cached in-process per (image, colour override) so overlay/date re-renders
+// reuse the dither instead of repeating the ~90s pass. A redeploy (new process)
+// drops the cache, so a palette/pipeline code change re-dithers once.
+func (s *ImageStore) inkjoy28BaseIndices(id string, colorOverride *[6]PaletteRGB) ([][]byte, error) {
+	key := id + "|" + inkjoy28OverrideKey(colorOverride)
+	if v, ok := inkjoy28IdxCache.get(key); ok {
+		return v, nil
+	}
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return nil, err
@@ -98,27 +132,59 @@ func (s *ImageStore) serveInkJoy28IJI3(id string, mutate overlayFrameMutator, co
 		img = applyCrop(img, crop)
 	}
 	img = resizeHQ(img, ij28W, ij28H)
-	if mutate != nil {
-		// flatRGB=false: the 28.5" photo path has no flat-calibration-wipe
-		// concept (that's a 10" hi/lo detail), so the overlay always composites.
-		img, err = mutate(img, false)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return encodeInkJoy28IJI3FromRGBA(img, s.colorPipelineForMetaOverride(meta, colorOverride))
-}
-
-// encodeInkJoy28IJI3FromRGBA runs the shared color pipeline, applies the panel
-// scan transform, and wraps the result as IJI3.
-func encodeInkJoy28IJI3FromRGBA(img image.Image, pipe ColorPipeline) ([]byte, error) {
 	// Dither against the measured 8-ink 28.5" palette (not pipe.InkJoyDisplay,
-	// which is the 10"'s 6-ink set). StuckiTwoPalette returns indices into this
-	// palette; the LAB dynamic-range fit uses its white (index 1, a real ~L*85
-	// grey) as the ceiling, and goldenrod/orange (6,7) widen the dither gamut.
+	// the 10"'s 6-ink set); goldenrod/orange (6,7) widen the dither gamut.
+	pipe := s.colorPipelineForMetaOverride(meta, colorOverride)
 	indices := StuckiTwoPalette(img, paletteInkJoy28Display[:], pipe, false, stuckiOptionsInkJoy(pipe))
 	if len(indices) != ij28H || len(indices[0]) != ij28W {
 		return nil, fmt.Errorf("inkjoy28: dither grid %dx%d, want %dx%d",
+			len(indices[0]), len(indices), ij28W, ij28H)
+	}
+	inkjoy28IdxCache.put(key, indices)
+	return indices, nil
+}
+
+// inkjoy28IndicesToDisplayRGBA paints each ink index back to its display colour.
+func inkjoy28IndicesToDisplayRGBA(indices [][]byte) *image.RGBA {
+	out := image.NewRGBA(image.Rect(0, 0, ij28W, ij28H))
+	for y := 0; y < ij28H; y++ {
+		row := indices[y]
+		for x := 0; x < ij28W; x++ {
+			c := paletteInkJoy28Display[row[x]]
+			o := out.PixOffset(x, y)
+			out.Pix[o] = uint8(c[0])
+			out.Pix[o+1] = uint8(c[1])
+			out.Pix[o+2] = uint8(c[2])
+			out.Pix[o+3] = 255
+		}
+	}
+	return out
+}
+
+// inkjoy28RequantizeIndices maps each pixel to its nearest 8-ink index. No error
+// diffusion: pixels that are already exact palette colours (everywhere the
+// overlay didn't draw) map back to themselves; overlay marks become flat ink.
+func inkjoy28RequantizeIndices(img image.Image) [][]byte {
+	rgba := asRGBA(img)
+	b := rgba.Bounds()
+	indices := make([][]byte, ij28H)
+	for y := 0; y < ij28H; y++ {
+		indices[y] = make([]byte, ij28W)
+		for x := 0; x < ij28W; x++ {
+			o := rgba.PixOffset(b.Min.X+x, b.Min.Y+y)
+			rgb := [3]float64{float64(rgba.Pix[o]), float64(rgba.Pix[o+1]), float64(rgba.Pix[o+2])}
+			indices[y][x] = byte(nearestColor(rgb, paletteInkJoy28Display[:]))
+		}
+	}
+	return indices
+}
+
+// scanWrapInkJoy28 applies the panel scan transform to an ink-index grid and
+// wraps it as IJI3. (Split from the dither so both the clean and overlay paths
+// share the scan without re-dithering.)
+func scanWrapInkJoy28(indices [][]byte) ([]byte, error) {
+	if len(indices) != ij28H || len(indices[0]) != ij28W {
+		return nil, fmt.Errorf("inkjoy28: grid %dx%d, want %dx%d",
 			len(indices[0]), len(indices), ij28W, ij28H)
 	}
 	const half = ij28W / 2 // 1080
@@ -136,6 +202,43 @@ func encodeInkJoy28IJI3FromRGBA(img image.Image, pipe ColorPipeline) ([]byte, er
 		}
 	}
 	return writeInkJoy28IJI3(buf)
+}
+
+// inkjoy28IdxCache memoizes dithered base index grids (see inkjoy28BaseIndices).
+var inkjoy28IdxCache = &inkjoy28IndexCache{m: map[string][][]byte{}, cap: 4}
+
+type inkjoy28IndexCache struct {
+	mu    sync.Mutex
+	m     map[string][][]byte
+	order []string
+	cap   int
+}
+
+func (c *inkjoy28IndexCache) get(key string) ([][]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.m[key]
+	return v, ok
+}
+
+func (c *inkjoy28IndexCache) put(key string, v [][]byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.m[key]; !ok {
+		c.order = append(c.order, key)
+	}
+	c.m[key] = v
+	for len(c.order) > c.cap {
+		delete(c.m, c.order[0])
+		c.order = c.order[1:]
+	}
+}
+
+func inkjoy28OverrideKey(o *[6]PaletteRGB) string {
+	if o == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("%v", *o)
 }
 
 // writeInkJoy28IJI3 wraps a raw 2160x3060 8bpp plane in the IJI3 container:
