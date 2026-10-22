@@ -56,6 +56,24 @@ var hiBytes8 = [8]byte{0x01, 0x02, 0x03, 0x04, 0x06, 0x07, 0x00, 0x05}
 // ServeInkJoy28IJI3 encodes album image id as an IJI3 blob for the 28.5" panel,
 // applying the device's optional per-device ink palette override.
 func (s *ImageStore) ServeInkJoy28IJI3(id string, colorOverride *[6]PaletteRGB) ([]byte, error) {
+	return s.serveInkJoy28IJI3(id, nil, colorOverride)
+}
+
+// ServeInkJoy28IJI3Overlay is ServeInkJoy28IJI3 with a server-side overlay
+// composited onto the full-res 2160x3060 RGB image before dithering
+// (mutate-then-dither, like the Samsung/10" paths). Running the mutate at the
+// panel's native resolution lets the overlay engine's diagonal-based scaling
+// proportion the text/icons to this panel automatically. The unoverlaid photo
+// encode is unaffected and stays separately cached — the bridge keys its play
+// cache by overlay token, so the clean render remains under its own filename.
+func (s *ImageStore) ServeInkJoy28IJI3Overlay(id string, mutate overlayFrameMutator, colorOverride *[6]PaletteRGB) ([]byte, error) {
+	return s.serveInkJoy28IJI3(id, mutate, colorOverride)
+}
+
+// serveInkJoy28IJI3 is the shared decode→crop→resize→(overlay)→dither→IJI3 path.
+// mutate is nil for the plain photo path; when set it runs on the upright
+// 2160x3060 RGB image just before the dither.
+func (s *ImageStore) serveInkJoy28IJI3(id string, mutate overlayFrameMutator, colorOverride *[6]PaletteRGB) ([]byte, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return nil, err
@@ -75,6 +93,14 @@ func (s *ImageStore) ServeInkJoy28IJI3(id string, colorOverride *[6]PaletteRGB) 
 		img = applyCrop(img, crop)
 	}
 	img = resizeHQ(img, ij28W, ij28H)
+	if mutate != nil {
+		// flatRGB=false: the 28.5" photo path has no flat-calibration-wipe
+		// concept (that's a 10" hi/lo detail), so the overlay always composites.
+		img, err = mutate(img, false)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return encodeInkJoy28IJI3FromRGBA(img, s.colorPipelineForMetaOverride(meta, colorOverride))
 }
 
