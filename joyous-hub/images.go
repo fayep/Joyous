@@ -1123,6 +1123,17 @@ func (s *ImageStore) convertToBinOrientationForDevice(id string, portrait bool, 
 		}
 		return BuildLoLadderPrimariesBin(frameW, frameH), nil
 	}
+	// A stored .bin is already in device format — pass it through byte-exact
+	// (both hi ink code and lo sub-level). Decoding it to RGBA and re-encoding
+	// would discard the lo plane and overwrite it with the wipe grid, mutating
+	// pre-rendered/calibration bins. (Overlay compositing uses its own path.)
+	if isStoredBin(meta.Name) {
+		raw, err := os.ReadFile(s.rawPath(id))
+		if err != nil {
+			return nil, err
+		}
+		return convertBin(raw)
+	}
 	rgba, flatRGB, err := s.prepareInkJoyFrameRGBA(id, portrait, nativeDims)
 	if err != nil {
 		return nil, err

@@ -796,6 +796,15 @@ func StuckiDither(img image.Image, palette [][3]float64, opts stuckiOptions) [][
 		}
 	}
 
+	// Precompute a green-banned palette once (for SkipGreenOnSkin). palette is a
+	// slice, so copying it here avoids aliasing its backing array when the
+	// per-pixel loop below swaps in the green-banned variant.
+	var palNoGreen [][3]float64
+	if opts.SkipGreenOnSkin && len(palette) > 5 {
+		palNoGreen = append([][3]float64(nil), palette...)
+		palNoGreen[5] = [3]float64{1e9, 1e9, 1e9}
+	}
+
 	out := make([][]byte, h)
 	for y := range h {
 		out[y] = make([]byte, w)
@@ -829,10 +838,10 @@ func StuckiDither(img image.Image, palette [][3]float64, opts stuckiOptions) [][
 				peachScale = stay
 			}
 			pal := palette
-			if opts.SkipGreenOnSkin && raySkinForbidsGreen(srcPx) {
+			if palNoGreen != nil && raySkinForbidsGreen(srcPx) {
 				// Green is sage grey on skin. White stays for the top of a
 				// 3–5 stop range; banning it made abrupt 3-ink islands.
-				pal[5] = [3]float64{1e9, 1e9, 1e9}
+				pal = palNoGreen
 			}
 			idx := nearestColorThresholdMod(rgb, srcPx, pal, x, y, thrMod, out, rtl, antiRun, peachScale)
 			out[y][x] = byte(idx)

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"joyous-hub/bridgehub"
 	"joyous-hub/inkjoybridge"
 	"joyous-hub/protocol"
 )
@@ -222,10 +223,10 @@ func TestUploadImageBin(t *testing.T) {
 	}
 }
 
-// TestDisplayAction: POST /api/devices/{mac}/display publishes a play message.
+// TestDisplayAction: POST /api/devices/{mac}/display dispatches a send-image
+// command to the (online) inkjoy bridge and returns a send_id.
 func TestDisplayAction(t *testing.T) {
 	h := buildTestHub(t)
-	pub := h.publisher.(*noopPublisher)
 
 	// Store a full-frame bin so ServeBin works when display is triggered.
 	bin := make([]byte, frameW*frameH*2)
@@ -234,6 +235,20 @@ func TestDisplayAction(t *testing.T) {
 	}
 	id, _ := h.images.Store(bytes.NewReader(bin), "x.bin")
 	h.devices.MarkConnected("AABBCCDDEEFF")
+
+	// InkJoy sends go through the bridge coordinator now (not a hub MQTT "play"
+	// publish). Register an online inkjoy bridge and capture its command.
+	coord := bridgehub.NewCoordinator(nil, nil)
+	var gotCmd protocol.CmdPayload
+	coord.SetCommandPublishObserver(func(_ string, cmd protocol.CmdPayload) {
+		gotCmd = cmd
+	})
+	hello, err := protocol.NewEnvelope(protocol.TypeHello, "inkjoy", protocol.HelloPayload{Kind: "inkjoy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coord.HandleMessage(protocol.BridgeTopic("inkjoy", "presence"), hello)
+	h.bridgeCoord = coord
 
 	body := fmt.Sprintf(`{"image_id":%q}`, id)
 	req := httptest.NewRequest("POST", "/api/devices/AABBCCDDEEFF/display",
@@ -244,13 +259,11 @@ func TestDisplayAction(t *testing.T) {
 	if rec.Code != 202 {
 		t.Fatalf("status %d body=%s", rec.Code, rec.Body.String())
 	}
-	if len(pub.published) == 0 {
-		t.Fatal("expected a publish, got none")
+	if gotCmd.Cmd != protocol.CmdSendImage {
+		t.Fatalf("expected a %q command, got %q", protocol.CmdSendImage, gotCmd.Cmd)
 	}
-	var msg map[string]any
-	json.Unmarshal(pub.published[0].payload, &msg)
-	if msg["action"] != "play" {
-		t.Errorf("action: got %v", msg["action"])
+	if want := inkjoyID("AABBCCDDEEFF"); gotCmd.DeviceID != want {
+		t.Errorf("command device id: got %q want %q", gotCmd.DeviceID, want)
 	}
 	var out map[string]any
 	json.NewDecoder(rec.Body).Decode(&out)

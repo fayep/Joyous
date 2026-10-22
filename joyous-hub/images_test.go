@@ -391,12 +391,18 @@ func TestServeBinAppliesCrop(t *testing.T) {
 	if len(bin) != frameW*frameH*2 {
 		t.Fatalf("bin size %d want %d", len(bin), frameW*frameH*2)
 	}
-	// All hi bytes should be white (0x02).
+	// This asserts the CROP took effect (the light right-half was selected),
+	// not the exact dither output: error diffusion legitimately mixes some
+	// darker inks into a flat light-grey, so white should merely dominate.
+	white, total := 0, 0
 	for i := 0; i < len(bin); i += 2 {
-		if bin[i] != 0x02 {
-			t.Errorf("expected white (0x02) hi byte at offset %d, got 0x%02x", i, bin[i])
-			break
+		total++
+		if bin[i] == 0x02 {
+			white++
 		}
+	}
+	if frac := float64(white) / float64(total); frac < 0.75 {
+		t.Errorf("expected white (0x02) to dominate the cropped light half, got %.1f%%", frac*100)
 	}
 }
 
