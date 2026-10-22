@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/gen2brain/avif"
+	xdraw "golang.org/x/image/draw"
 
 	"joyous-hub/catalog"
 )
@@ -1063,6 +1064,21 @@ func resizeTo(img image.Image, w, h int) image.Image {
 			dst.Set(dx, dy, img.At(sx, sy))
 		}
 	}
+	return dst
+}
+
+// resizeHQ resamples with a Catmull-Rom (bicubic) kernel — smooth gradients and
+// edges instead of resizeTo's nearest-neighbour blocks. Used for the 28.5" path,
+// where low-res sources (e.g. 403x604 -> 2160x3060, ~5.3x) otherwise upscale to
+// hard pixel blocks before dithering. Left off the 10"/Samsung paths so their
+// encodes (and caches/calibration) are unchanged.
+func resizeHQ(img image.Image, w, h int) image.Image {
+	b := img.Bounds()
+	if b.Dx() == w && b.Dy() == h {
+		return img
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), img, b, xdraw.Src, nil)
 	return dst
 }
 

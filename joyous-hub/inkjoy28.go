@@ -74,7 +74,7 @@ func (s *ImageStore) ServeInkJoy28IJI3(id string, colorOverride *[6]PaletteRGB) 
 	if crop, ok := meta.Crops["1:√2"]; ok && crop.W > 0 && crop.H > 0 {
 		img = applyCrop(img, crop)
 	}
-	img = resizeTo(img, ij28W, ij28H)
+	img = resizeHQ(img, ij28W, ij28H)
 	return encodeInkJoy28IJI3FromRGBA(img, s.colorPipelineForMetaOverride(meta, colorOverride))
 }
 
