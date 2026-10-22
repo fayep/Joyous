@@ -178,6 +178,39 @@ func TestLABDynamicRangeFit(t *testing.T) {
 	}
 }
 
+// The fit's output span hangs from panel white: the scene's highlights must
+// land on (not a stop below) each palette's white, whatever its black.
+func TestLABDynamicRangeFitTopIsPanelWhite(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 256, 8))
+	for x := range 256 {
+		for y := range 8 {
+			img.Set(x, y, color.RGBA{uint8(x), uint8(x), uint8(x), 255})
+		}
+	}
+	for name, pal := range map[string][][3]float64{
+		"10in":    PaletteInkJoyDisplay[:],
+		"28in":    paletteInkJoy28Display[:],
+		"samsung": PaletteSamsungDisplay[:],
+	} {
+		for _, stops := range []float64{2.5, 3.5, 6} {
+			pipe := ResolveColorPipeline(defaultColorConfig())
+			pipe.LABDynamicRangeEnabled = true
+			pipe.LABDynamicRangeStops = stops
+			out := ApplyLABProcessing(img, pipe, pal, true)
+			_, hi := displayPaletteDRRange(pal)
+			lo, _ := displayPaletteDRRange(pal)
+			_, outHi := luminancePercentiles(out, 0.01, 0.99)
+			outLo, _ := luminancePercentiles(out, 0.01, 0.99)
+			if outHi < hi-1.5 {
+				t.Errorf("%s %.1f stops: scene white -> L*%.1f, want panel white L*%.1f", name, stops, outHi, hi)
+			}
+			if outLo < lo-1.5 {
+				t.Errorf("%s %.1f stops: scene black -> L*%.1f, below panel black L*%.1f", name, stops, outLo, lo)
+			}
+		}
+	}
+}
+
 func TestDisplayPaletteDRRangeValid(t *testing.T) {
 	for _, pal := range [][][3]float64{PaletteInkJoyDisplay[:], PaletteSamsungDisplay[:]} {
 		lo, hi := displayPaletteDRRange(pal)

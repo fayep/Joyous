@@ -1300,8 +1300,10 @@ func ApplyLABProcessing(img image.Image, pipe ColorPipeline, displayPalette [][3
 	})
 }
 
-// applyLABDynamicRangeFit compresses scene luminance into a log range of N stops,
-// anchored at 1st/99th percentile L* and mapped to the panel black/white range.
+// applyLABDynamicRangeFit compresses scene luminance (1st..99th percentile L*)
+// into a log range of N stops ending at the panel's white, so highlights land on
+// white ink rather than a grey the dither has to build from scattered dots.
+// The compression goes into the shadows, floored at the panel's black.
 func applyLABDynamicRangeFit(img image.Image, pipe ColorPipeline, outLoL, outHiL float64) image.Image {
 	inLoL, inHiL := luminancePercentiles(img, 0.01, 0.99)
 	if inHiL-inLoL < 0.5 {
@@ -1369,14 +1371,13 @@ func mapLABDynamicRange(L, inLoL, inHiL, outLoL, outHiL, stops float64) float64 
 	if inHiY <= inLoY*1.001 {
 		inHiY = inLoY * 1.001
 	}
-	outLoY := labLToLinearY(outLoL)
-	outHiY := labLToLinearY(outHiL)
-	outSpanY := outLoY * math.Pow(2, stops)
-	if outSpanY > outHiY {
-		outSpanY = outHiY
-	}
-	if outSpanY <= outLoY*1.001 {
-		outSpanY = outLoY * 1.001
+	// The N-stop output span hangs down from panel white (it used to climb from
+	// panel black, which on the 28.5" capped scene white at L*≈65 and turned
+	// skies and white walls into speckled grey).
+	outTopY := labLToLinearY(outHiL)
+	outBotY := math.Max(outTopY/math.Pow(2, stops), labLToLinearY(outLoL))
+	if outBotY >= outTopY/1.001 {
+		outBotY = outTopY / 1.001
 	}
 
 	Y := labLToLinearY(L)
@@ -1392,7 +1393,7 @@ func mapLABDynamicRange(L, inLoL, inHiL, outLoL, outHiL, stops float64) float64 
 	} else if t > 1 {
 		t = 1
 	}
-	outY := outLoY * math.Pow(outSpanY/outLoY, t)
+	outY := outBotY * math.Pow(outTopY/outBotY, t)
 	return linearYToLabL(outY)
 }
 

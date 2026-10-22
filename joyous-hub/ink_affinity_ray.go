@@ -1028,5 +1028,12 @@ func shouldApplyInkAffinityRay(pipe ColorPipeline, img image.Image, flatRGB bool
 	if flatRGB || !pipe.LABInkAffinityRayEnabled || pipe.LABInkAffinityRayStrength <= 0 {
 		return false
 	}
+	// The ray pass recolours blown face highlights toward skin; its face mask
+	// is colour-only, so on landscapes it latches onto cloud, warm foliage and
+	// roofs (orange flecks in the sky). Only run it where people were detected;
+	// otherwise StuckiTwoPalette falls through to affinity/mix.
+	if !pipe.PeopleLikely {
+		return false
+	}
 	return UniqueColors(img) > 6
 }

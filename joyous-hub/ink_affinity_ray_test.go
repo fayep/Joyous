@@ -375,10 +375,15 @@ func TestShouldApplyInkAffinityRay(t *testing.T) {
 			img.Set(x, y, color.RGBA{uint8(x * 20), uint8(y * 20), 128, 255})
 		}
 	}
-	pipe := ColorPipeline{LABInkAffinityRayEnabled: true, LABInkAffinityRayStrength: 1}
+	pipe := ColorPipeline{LABInkAffinityRayEnabled: true, LABInkAffinityRayStrength: 1, PeopleLikely: true}
 	if !shouldApplyInkAffinityRay(pipe, img, false) {
 		t.Fatal("expected ray on for multi-color image")
 	}
+	pipe.PeopleLikely = false
+	if shouldApplyInkAffinityRay(pipe, img, false) {
+		t.Fatal("expected off when no people were detected")
+	}
+	pipe.PeopleLikely = true
 	if shouldApplyInkAffinityRay(pipe, img, true) {
 		t.Fatal("expected off for flat RGB")
 	}
