@@ -15,7 +15,7 @@ import (
 // ditherAlgo is a named competing encoder for swatch bake-offs.
 type ditherAlgo struct {
 	Name string
-	Run  func(img image.Image, palette [6][3]float64) [][]byte
+	Run  func(img image.Image, palette [][3]float64) [][]byte
 }
 
 // ditherSwatch is one gradient (or solid) stimulus for visual comparison.
@@ -88,7 +88,7 @@ func defaultDitherSwatches(w, h int) []ditherSwatch {
 func stuckiAlgo(name string, opts stuckiOptions) ditherAlgo {
 	return ditherAlgo{
 		Name: name,
-		Run: func(img image.Image, palette [6][3]float64) [][]byte {
+		Run: func(img image.Image, palette [][3]float64) [][]byte {
 			src := img
 			if opts.PreDither {
 				noise := stuckiPreDitherNoise
@@ -134,16 +134,16 @@ func competingDitherAlgos() []ditherAlgo {
 		stuckiAlgo("stucki-peachFS", peachFS),
 		{Name: "floyd-steinberg", Run: FloydSteinbergDither},
 		{Name: "atkinson", Run: AtkinsonDither},
-		{Name: "prod-peachFS", Run: func(img image.Image, palette [6][3]float64) [][]byte {
+		{Name: "prod-peachFS", Run: func(img image.Image, palette [][3]float64) [][]byte {
 			return StuckiTwoPalette(img, palette, ColorPipeline{}, false, stuckiOptionsPeachFloyd(ColorPipeline{}))
 		}},
-		{Name: "floyd-only", Run: func(img image.Image, palette [6][3]float64) [][]byte {
+		{Name: "floyd-only", Run: func(img image.Image, palette [][3]float64) [][]byte {
 			return StuckiTwoPalette(img, palette, ColorPipeline{}, false, stuckiOptionsFloyd(ColorPipeline{}))
 		}},
 	}
 }
 
-func indicesToDisplayRGBA(idx [][]byte, palette [6][3]float64) *image.RGBA {
+func indicesToDisplayRGBA(idx [][]byte, palette [][3]float64) *image.RGBA {
 	h := len(idx)
 	if h == 0 {
 		return image.NewRGBA(image.Rect(0, 0, 0, 0))
@@ -227,7 +227,7 @@ func drawLabel(dst *image.RGBA, x, y int, s string) {
 
 // RenderDitherSwatchSheet builds a contact sheet: rows = swatches, cols = algorithms.
 // Leftmost column is the undithered source gradient.
-func RenderDitherSwatchSheet(swatches []ditherSwatch, algos []ditherAlgo, palette [6][3]float64) *image.RGBA {
+func RenderDitherSwatchSheet(swatches []ditherSwatch, algos []ditherAlgo, palette [][3]float64) *image.RGBA {
 	if len(swatches) == 0 || len(algos) == 0 {
 		return image.NewRGBA(image.Rect(0, 0, 1, 1))
 	}
@@ -271,7 +271,7 @@ func RenderDitherSwatchSheet(swatches []ditherSwatch, algos []ditherAlgo, palett
 
 // peachSwatchScore is a rough automated ranking: lower is better (less mono
 // dominance on the solid-peach and peach→white ramps).
-func peachSwatchScore(algo ditherAlgo, palette [6][3]float64) float64 {
+func peachSwatchScore(algo ditherAlgo, palette [][3]float64) float64 {
 	peach := color.RGBA{R: 210, G: 160, B: 140, A: 255}
 	white := color.RGBA{R: 240, G: 240, B: 240, A: 255}
 	solid := makeSolid(160, 48, peach)

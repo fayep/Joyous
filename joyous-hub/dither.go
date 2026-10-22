@@ -1,11 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"image/png"
 	"math"
-	"bytes"
 )
 
 // PaletteInkJoy holds legacy physical ink RGB (use PaletteInkJoyDisplay for dither).
@@ -40,12 +40,12 @@ var PaletteInkJoyDisplay = [6][3]float64{
 
 // PaletteSamsungSend (P1) — pure sRGB primaries written to PNG.
 var PaletteSamsungSend = [6][3]float64{
-	{0, 0, 0},         // #000000 black
-	{255, 255, 255},   // #FFFFFF white
-	{255, 255, 0},     // #FFFF00 yellow
-	{255, 0, 0},       // #FF0000 red
-	{0, 0, 255},       // #0000FF blue
-	{0, 255, 0},       // #00FF00 green
+	{0, 0, 0},       // #000000 black
+	{255, 255, 255}, // #FFFFFF white
+	{255, 255, 0},   // #FFFF00 yellow
+	{255, 0, 0},     // #FF0000 red
+	{0, 0, 255},     // #0000FF blue
+	{0, 255, 0},     // #00FF00 green
 }
 
 // PaletteSamsungDisplay (P2) — on-panel Stucki targets (IMG_0111 primaries, right sample).
@@ -105,17 +105,20 @@ const (
 
 // stuckiOptions selects error-diffusion tuning for StuckiTwoPalette.
 type stuckiOptions struct {
-	Kernel             ditherKernel
-	Serpentine         bool
-	EdgePreserve       float64
-	PreDither          bool
-	PreDitherStrength  float64
-	DynamicRange       bool
-	ThresholdMod       float64 // 0 = off; else Zhou–Fang midtone threshold jitter (Stucki only)
-	AntiRunBias        float64 // 0 = off; else max thr shift when local ink dominates (Stucki only)
+	Kernel            ditherKernel
+	Serpentine        bool
+	EdgePreserve      float64
+	PreDither         bool
+	PreDitherStrength float64
+	DynamicRange      bool
+	ThresholdMod      float64 // 0 = off; else Zhou–Fang midtone threshold jitter (Stucki only)
+	AntiRunBias       float64 // 0 = off; else max thr shift when local ink dominates (Stucki only)
 	// PeachFloyd soft-blends toward Floyd–Steinberg on peach/skin (stuckiPeachWeight):
 	// knobs fade out and error taps lerp Stucki→FS in one scan (no hard face mask).
 	PeachFloyd bool
+	// SkipGreenOnSkin drops green ink on remapped face pixels (ray affinity).
+	// Green is the panel's mid-grey crutch; on skin it reads as sage dust.
+	SkipGreenOnSkin bool
 }
 
 type ditherKernel int
@@ -756,7 +759,7 @@ func UniqueColors(img image.Image) int {
 //	. . * A B
 //	C B A B C
 //	D C B C D
-func StuckiDither(img image.Image, palette [6][3]float64, opts stuckiOptions) [][]byte {
+func StuckiDither(img image.Image, palette [][3]float64, opts stuckiOptions) [][]byte {
 	src := asRGBA(img)
 	b := src.Bounds()
 	h, w := b.Dy(), b.Dx()
@@ -825,7 +828,13 @@ func StuckiDither(img image.Image, palette [6][3]float64, opts stuckiOptions) []
 				edge *= stay
 				peachScale = stay
 			}
-			idx := nearestColorThresholdMod(rgb, srcPx, palette, x, y, thrMod, out, rtl, antiRun, peachScale)
+			pal := palette
+			if opts.SkipGreenOnSkin && raySkinForbidsGreen(srcPx) {
+				// Green is sage grey on skin. White stays for the top of a
+				// 3–5 stop range; banning it made abrupt 3-ink islands.
+				pal[5] = [3]float64{1e9, 1e9, 1e9}
+			}
+			idx := nearestColorThresholdMod(rgb, srcPx, pal, x, y, thrMod, out, rtl, antiRun, peachScale)
 			out[y][x] = byte(idx)
 			stuckiSpreadError(buf, lum, h, w, by, x+2, x, y,
 				pr-palette[idx][0], pg-palette[idx][1], pb-palette[idx][2],
@@ -960,16 +969,24 @@ func stuckiEdgeAttenuation(lumA, lumB, preserve float64) float64 {
 // StuckiTwoPalette runs error diffusion in displayPalette (P2) space after shared
 // LAB/portrait/pre-dither preprocessing. Kernel is Stucki or Floyd–Steinberg.
 // Map indices to send values with RenderIndicesToRGB (Samsung P1) or indicesToHi (InkJoy).
-func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorPipeline, flatRGB bool, opts stuckiOptions) [][]byte {
+func StuckiTwoPalette(img image.Image, displayPalette [][3]float64, pipe ColorPipeline, flatRGB bool, opts stuckiOptions) [][]byte {
 	src := img
 	if shouldApplyLABProcessing(pipe, img, flatRGB, opts.DynamicRange) {
 		src = ApplyLABProcessing(img, pipe, displayPalette, opts.DynamicRange)
 	}
-	if shouldApplyInkAffinity(pipe, src, flatRGB) {
-		src = ApplyInkAffinity(src, displayPalette, pipe.LABInkAffinityStrength, pipe.PortraitEnhance)
-	}
-	if shouldApplyInkAffinityMix(pipe, src, flatRGB) {
-		src = ApplyInkAffinityMix(src, displayPalette, pipe.LABInkAffinityMixStrength, pipe.PortraitEnhance)
+	if shouldApplyInkAffinityRay(pipe, src, flatRGB) {
+		src = ApplyInkAffinityRay(src, displayPalette, pipe.LABInkAffinityRayStrength, pipe.PortraitEnhance)
+		opts.SkipGreenOnSkin = true
+		if opts.EdgePreserve < 0.7 {
+			opts.EdgePreserve = 0.7
+		}
+	} else {
+		if shouldApplyInkAffinity(pipe, src, flatRGB) {
+			src = ApplyInkAffinity(src, displayPalette, pipe.LABInkAffinityStrength, pipe.PortraitEnhance)
+		}
+		if shouldApplyInkAffinityMix(pipe, src, flatRGB) {
+			src = ApplyInkAffinityMix(src, displayPalette, pipe.LABInkAffinityMixStrength, pipe.PortraitEnhance)
+		}
 	}
 	if pipe.PortraitEnhance && pipe.PortraitStrength > 0 && !flatRGB {
 		src = ApplySkinToneProcessing(src, pipe.PortraitStrength)
@@ -993,7 +1010,7 @@ func StuckiTwoPalette(img image.Image, displayPalette [6][3]float64, pipe ColorP
 
 // FloydSteinbergDither quantizes to palette with Floyd–Steinberg error diffusion
 // (serpentine). Same 6-ink palette as Stucki — kernel only.
-func FloydSteinbergDither(img image.Image, palette [6][3]float64) [][]byte {
+func FloydSteinbergDither(img image.Image, palette [][3]float64) [][]byte {
 	return errorDiffuseDither(img, palette, true, []errTap{
 		{0, 1, 7 / 16.0},
 		{1, -1, 3 / 16.0},
@@ -1003,7 +1020,7 @@ func FloydSteinbergDither(img image.Image, palette [6][3]float64) [][]byte {
 }
 
 // AtkinsonDither is a lighter-diffusion competitor (often grainier, less muddy).
-func AtkinsonDither(img image.Image, palette [6][3]float64) [][]byte {
+func AtkinsonDither(img image.Image, palette [][3]float64) [][]byte {
 	return errorDiffuseDither(img, palette, true, []errTap{
 		{0, 1, 1 / 8.0},
 		{0, 2, 1 / 8.0},
@@ -1019,7 +1036,7 @@ type errTap struct {
 	w      float64
 }
 
-func errorDiffuseDither(img image.Image, palette [6][3]float64, serpentine bool, taps []errTap) [][]byte {
+func errorDiffuseDither(img image.Image, palette [][3]float64, serpentine bool, taps []errTap) [][]byte {
 	src := asRGBA(img)
 	b := src.Bounds()
 	h, w := b.Dy(), b.Dx()
@@ -1173,7 +1190,7 @@ func preDitherNoiseSample(x, y, c int) float64 {
 }
 
 // RenderIndicesToRGB writes sendPalette (P1) RGB for each ink index.
-func RenderIndicesToRGB(indices [][]byte, sendPalette [6][3]float64) image.Image {
+func RenderIndicesToRGB(indices [][]byte, sendPalette [][3]float64) image.Image {
 	return renderIndicesToRGB(indices, sendPalette)
 }
 
@@ -1205,12 +1222,12 @@ func samsungSendIndexForRGB(r, g, b uint8) int {
 			return i
 		}
 	}
-	return nearestColor([3]float64{float64(r), float64(g), float64(b)}, PaletteSamsungSend)
+	return nearestColor([3]float64{float64(r), float64(g), float64(b)}, PaletteSamsungSend[:])
 }
 
 // ApplyLABProcessing applies optional LAB chroma, highlight rolloff, and/or shadow lift before dithering.
 // displayPalette sets the black/white L* targets for dynamic-range fitting (P2 inks for the target frame).
-func ApplyLABProcessing(img image.Image, pipe ColorPipeline, displayPalette [6][3]float64, fitDynamicRange bool) image.Image {
+func ApplyLABProcessing(img image.Image, pipe ColorPipeline, displayPalette [][3]float64, fitDynamicRange bool) image.Image {
 	working := img
 	if fitDynamicRange && pipe.LABDynamicRangeStops > 0 {
 		outLoL, outHiL := displayPaletteDRRange(displayPalette)
@@ -1394,7 +1411,7 @@ func linearYToLabL(Y float64) float64 {
 
 // displayPaletteDRRange maps scene DR to neutral gray lightness at each ink's luminance
 // (avoids chromatic black/white L* skewing neutrals toward green on InkJoy).
-func displayPaletteDRRange(pal [6][3]float64) (lo, hi float64) {
+func displayPaletteDRRange(pal [][3]float64) (lo, hi float64) {
 	lo = neutralGrayLABL(pal[0])
 	hi = neutralGrayLABL(pal[1])
 	if hi <= lo {
@@ -1544,7 +1561,7 @@ func skyBlueWeight(lab [3]float64) float64 {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-func nearestColor(rgb [3]float64, palette [6][3]float64) int {
+func nearestColor(rgb [3]float64, palette [][3]float64) int {
 	best, bestDist := 0, math.MaxFloat64
 	for i, c := range palette {
 		dr := rgb[0] - c[0]
@@ -1567,7 +1584,7 @@ func nearestColor(rgb [3]float64, palette [6][3]float64) int {
 // srcRGB (original pixel), not the error-diffused sample — otherwise anti-run
 // disables itself inside yellow face blotches. Diffusion error still uses the
 // unmodulated sample (caller responsibility).
-func nearestColorThresholdMod(rgb, srcRGB [3]float64, palette [6][3]float64, x, y int, strength float64, out [][]byte, rtl bool, antiRunBias, peachScale float64) int {
+func nearestColorThresholdMod(rgb, srcRGB [3]float64, palette [][3]float64, x, y int, strength float64, out [][]byte, rtl bool, antiRunBias, peachScale float64) int {
 	if strength <= 0 && antiRunBias <= 0 {
 		return nearestColor(rgb, palette)
 	}

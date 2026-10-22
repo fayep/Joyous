@@ -206,6 +206,13 @@ type SendImageBody struct {
 	// + InkJoyNativeDimsProtocolT; bridgeEncodeInkJoy reads it) -- never set
 	// or branched on by hub-compiled code, same convention as OverlayWire.
 	NativeDims bool   `json:"native_dims,omitempty"`
+	// InkJoy28, when true, tells the bridge to encode this send as an IJI3
+	// RAW8|LZ4 blob for the 28.5"/H:3 panel (2160x3060 single-plane 8bpp,
+	// panel-native scan transform) instead of the 10" hi/lo .bin. Computed and
+	// consumed bridge-side only (bridgeDeliverInkJoyImage sets it from
+	// dev.HardwareModel; bridgeEncodeInkJoy reads it) -- never set or branched
+	// on by hub-compiled code, same convention as NativeDims.
+	InkJoy28   bool   `json:"inkjoy28,omitempty"`
 	SendID     string `json:"send_id,omitempty"`
 	HubBaseURL string `json:"hub_base_url"`
 	// ColorOverride is the device's per-device ink/color palette override, if

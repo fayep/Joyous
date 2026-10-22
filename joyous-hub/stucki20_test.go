@@ -7,27 +7,27 @@ import (
 )
 
 func TestStucki20MixtureCount(t *testing.T) {
-	labs := buildStucki20Labs(PaletteInkJoyDisplay)
+	labs := buildStucki20Labs(PaletteInkJoyDisplay[:])
 	if len(labs) < 120 || len(labs) > 130 {
 		t.Fatalf("InkJoy stucki 2×2 mixtures: got %d, want ~126", len(labs))
 	}
-	sam := buildStucki20Labs(PaletteSamsungDisplay)
+	sam := buildStucki20Labs(PaletteSamsungDisplay[:])
 	if len(sam) < 120 || len(sam) > 130 {
 		t.Fatalf("Samsung stucki 2×2 mixtures: got %d, want ~126", len(sam))
 	}
 }
 
 func TestStucki20LabsCached(t *testing.T) {
-	a := stucki20Labs(PaletteInkJoyDisplay)
-	b := stucki20Labs(PaletteInkJoyDisplay)
+	a := stucki20Labs(PaletteInkJoyDisplay[:])
+	b := stucki20Labs(PaletteInkJoyDisplay[:])
 	if len(a) != len(b) {
 		t.Fatal("cache returned different lengths")
 	}
 }
 
 func TestInkAffinityMixTargetsBrownNotGreenPrimary(t *testing.T) {
-	palLabs := displayPaletteLAB(PaletteInkJoyDisplay)
-	mixLabs := stucki20Labs(PaletteInkJoyDisplay)
+	palLabs := displayPaletteLAB(PaletteInkJoyDisplay[:])
+	mixLabs := stucki20Labs(PaletteInkJoyDisplay[:])
 
 	// Warm brown mid-tone — primary hue affinity leans to sage green; mix should be warmer.
 	brown := srgbToLAB([3]float64{95.0 / 255, 58.0 / 255, 42.0 / 255})
@@ -44,8 +44,8 @@ func TestInkAffinityMixTargetsBrownNotGreenPrimary(t *testing.T) {
 
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.Set(0, 0, color.RGBA{95, 58, 42, 255})
-	primaryOut := ApplyInkAffinity(img, PaletteInkJoyDisplay, 1.0, false)
-	mixOut := ApplyInkAffinityMix(img, PaletteInkJoyDisplay, 1.0, false)
+	primaryOut := ApplyInkAffinity(img, PaletteInkJoyDisplay[:], 1.0, false)
+	mixOut := ApplyInkAffinityMix(img, PaletteInkJoyDisplay[:], 1.0, false)
 	primaryLab := pixelLAB(primaryOut, 0, 0)
 	mixLab := pixelLAB(mixOut, 0, 0)
 	if mixLab[1] >= primaryLab[1] {
@@ -56,8 +56,8 @@ func TestInkAffinityMixTargetsBrownNotGreenPrimary(t *testing.T) {
 func TestInkAffinityMixReducedOnSkin(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.Set(0, 0, color.RGBA{180, 120, 95, 255})
-	full := ApplyInkAffinityMix(img, PaletteSamsungDisplay, 1.0, true)
-	none := ApplyInkAffinityMix(img, PaletteSamsungDisplay, 1.0, false)
+	full := ApplyInkAffinityMix(img, PaletteSamsungDisplay[:], 1.0, true)
+	none := ApplyInkAffinityMix(img, PaletteSamsungDisplay[:], 1.0, false)
 	if labDeltaE76(pixelLAB(full, 0, 0), pixelLAB(img, 0, 0)) >= labDeltaE76(pixelLAB(none, 0, 0), pixelLAB(img, 0, 0)) {
 		t.Fatal("portrait should reduce mix affinity on skin")
 	}

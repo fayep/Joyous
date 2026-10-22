@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/gen2brain/avif"
+	xdraw "golang.org/x/image/draw"
 
 	"joyous-hub/catalog"
 )
@@ -1066,6 +1067,21 @@ func resizeTo(img image.Image, w, h int) image.Image {
 	return dst
 }
 
+// resizeHQ resamples with a Catmull-Rom (bicubic) kernel — smooth gradients and
+// edges instead of resizeTo's nearest-neighbour blocks. Used for the 28.5" path,
+// where low-res sources (e.g. 403x604 -> 2160x3060, ~5.3x) otherwise upscale to
+// hard pixel blocks before dithering. Left off the 10"/Samsung paths so their
+// encodes (and caches/calibration) are unchanged.
+func resizeHQ(img image.Image, w, h int) image.Image {
+	b := img.Bounds()
+	if b.Dx() == w && b.Dy() == h {
+		return img
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), img, b, xdraw.Src, nil)
+	return dst
+}
+
 // ── conversion ───────────────────────────────────────────────────────────────
 
 func (s *ImageStore) readMeta(id string) (ImageMeta, error) {
@@ -1228,7 +1244,7 @@ func encodeInkJoyBinFromRGBA(img image.Image, flatRGB bool, pipe ColorPipeline, 
 		}
 		hi, lo = snapToPaletteWithWipe(img, flatWipe)
 	} else {
-		indices := StuckiTwoPalette(img, pipe.InkJoyDisplay, pipe, flatRGB, stuckiOptionsInkJoy(pipe))
+		indices := StuckiTwoPalette(img, pipe.InkJoyDisplay[:], pipe, flatRGB, stuckiOptionsInkJoy(pipe))
 		hi = indicesToHi(indices)
 		lo = resolveWipeGridForEncode(img, wipeSelection)
 	}
@@ -1436,7 +1452,7 @@ func snapToPaletteWithWipe(img image.Image, wipe [][]byte) (hi, lo [][]byte) {
 		hi[y] = make([]byte, w)
 		for x := range w {
 			r, g, bv, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
-			idx := nearestColor([3]float64{float64(r >> 8), float64(g >> 8), float64(bv >> 8)}, PaletteInkJoySend)
+			idx := nearestColor([3]float64{float64(r >> 8), float64(g >> 8), float64(bv >> 8)}, PaletteInkJoySend[:])
 			hi[y][x] = hiBytes[idx]
 		}
 		lo[y] = wipe[y]

@@ -101,7 +101,7 @@ func TestSnowdonHighlightToneMap(t *testing.T) {
 		LABHighlightEnabled:  true,
 		LABHighlightStrength: 1,
 	}
-	out := ApplyLABProcessing(img, pipe, PaletteSamsungDisplay, false)
+	out := ApplyLABProcessing(img, pipe, PaletteSamsungDisplay[:], false)
 
 	sky := regionPaletteStats(out, img, func(x, y, w, h int) bool { return y < h/3 })
 	refl := regionPaletteStats(out, img, func(x, y, w, h int) bool {
@@ -161,7 +161,7 @@ func regionPaletteStats(img, boundsImg image.Image, fn func(x, y, w, h int) bool
 			}
 			r8, g8, b8, _ := img.At(x, y).RGBA()
 			rgb := [3]float64{float64(r8 >> 8), float64(g8 >> 8), float64(b8 >> 8)}
-			idx := nearestColor(rgb, PaletteSamsungDisplay)
+			idx := nearestColor(rgb, PaletteSamsungDisplay[:])
 			counts[idx]++
 			lab := srgbToLAB([3]float64{rgb[0] / 255, rgb[1] / 255, rgb[2] / 255})
 			sumL += lab[0]
