@@ -43,14 +43,18 @@ const ij28OverlayScale = 1.28
 // index convention — indices 0-5 are the shared 6-ink layout the affinity/DR
 // code keys off (0=black,1=white,2=yellow,3=red,4=blue,5=green); 6,7 append the
 // two inks the 10" lacks but the 28.5" has (goldenrod=code 0x00, orange=0x05).
-// Measured 2026-10-21 from a photographed 8-band calibration chart.
+// Measured 2026-10-21 from a photographed 8-band calibration chart (IMG_0387).
+// The glass reflects the room/sky, which lightens and desaturates whatever it
+// lands on, so each band is read from its darkest 10% of 40x8 median tiles —
+// the least-glare part — not the band median (2026-10-22 re-read: green was
+// pulled toward olive by a reflection across half its band; black kept neutral).
 var paletteInkJoy28Display = [8][3]float64{
-	{47, 49, 52},    // 0 black
+	{44, 46, 49},    // 0 black
 	{211, 211, 211}, // 1 white
 	{222, 188, 62},  // 2 yellow
 	{138, 2, 6},     // 3 red
 	{22, 78, 162},   // 4 blue
-	{86, 92, 68},    // 5 green
+	{56, 88, 67},    // 5 green
 	{225, 212, 148}, // 6 pale goldenrod
 	{164, 68, 42},   // 7 orange
 }

@@ -64,7 +64,13 @@ type ColorPipeline struct {
 	LABShadowStrength    float64
 	LABDynamicRangeEnabled bool
 	LABDynamicRangeStops   float64
+	// LABDynamicRangeFromBlack anchors the DR fit's output span at panel black
+	// instead of panel white; set per image by StuckiTwoPalette, not configured.
+	LABDynamicRangeFromBlack bool
 	PortraitEnhance        bool
+	// PeopleLikely is the album image's people detection (ImageMeta.PeopleLikely),
+	// independent of whether the skin-tone pass (PortraitEnhance) is enabled.
+	PeopleLikely bool
 	PortraitStrength       float64
 	LABInkAffinityEnabled  bool
 	LABInkAffinityStrength float64
@@ -402,6 +408,7 @@ func paletteRGB01(c [3]float64) [3]float64 {
 }
 
 func applyPortraitEnhance(pipe ColorPipeline, peopleLikely bool, cfg ColorConfig) ColorPipeline {
+	pipe.PeopleLikely = peopleLikely
 	if peopleLikely && cfg.LABSkinToneEnabled {
 		pipe.PortraitEnhance = true
 		pipe.PortraitStrength = cfg.LABSkinToneStrength

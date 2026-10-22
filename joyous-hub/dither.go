@@ -1003,10 +1003,18 @@ func stuckiEdgeAttenuation(lumA, lumB, preserve float64) float64 {
 // Map indices to send values with RenderIndicesToRGB (Samsung P1) or indicesToHi (InkJoy).
 func StuckiTwoPalette(img image.Image, displayPalette [][3]float64, pipe ColorPipeline, flatRGB bool, opts stuckiOptions) [][]byte {
 	src := img
+	// The ray pass was tuned on the black-anchored DR fit, whose highlights sit
+	// well under panel white; fed white-anchored output, it reads most of a face
+	// as blown and flattens it to one skin tone. So people photos (the only ones
+	// ray runs on) keep the black anchor.
+	ray := shouldApplyInkAffinityRay(pipe, img, flatRGB)
+	if ray {
+		pipe.LABDynamicRangeFromBlack = true
+	}
 	if shouldApplyLABProcessing(pipe, img, flatRGB, opts.DynamicRange) {
 		src = ApplyLABProcessing(img, pipe, displayPalette, opts.DynamicRange)
 	}
-	if shouldApplyInkAffinityRay(pipe, src, flatRGB) {
+	if ray {
 		src = ApplyInkAffinityRay(src, displayPalette, pipe.LABInkAffinityRayStrength, pipe.PortraitEnhance)
 		opts.SkipGreenOnSkin = true
 		if opts.EdgePreserve < 0.7 {
@@ -1300,8 +1308,11 @@ func ApplyLABProcessing(img image.Image, pipe ColorPipeline, displayPalette [][3
 	})
 }
 
-// applyLABDynamicRangeFit compresses scene luminance into a log range of N stops,
-// anchored at 1st/99th percentile L* and mapped to the panel black/white range.
+// applyLABDynamicRangeFit compresses scene luminance (1st..99th percentile L*)
+// into a log range of N stops ending at the panel's white, so highlights land on
+// white ink rather than a grey the dither has to build from scattered dots.
+// The compression goes into the shadows, floored at the panel's black.
+// pipe.LABDynamicRangeFromBlack anchors the span at panel black instead.
 func applyLABDynamicRangeFit(img image.Image, pipe ColorPipeline, outLoL, outHiL float64) image.Image {
 	inLoL, inHiL := luminancePercentiles(img, 0.01, 0.99)
 	if inHiL-inLoL < 0.5 {
@@ -1316,7 +1327,7 @@ func applyLABDynamicRangeFit(img image.Image, pipe ColorPipeline, outLoL, outHiL
 	}
 
 	return labMapImage(img, func(_, _ int, lab *[3]float64) bool {
-		lab[0] = mapLABDynamicRange(lab[0], inLoL, inHiL, outLoL, outHiL, stops)
+		lab[0] = mapLABDynamicRange(lab[0], inLoL, inHiL, outLoL, outHiL, stops, pipe.LABDynamicRangeFromBlack)
 		return true
 	})
 }
@@ -1363,20 +1374,30 @@ func luminancePercentiles(img image.Image, loPct, hiPct float64) (loL, hiL float
 	return float64(loBin) / scale, float64(hiBin) / scale
 }
 
-func mapLABDynamicRange(L, inLoL, inHiL, outLoL, outHiL, stops float64) float64 {
+func mapLABDynamicRange(L, inLoL, inHiL, outLoL, outHiL, stops float64, fromBlack bool) float64 {
 	inLoY := labLToLinearY(inLoL)
 	inHiY := labLToLinearY(inHiL)
 	if inHiY <= inLoY*1.001 {
 		inHiY = inLoY * 1.001
 	}
-	outLoY := labLToLinearY(outLoL)
-	outHiY := labLToLinearY(outHiL)
-	outSpanY := outLoY * math.Pow(2, stops)
-	if outSpanY > outHiY {
-		outSpanY = outHiY
-	}
-	if outSpanY <= outLoY*1.001 {
-		outSpanY = outLoY * 1.001
+	// By default the N-stop output span hangs down from panel white, floored at
+	// panel black. Climbing from black instead (fromBlack) caps scene white well
+	// below panel white when N is under the panel's range — on the 28.5",
+	// L*≈65: skies and white walls become speckled grey — but it is the input
+	// the ray pass was tuned on, so people photos keep it (see StuckiTwoPalette).
+	var outBotY, outTopY float64
+	if fromBlack {
+		outBotY = labLToLinearY(outLoL)
+		outTopY = math.Min(outBotY*math.Pow(2, stops), labLToLinearY(outHiL))
+		if outTopY <= outBotY*1.001 {
+			outTopY = outBotY * 1.001
+		}
+	} else {
+		outTopY = labLToLinearY(outHiL)
+		outBotY = math.Max(outTopY/math.Pow(2, stops), labLToLinearY(outLoL))
+		if outBotY >= outTopY/1.001 {
+			outBotY = outTopY / 1.001
+		}
 	}
 
 	Y := labLToLinearY(L)
@@ -1392,7 +1413,7 @@ func mapLABDynamicRange(L, inLoL, inHiL, outLoL, outHiL, stops float64) float64 
 	} else if t > 1 {
 		t = 1
 	}
-	outY := outLoY * math.Pow(outSpanY/outLoY, t)
+	outY := outBotY * math.Pow(outTopY/outBotY, t)
 	return linearYToLabL(outY)
 }
 
