@@ -41,14 +41,14 @@ func TestLocationIndicatesSamsung(t *testing.T) {
 
 func TestSubnetRange(t *testing.T) {
 	got := subnetRange("192.168.50")
-	if len(got) != 254 || got[0] != "192.168.1.1" || got[253] != "192.168.50.254" {
+	if len(got) != 254 || got[0] != "192.168.50.1" || got[253] != "192.168.50.254" {
 		t.Fatalf("bare prefix: len=%d first=%q last=%q", len(got), got[0], got[len(got)-1])
 	}
 	got23 := subnetRange("192.168.50.0/23")
 	if len(got23) != 510 {
 		t.Fatalf("/23 host count: got %d want 510", len(got23))
 	}
-	if got23[0] != "192.168.1.1" || got23[len(got23)-1] != "192.168.51.254" {
+	if got23[0] != "192.168.50.1" || got23[len(got23)-1] != "192.168.51.254" {
 		t.Fatalf("/23 bounds: first=%q last=%q", got23[0], got23[len(got23)-1])
 	}
 }

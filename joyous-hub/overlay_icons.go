@@ -67,16 +67,22 @@ func overlayLineContentWidth(ln overlayLine) int {
 	w := 0
 	iconW := overlayIconSize(ln.fontPx)
 	gap := overlayIconGap(ln.fontPx)
+	trailingGap := false
 	for _, seg := range overlayLineSegments(ln.text) {
 		if seg.rain {
+			// Mirror drawOverlayLineContent: a rain icon advances by iconW+gap.
 			w += iconW + gap
+			trailingGap = true
 			continue
 		}
 		if ln.face != nil && seg.text != "" {
 			w += font.MeasureString(ln.face, seg.text).Ceil()
+			trailingGap = false
 		}
 	}
-	if w > gap {
+	// Drop the gap only when the line *ends* with a rain icon (trailing space);
+	// a text-only line never added a gap, so subtracting it undercounts width.
+	if trailingGap && w > gap {
 		w -= gap
 	}
 	return w

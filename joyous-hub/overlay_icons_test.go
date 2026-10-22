@@ -42,9 +42,14 @@ func TestOverlayLineContentWidthWithRainIcon(t *testing.T) {
 	}
 	iconW := overlayLineContentWidth(overlayLine{text: string(overlayIconRainRune), face: face, fontPx: 40})
 	textW := font.MeasureString(face, " Rain").Ceil()
+	// The icon is followed by text, so the inter-segment gap is real drawn
+	// space inside the content and must be counted (drawOverlayLineContent
+	// advances iconW+gap for the icon). Only a *trailing* icon gap is dropped,
+	// which is why the icon-only width (iconW) already excludes it.
+	gap := overlayIconGap(40)
 	total := overlayLineContentWidth(ln)
-	if total != iconW+textW {
-		t.Fatalf("width=%d want %d", total, iconW+textW)
+	if total != iconW+gap+textW {
+		t.Fatalf("width=%d want %d", total, iconW+gap+textW)
 	}
 }
 
