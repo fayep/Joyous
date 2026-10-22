@@ -203,10 +203,25 @@ func bridgeEncodeInkJoy(
 	colorOverride := protocolRGBToPalette(body.ColorOverride)
 	// 28.5"/H:3: emit a 2160x3060 single-plane 8bpp IJI3 blob (its own scan
 	// transform + color pipeline) instead of the 10" hi/lo .bin. Gated by the
-	// bridge-set flag, not a hardware test here. Overlay compositing for this
-	// panel is not yet wired (would need a 2160x3060 mutate-then-dither like
-	// the Samsung path); the photo path is handled first.
+	// bridge-set flag, not a hardware test here. With an overlay token, composite
+	// the weather/photo-name overlay onto the full-res image before dithering
+	// (mutate-then-dither, like Samsung); the clean photo stays separately cached
+	// because the bridge play cache is keyed by overlay token.
 	if body.InkJoy28 {
+		if body.OverlayToken != "" {
+			cfg, weather, err := bridgeOverlayContext(ctx, hub, body, portrait)
+			if err != nil {
+				return nil, err
+			}
+			photoName := overlayPhotoNameFromMeta(meta, cfg)
+			return hub.images.ServeInkJoy28IJI3Overlay(body.ImageID, func(img image.Image, flatRGB bool) (image.Image, error) {
+				// portrait=false: the 2160x3060 image is already upright/native
+				// portrait, so the overlay draws directly on its true bottom edge.
+				// (drawWeatherOverlay's portrait flag rotates landscape sources
+				// like the 10"; doing that here would bake text along a side.)
+				return drawWeatherOverlay(img, cfg, weather, photoName, false), nil
+			}, colorOverride)
+		}
 		return hub.images.ServeInkJoy28IJI3(body.ImageID, colorOverride)
 	}
 	if body.OverlayToken != "" {
