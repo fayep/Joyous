@@ -58,6 +58,8 @@ proxy.log
 .design-ref/
 *.png
 !joyous-hub/wipes/*.png
+# Embedded by joyous-hub/calibration.go (go:embed): build inputs, not artifacts.
+!joyous-hub/calibration/*.png
 # Local Ghidra / reverse-engineering projects and analysis artifacts (not source)
 InkJoy/ghidra/
 InkJoy/intended_scene.jpg
