@@ -1004,18 +1004,24 @@ func stuckiEdgeAttenuation(lumA, lumB, preserve float64) float64 {
 func StuckiTwoPalette(img image.Image, displayPalette [][3]float64, pipe ColorPipeline, flatRGB bool, opts stuckiOptions) [][]byte {
 	src := img
 	// The ray pass was tuned on the black-anchored DR fit, whose highlights sit
-	// well under panel white; fed white-anchored output, it reads most of a face
-	// as blown and flattens it to one skin tone. So people photos (the only ones
-	// ray runs on) keep the black anchor.
+	// well under panel white; fed brighter output, it reads most of a face as
+	// blown and flattens it to one skin tone. So people photos (the only ones
+	// ray runs on) are fitted from black, run through ray in that space, then
+	// stretched over the panel's full black..white range.
 	ray := shouldApplyInkAffinityRay(pipe, img, flatRGB)
 	if ray {
 		pipe.LABDynamicRangeFromBlack = true
 	}
+	fitDR := false
 	if shouldApplyLABProcessing(pipe, img, flatRGB, opts.DynamicRange) {
 		src = ApplyLABProcessing(img, pipe, displayPalette, opts.DynamicRange)
+		fitDR = opts.DynamicRange && pipe.LABDynamicRangeStops > 0
 	}
 	if ray {
 		src = ApplyInkAffinityRay(src, displayPalette, pipe.LABInkAffinityRayStrength, pipe.PortraitEnhance)
+		if fitDR {
+			src = remapRayDRSpan(src, pipe, displayPalette)
+		}
 		opts.SkipGreenOnSkin = true
 		if opts.EdgePreserve < 0.7 {
 			opts.EdgePreserve = 0.7
@@ -1374,31 +1380,74 @@ func luminancePercentiles(img image.Image, loPct, hiPct float64) (loL, hiL float
 	return float64(loBin) / scale, float64(hiBin) / scale
 }
 
+// drOutputSpanY is the DR fit's output span as linear Y. By default the N-stop
+// span hangs down from panel white, floored at panel black. Climbing from black
+// instead (fromBlack) caps scene white well below panel white when N is under
+// the panel's range — on the 28.5", L*≈65: skies and white walls become
+// speckled grey — but it is the space the ray pass was tuned in, so people
+// photos are fitted that way and remapped after ray (see remapRayDRSpan).
+func drOutputSpanY(outLoL, outHiL, stops float64, fromBlack bool) (botY, topY float64) {
+	if fromBlack {
+		botY = labLToLinearY(outLoL)
+		topY = math.Min(botY*math.Pow(2, stops), labLToLinearY(outHiL))
+		if topY <= botY*1.001 {
+			topY = botY * 1.001
+		}
+		return botY, topY
+	}
+	topY = labLToLinearY(outHiL)
+	botY = math.Max(topY/math.Pow(2, stops), labLToLinearY(outLoL))
+	if botY >= topY/1.001 {
+		botY = topY / 1.001
+	}
+	return botY, topY
+}
+
+// drFitParams returns the panel L* range and stop count the DR fit uses.
+func drFitParams(pipe ColorPipeline, displayPalette [][3]float64) (outLoL, outHiL, stops float64) {
+	outLoL, outHiL = displayPaletteDRRange(displayPalette)
+	if outHiL <= outLoL {
+		outLoL, outHiL = 12, 75
+	}
+	stops = pipe.LABDynamicRangeStops
+	if stops <= 0 {
+		stops = 4
+	}
+	return outLoL, outHiL, stops
+}
+
+// remapRayDRSpan stretches an image fitted into the black-anchored DR span
+// (the ray pass's working space, where 10" highlights top out near L*51) over
+// the panel's whole black..white range, log-linearly in Y. The fit is
+// log-linear in the scene, so this is the same as fitting the scene to the full
+// panel range, except that the ray pass's face edits ride along unchanged
+// relative to everything else: faces keep their shading, and highlights and
+// shadows reach white and black ink.
+func remapRayDRSpan(img image.Image, pipe ColorPipeline, displayPalette [][3]float64) image.Image {
+	outLoL, outHiL, stops := drFitParams(pipe, displayPalette)
+	fromBot, fromTop := drOutputSpanY(outLoL, outHiL, stops, true)
+	toBot, toTop := labLToLinearY(outLoL), labLToLinearY(outHiL)
+	if fromBot == toBot && fromTop == toTop {
+		return img
+	}
+	k := math.Log2(toTop/toBot) / math.Log2(fromTop/fromBot)
+	return labMapImage(img, func(_, _ int, lab *[3]float64) bool {
+		Y := labLToLinearY(lab[0])
+		if Y <= 0 {
+			return false
+		}
+		lab[0] = math.Min(100, linearYToLabL(toBot*math.Pow(Y/fromBot, k)))
+		return true
+	})
+}
+
 func mapLABDynamicRange(L, inLoL, inHiL, outLoL, outHiL, stops float64, fromBlack bool) float64 {
 	inLoY := labLToLinearY(inLoL)
 	inHiY := labLToLinearY(inHiL)
 	if inHiY <= inLoY*1.001 {
 		inHiY = inLoY * 1.001
 	}
-	// By default the N-stop output span hangs down from panel white, floored at
-	// panel black. Climbing from black instead (fromBlack) caps scene white well
-	// below panel white when N is under the panel's range — on the 28.5",
-	// L*≈65: skies and white walls become speckled grey — but it is the input
-	// the ray pass was tuned on, so people photos keep it (see StuckiTwoPalette).
-	var outBotY, outTopY float64
-	if fromBlack {
-		outBotY = labLToLinearY(outLoL)
-		outTopY = math.Min(outBotY*math.Pow(2, stops), labLToLinearY(outHiL))
-		if outTopY <= outBotY*1.001 {
-			outTopY = outBotY * 1.001
-		}
-	} else {
-		outTopY = labLToLinearY(outHiL)
-		outBotY = math.Max(outTopY/math.Pow(2, stops), labLToLinearY(outLoL))
-		if outBotY >= outTopY/1.001 {
-			outBotY = outTopY / 1.001
-		}
-	}
+	outBotY, outTopY := drOutputSpanY(outLoL, outHiL, stops, fromBlack)
 
 	Y := labLToLinearY(L)
 	logInLo := math.Log2(inLoY)
