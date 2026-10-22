@@ -19,26 +19,33 @@ const (
 	overlayPhotoNamePt   = 52
 )
 
-func overlayFontScale(w, h int) float64 {
+// overlayFontScale returns the base-point→pixel scale for a display of size
+// (w,h), relative to the Samsung reference diagonal. boost (>1) enlarges the
+// whole overlay for a given panel without moving its corner anchors (callers
+// keep positioning on the real dimensions); boost<=0 is treated as 1.
+func overlayFontScale(w, h int, boost float64) float64 {
 	if w <= 0 || h <= 0 {
 		return 1
 	}
+	if boost <= 0 {
+		boost = 1
+	}
 	ref := math.Hypot(float64(overlayFontRefWidth), float64(overlayFontRefHeight))
 	diag := math.Hypot(float64(w), float64(h))
-	return ref / diag
+	return boost * ref / diag
 }
 
-func overlayScaledFontPt(base float64, w, h int) float64 {
-	return base * overlayFontScale(w, h)
+func overlayScaledFontPt(base float64, w, h int, boost float64) float64 {
+	return base * overlayFontScale(w, h, boost)
 }
 
-func overlayScaledPx(base int, w, h int) int {
-	return overlayInt(float64(base) * overlayFontScale(w, h))
+func overlayScaledPx(base int, w, h int, boost float64) int {
+	return overlayInt(float64(base) * overlayFontScale(w, h, boost))
 }
 
-func overlayPadForDimension(dim, w, h int) int {
-	pad := overlayScaledPx(dim/40, w, h)
-	min := overlayScaledPx(overlayPadMinPt, w, h)
+func overlayPadForDimension(dim, w, h int, boost float64) int {
+	pad := overlayScaledPx(dim/40, w, h, boost)
+	min := overlayScaledPx(overlayPadMinPt, w, h, boost)
 	if pad < min {
 		pad = min
 	}
@@ -53,8 +60,8 @@ func overlayMetricsDimensions(width, height int, portrait bool) (w, h int) {
 	return w, h
 }
 
-func overlayPhotoNameFontSize(w, h int) float64 {
-	return overlayScaledFontPt(overlayPhotoNamePt, w, h)
+func overlayPhotoNameFontSize(w, h int, boost float64) float64 {
+	return overlayScaledFontPt(overlayPhotoNamePt, w, h, boost)
 }
 
 func overlayInt(v float64) int {
@@ -64,22 +71,22 @@ func overlayInt(v float64) int {
 	return int(v + 0.5)
 }
 
-func overlayLineFontSizePx(index, w, h int) int {
+func overlayLineFontSizePx(index, w, h int, boost float64) int {
 	switch index {
 	case 0:
-		return overlayScaledPx(overlayFontMediumPt, w, h)
+		return overlayScaledPx(overlayFontMediumPt, w, h, boost)
 	case 1:
-		return overlayScaledPx(overlayFontLargePt, w, h)
+		return overlayScaledPx(overlayFontLargePt, w, h, boost)
 	default:
-		return overlayScaledPx(overlayFontMediumPt, w, h)
+		return overlayScaledPx(overlayFontMediumPt, w, h, boost)
 	}
 }
 
-func overlayLineStepAfter(index, w, h int) int {
+func overlayLineStepAfter(index, w, h int, boost float64) int {
 	if index == 1 {
-		return overlayScaledPx(overlayDateStepPt, w, h)
+		return overlayScaledPx(overlayDateStepPt, w, h, boost)
 	}
-	return overlayScaledPx(overlayLineStepPt, w, h)
+	return overlayScaledPx(overlayLineStepPt, w, h, boost)
 }
 
 func overlayDrawDimensions(src image.Image, portrait bool) (w, h int) {

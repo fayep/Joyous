@@ -44,20 +44,20 @@ func overlayNeedsWeather(cfg OverlayConfig) bool {
 // actually starts drawing from, and the resolved font/size used to measure
 // it. Shared by drawPhotoNameCaption and overlayWireLines (overlay_wire.go)
 // for the same reason overlayWeatherOrigin is shared -- see its comment.
-func overlayPhotoNameOrigin(text, position string, dw, dh int) (x, y int, face font.Face, fontSize float64, ok bool) {
+func overlayPhotoNameOrigin(text, position string, dw, dh int, boost float64) (x, y int, face font.Face, fontSize float64, ok bool) {
 	if text == "" {
 		return 0, 0, nil, 0, false
 	}
-	fontSize = overlayPhotoNameFontSize(dw, dh)
+	fontSize = overlayPhotoNameFontSize(dw, dh, boost)
 	face = overlayCaveatFace(fontSize)
 	if face == nil {
-		face = overlayFacePt(overlayFontSmallPt, dw, dh)
+		face = overlayFacePt(overlayFontSmallPt, dw, dh, boost)
 	}
 	if face == nil {
 		return 0, 0, nil, 0, false
 	}
-	marginX := overlayPadForDimension(dw, dw, dh)
-	marginY := overlayPadForDimension(dh, dw, dh)
+	marginX := overlayPadForDimension(dw, dw, dh, boost)
+	marginY := overlayPadForDimension(dh, dw, dh, boost)
 	textW := fontMeasureString(face, text)
 	ascent := face.Metrics().Ascent.Ceil()
 	descent := face.Metrics().Descent.Ceil()
@@ -70,8 +70,8 @@ func overlayPhotoNameOrigin(text, position string, dw, dh int) (x, y int, face f
 	return x, yTop, face, fontSize, true
 }
 
-func drawPhotoNameCaption(dst *image.RGBA, text, position string, dw, dh int) {
-	x, yTop, face, fontSize, ok := overlayPhotoNameOrigin(text, position, dw, dh)
+func drawPhotoNameCaption(dst *image.RGBA, text, position string, dw, dh int, boost float64) {
+	x, yTop, face, fontSize, ok := overlayPhotoNameOrigin(text, position, dw, dh, boost)
 	if !ok {
 		return
 	}

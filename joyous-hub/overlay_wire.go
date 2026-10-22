@@ -104,7 +104,7 @@ func overlayLineFontRole(index int) string {
 func overlayWireLines(cfg OverlayConfig, weather WeatherSnapshot, photoName string, portrait, nativeDims bool) (protocol.OverlaySendBody, error) {
 	dw, dh := overlayMetricsDimensions(frameW, frameH, portrait)
 
-	lines, err := overlayRenderedLines(cfg, weather, dw, dh)
+	lines, err := overlayRenderedLines(cfg, weather, dw, dh, 1.0)
 	if err != nil {
 		return protocol.OverlaySendBody{}, err
 	}
@@ -113,7 +113,7 @@ func overlayWireLines(cfg OverlayConfig, weather WeatherSnapshot, photoName stri
 	if overlayWeatherUsesOutline(cfg) {
 		style = overlayWeatherStyleOutline
 	}
-	x, y := overlayWeatherOrigin(dw, dh, lines, style)
+	x, y := overlayWeatherOrigin(dw, dh, lines, style, 1.0)
 
 	var body protocol.OverlaySendBody
 	for i, ln := range lines {
@@ -145,7 +145,7 @@ func overlayWireLines(cfg OverlayConfig, weather WeatherSnapshot, photoName stri
 	}
 
 	if cfg.ShowPhotoName && strings.TrimSpace(photoName) != "" {
-		if cx, cy, _, _, ok := overlayPhotoNameOrigin(photoName, cfg.PhotoNamePosition, dw, dh); ok {
+		if cx, cy, _, _, ok := overlayPhotoNameOrigin(photoName, cfg.PhotoNamePosition, dw, dh, 1.0); ok {
 			wireX, wireY := overlayWireCoord(cx, cy, dw, portrait, nativeDims)
 			body.Caption = &protocol.OverlayWireLine{
 				Text: photoName,

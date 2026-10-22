@@ -18,7 +18,7 @@ func TestOverlayMetricsForLines(t *testing.T) {
 		Temperature: OverlayTemperature{Current: 20, Min: 14, Max: 22},
 	}
 	w, h := overlayFontRefWidth, overlayFontRefHeight
-	lines, err := overlayRenderedLines(cfg, weather, w, h)
+	lines, err := overlayRenderedLines(cfg, weather, w, h, 1.0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestOverlayBoxDimensions(t *testing.T) {
 		Temperature: OverlayTemperature{Current: 20, Min: 14, Max: 22},
 	}
 	w, h := overlayFontRefWidth, overlayFontRefHeight
-	lines, err := overlayRenderedLines(cfg, weather, w, h)
+	lines, err := overlayRenderedLines(cfg, weather, w, h, 1.0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestOverlayBoxDimensions(t *testing.T) {
 	if got := overlayContentHeight(lines); got != 136 {
 		t.Fatalf("content height: %d", got)
 	}
-	boxW, boxH := overlayBoxSize(lines, w, h)
+	boxW, boxH := overlayBoxSize(lines, w, h, 1.0)
 	if boxW != 397 || boxH != 184 {
 		t.Fatalf("box size: %d×%d want 397×184", boxW, boxH)
 	}
@@ -98,10 +98,10 @@ func TestOverlayMetricsTemplateError(t *testing.T) {
 }
 
 func TestOverlayFontScale(t *testing.T) {
-	if got := overlayFontScale(overlayFontRefWidth, overlayFontRefHeight); got < 0.99 || got > 1.01 {
+	if got := overlayFontScale(overlayFontRefWidth, overlayFontRefHeight, 1.0); got < 0.99 || got > 1.01 {
 		t.Fatalf("reference scale: %v want ~1", got)
 	}
-	if got := overlayFontScale(frameW, frameH); got < 1.45 || got > 1.49 {
+	if got := overlayFontScale(frameW, frameH, 1.0); got < 1.45 || got > 1.49 {
 		t.Fatalf("inkjoy scale: %v want ~1.47", got)
 	}
 }

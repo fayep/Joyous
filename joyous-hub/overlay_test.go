@@ -242,7 +242,7 @@ func TestDrawPhotoNameCaption(t *testing.T) {
 			dst.Set(x, y, color.RGBA{240, 240, 240, 255})
 		}
 	}
-	drawPhotoNameCaption(dst, "Sunset", overlayPhotoNameBottomRight, frameW, frameH)
+	drawPhotoNameCaption(dst, "Sunset", overlayPhotoNameBottomRight, frameW, frameH, 1.0)
 	found := false
 	for y := frameH - 200; y < frameH; y++ {
 		for x := frameW - 400; x < frameW; x++ {
