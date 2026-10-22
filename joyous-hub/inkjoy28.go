@@ -18,15 +18,15 @@ import (
 // body.InkJoy28, set bridge-side in bridgeDeliverInkJoyImage, mirroring the
 // body.NativeDims convention.
 //
-// The panel scan is a tiled, dual-segment portrait layout, solved empirically
-// (see memory project-inkjoy-playlist-json). To render a clean, full-res image
-// the buffer must be authored as: flip the source in X (panel pixel origin is
-// top-right), then for each source row-pair (r0=2i, r1=2i+1) emit two buffer
-// rows — the left half (cols 0..1079) column-zipped into buffer row 2i and the
-// right half (cols 1080..2159) column-zipped into buffer row 2i+1:
+// The panel scans two source rows at once. Read as big-endian 16-bit words, the
+// raw plane is a plain row-major 2160x1530 grid: each word holds a vertical
+// pixel pair, upper row in the MSB, with X flipped (panel origin is top-right):
 //
-//	buf[2i][2c]   = src[r0][c]        buf[2i][2c+1]   = src[r1][c]
-//	buf[2i+1][2c] = src[r0][1080+c]   buf[2i+1][2c+1] = src[r1][1080+c]
+//	word[i*2160 + c] = src[2i][2159-c]<<8 | src[2i+1][2159-c]
+//
+// (Read as 2160-byte rows this looked like a "dual-segment" zip — left half of
+// a row pair in byte row 2i, right half in 2i+1 — which is the same bytes; see
+// inkjoy28_scan_test.go, which pins the two descriptions together.)
 const (
 	ij28W = 2160
 	ij28H = 3060
@@ -209,25 +209,30 @@ func inkjoy28StampOverlay(base [][]byte, overlaid image.Image) [][]byte {
 // wraps it as IJI3. (Split from the dither so both the clean and overlay paths
 // share the scan without re-dithering.)
 func scanWrapInkJoy28(indices [][]byte) ([]byte, error) {
+	plane, err := packInkJoy28Plane(indices)
+	if err != nil {
+		return nil, err
+	}
+	return writeInkJoy28IJI3(plane)
+}
+
+// packInkJoy28Plane lays an upright ink-index grid out as the panel's raw plane:
+// big-endian u16 words, one per vertical pixel pair, row-major, X flipped.
+func packInkJoy28Plane(indices [][]byte) ([]byte, error) {
 	if len(indices) != ij28H || len(indices[0]) != ij28W {
 		return nil, fmt.Errorf("inkjoy28: grid %dx%d, want %dx%d",
 			len(indices[0]), len(indices), ij28W, ij28H)
 	}
-	const half = ij28W / 2 // 1080
-	buf := make([]byte, ij28W*ij28H)
-	// pix reads index at (row, col) with X flipped (panel origin top-right).
-	pix := func(r, c int) byte { return hiBytes8[indices[r][ij28W-1-c]] }
+	plane := make([]byte, ij28W*ij28H)
 	for i := 0; i < ij28H/2; i++ {
-		r0, r1 := 2*i, 2*i+1
-		b0, b1 := (2*i)*ij28W, (2*i+1)*ij28W
-		for c := 0; c < half; c++ {
-			buf[b0+2*c] = pix(r0, c)
-			buf[b0+2*c+1] = pix(r1, c)
-			buf[b1+2*c] = pix(r0, half+c)
-			buf[b1+2*c+1] = pix(r1, half+c)
+		upper, lower := indices[2*i], indices[2*i+1]
+		row := plane[i*ij28W*2:]
+		for c := 0; c < ij28W; c++ {
+			x := ij28W - 1 - c
+			binary.BigEndian.PutUint16(row[2*c:], uint16(hiBytes8[upper[x]])<<8|uint16(hiBytes8[lower[x]]))
 		}
 	}
-	return writeInkJoy28IJI3(buf)
+	return plane, nil
 }
 
 // inkjoy28IdxCache memoizes dithered base index grids (see inkjoy28BaseIndices).
