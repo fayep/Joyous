@@ -330,9 +330,13 @@ func renderIndicesToRGB(indices [][]byte, palette [][3]float64) image.Image {
 
 // centerCropToSize center-crops to target aspect ratio, then scales to exact dimensions.
 func centerCropToSize(img image.Image, tw, th int) image.Image {
+	return resizeTo(centerCropToAspect(img, float64(tw)/float64(th)), tw, th)
+}
+
+// centerCropToAspect center-crops img to the target width/height aspect ratio.
+func centerCropToAspect(img image.Image, targetAR float64) image.Image {
 	b := img.Bounds()
 	iw, ih := float64(b.Dx()), float64(b.Dy())
-	targetAR := float64(tw) / float64(th)
 	imgAR := iw / ih
 	var crop CropRect
 	if imgAR > targetAR {
@@ -342,8 +346,7 @@ func centerCropToSize(img image.Image, tw, th int) image.Image {
 		h := imgAR / targetAR
 		crop = CropRect{X: 0, Y: (1 - h) / 2, W: 1, H: h}
 	}
-	cropped := applyCrop(img, crop)
-	return resizeTo(cropped, tw, th)
+	return applyCrop(img, crop)
 }
 
 // ── inactive hours helpers (shared with schedule logic in tests) ─────────────
