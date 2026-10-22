@@ -12,6 +12,9 @@ SRC_DIR="${SRC_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 JOYOUS_VERSION="${JOYOUS_VERSION:-dev-$(date -u +%Y%m%d%H%M%S)}"
 
 export CGO_ENABLED=1
+# Vector exp2/log2 kernel for the batch LAB conversions (pow_batch_simd.go);
+# without it the build falls back to math.Pow (pow_batch_scalar.go).
+export GOEXPERIMENT="${GOEXPERIMENT:-simd}"
 if prefix="$(brew --prefix libheif 2>/dev/null)"; then
 	export CGO_CFLAGS="${CGO_CFLAGS:-} -I${prefix}/include"
 	export CGO_LDFLAGS="${CGO_LDFLAGS:-} -L${prefix}/lib -lheif"

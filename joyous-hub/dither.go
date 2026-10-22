@@ -805,6 +805,29 @@ func StuckiDither(img image.Image, palette [][3]float64, opts stuckiOptions) [][
 		palNoGreen[5] = [3]float64{1e9, 1e9, 1e9}
 	}
 
+	// The source pixel's LAB only feeds the peach weight and the skin
+	// green-ban, and never changes during the dither, so convert each pixel
+	// once up front (batched and in parallel) rather than up to three times
+	// inside the serial error-diffusion loop.
+	peachW := make([][]float64, h)
+	var noGreen [][]bool
+	if palNoGreen != nil {
+		noGreen = make([][]bool, h)
+	}
+	labRowsParallel(src, func(y int, lab [][3]float64) {
+		y -= b.Min.Y
+		peachW[y] = make([]float64, w)
+		for x := range w {
+			peachW[y][x] = stuckiPeachWeightLAB(lab[x])
+		}
+		if noGreen != nil {
+			noGreen[y] = make([]bool, w)
+			for x := range w {
+				noGreen[y][x] = raySkinForbidsGreenLAB(lab[x])
+			}
+		}
+	})
+
 	out := make([][]byte, h)
 	for y := range h {
 		out[y] = make([]byte, w)
@@ -826,7 +849,7 @@ func StuckiDither(img image.Image, palette [][3]float64, opts stuckiOptions) [][
 			fsMix := 0.0
 			peachScale := 1.0
 			if opts.PeachFloyd {
-				fsMix = stuckiPeachWeight(srcPx)
+				fsMix = peachW[y][x]
 				if fsMix > 1 {
 					fsMix = 1
 				}
@@ -838,12 +861,12 @@ func StuckiDither(img image.Image, palette [][3]float64, opts stuckiOptions) [][
 				peachScale = stay
 			}
 			pal := palette
-			if palNoGreen != nil && raySkinForbidsGreen(srcPx) {
+			if noGreen != nil && noGreen[y][x] {
 				// Green is sage grey on skin. White stays for the top of a
 				// 3–5 stop range; banning it made abrupt 3-ink islands.
 				pal = palNoGreen
 			}
-			idx := nearestColorThresholdMod(rgb, srcPx, pal, x, y, thrMod, out, rtl, antiRun, peachScale)
+			idx := nearestColorThresholdModPeach(rgb, srcPx, peachW[y][x], pal, x, y, thrMod, out, rtl, antiRun, peachScale)
 			out[y][x] = byte(idx)
 			stuckiSpreadError(buf, lum, h, w, by, x+2, x, y,
 				pr-palette[idx][0], pg-palette[idx][1], pb-palette[idx][2],
@@ -1250,53 +1273,36 @@ func ApplyLABProcessing(img image.Image, pipe ColorPipeline, displayPalette [][3
 		return working
 	}
 
-	b := working.Bounds()
-	out := image.NewRGBA(b)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r8, g8, b8, a8 := working.At(x, y).RGBA()
-			rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
-			lab := srgbToLAB(rgb)
-
-			if pipe.LABChromaEnabled && pipe.LABChromaStrength > 0 {
-				chroma := 1.0 + 0.3*pipe.LABChromaStrength
-				lab[1] *= chroma
-				lab[2] *= chroma
-			}
-
-			if pipe.LABHighlightEnabled && pipe.LABHighlightStrength > 0 {
-				lab[0] = applyLABHighlightTone(lab, pipe.LABHighlightStrength)
-			}
-
-			if pipe.LABShadowEnabled && pipe.LABShadowStrength > 0 {
-				L := lab[0]
-				t := (25.0 - L) / 25.0
-				if t < 0 {
-					t = 0
-				} else if t > 1 {
-					t = 1
-				}
-				lift := t * t * (3.0 - 2.0*t)
-				lift = shadowLiftOnSkin(lab, lift, pipe.PortraitEnhance)
-				lab[0] = L + lift*20.0*pipe.LABShadowStrength
-			}
-
-			enhanced := labToSRGB(lab)
-			out.SetRGBA(x, y, color.RGBA{
-				R: floatTo8(enhanced[0]),
-				G: floatTo8(enhanced[1]),
-				B: floatTo8(enhanced[2]),
-				A: uint8(a8 >> 8),
-			})
+	return labMapImage(working, func(_, _ int, lab *[3]float64) bool {
+		if pipe.LABChromaEnabled && pipe.LABChromaStrength > 0 {
+			chroma := 1.0 + 0.3*pipe.LABChromaStrength
+			lab[1] *= chroma
+			lab[2] *= chroma
 		}
-	}
-	return out
+
+		if pipe.LABHighlightEnabled && pipe.LABHighlightStrength > 0 {
+			lab[0] = applyLABHighlightTone(*lab, pipe.LABHighlightStrength)
+		}
+
+		if pipe.LABShadowEnabled && pipe.LABShadowStrength > 0 {
+			L := lab[0]
+			t := (25.0 - L) / 25.0
+			if t < 0 {
+				t = 0
+			} else if t > 1 {
+				t = 1
+			}
+			lift := t * t * (3.0 - 2.0*t)
+			lift = shadowLiftOnSkin(*lab, lift, pipe.PortraitEnhance)
+			lab[0] = L + lift*20.0*pipe.LABShadowStrength
+		}
+		return true
+	})
 }
 
 // applyLABDynamicRangeFit compresses scene luminance into a log range of N stops,
 // anchored at 1st/99th percentile L* and mapped to the panel black/white range.
 func applyLABDynamicRangeFit(img image.Image, pipe ColorPipeline, outLoL, outHiL float64) image.Image {
-	b := img.Bounds()
 	inLoL, inHiL := luminancePercentiles(img, 0.01, 0.99)
 	if inHiL-inLoL < 0.5 {
 		inHiL = inLoL + 0.5
@@ -1309,37 +1315,20 @@ func applyLABDynamicRangeFit(img image.Image, pipe ColorPipeline, outLoL, outHiL
 		outLoL, outHiL = 12, 75
 	}
 
-	out := image.NewRGBA(b)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r8, g8, b8, a8 := img.At(x, y).RGBA()
-			rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
-			lab := srgbToLAB(rgb)
-			lab[0] = mapLABDynamicRange(lab[0], inLoL, inHiL, outLoL, outHiL, stops)
-			mapped := labToSRGB(lab)
-			out.SetRGBA(x, y, color.RGBA{
-				R: floatTo8(mapped[0]),
-				G: floatTo8(mapped[1]),
-				B: floatTo8(mapped[2]),
-				A: uint8(a8 >> 8),
-			})
-		}
-	}
-	return out
+	return labMapImage(img, func(_, _ int, lab *[3]float64) bool {
+		lab[0] = mapLABDynamicRange(lab[0], inLoL, inHiL, outLoL, outHiL, stops)
+		return true
+	})
 }
 
 func luminancePercentiles(img image.Image, loPct, hiPct float64) (loL, hiL float64) {
 	const scale = 10
 	const bins = 1001
 	hist := make([]int, bins)
-	b := img.Bounds()
 	total := 0
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r8, g8, b8, _ := img.At(x, y).RGBA()
-			rgb := [3]float64{float64(r8>>8) / 255.0, float64(g8>>8) / 255.0, float64(b8>>8) / 255.0}
-			L := srgbToLAB(rgb)[0]
-			bin := int(L * scale)
+	labRows(img, func(_ int, row [][3]float64) {
+		for _, lab := range row {
+			bin := int(lab[0] * scale)
 			if bin < 0 {
 				bin = 0
 			} else if bin >= bins {
@@ -1348,7 +1337,7 @@ func luminancePercentiles(img image.Image, loPct, hiPct float64) (loL, hiL float
 			hist[bin]++
 			total++
 		}
-	}
+	})
 	if total == 0 {
 		return 0, 100
 	}
@@ -1598,6 +1587,12 @@ func nearestColor(rgb [3]float64, palette [][3]float64) int {
 // disables itself inside yellow face blotches. Diffusion error still uses the
 // unmodulated sample (caller responsibility).
 func nearestColorThresholdMod(rgb, srcRGB [3]float64, palette [][3]float64, x, y int, strength float64, out [][]byte, rtl bool, antiRunBias, peachScale float64) int {
+	return nearestColorThresholdModPeach(rgb, srcRGB, stuckiPeachWeight(srcRGB), palette, x, y, strength, out, rtl, antiRunBias, peachScale)
+}
+
+// nearestColorThresholdModPeach is nearestColorThresholdMod with the source
+// pixel's peach weight supplied (StuckiDither precomputes it per pixel).
+func nearestColorThresholdModPeach(rgb, srcRGB [3]float64, srcPeach float64, palette [][3]float64, x, y int, strength float64, out [][]byte, rtl bool, antiRunBias, peachScale float64) int {
 	if strength <= 0 && antiRunBias <= 0 {
 		return nearestColor(rgb, palette)
 	}
@@ -1625,7 +1620,7 @@ func nearestColorThresholdMod(rgb, srcRGB [3]float64, palette [][3]float64, x, y
 	if peachScale < 0 {
 		peachScale = 0
 	}
-	peach := stuckiPeachWeight(srcRGB) * peachScale
+	peach := srcPeach * peachScale
 	if mid < 0.04 && antiRunBias <= 0 {
 		return best
 	}
@@ -1839,7 +1834,10 @@ const (
 // stuckiPeachWeight is ~1 on face peach and falls off as a wide Gaussian in LAB
 // so pixels away from the exact center still get blend permission.
 func stuckiPeachWeight(rgb [3]float64) float64 {
-	lab := srgbToLAB(paletteRGB01(rgb))
+	return stuckiPeachWeightLAB(srgbToLAB(paletteRGB01(rgb)))
+}
+
+func stuckiPeachWeightLAB(lab [3]float64) float64 {
 	dL := (lab[0] - stuckiPeachL) / stuckiPeachSigmaL
 	da := (lab[1] - stuckiPeachA) / stuckiPeachSigmaC
 	db := (lab[2] - stuckiPeachB) / stuckiPeachSigmaC
