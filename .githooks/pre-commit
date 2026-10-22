@@ -1,0 +1,44 @@
+#!/bin/sh
+# Backstop against accidentally committing local artifacts (e.g. from `git add -A`).
+# Blocks newly-added files that look like analysis projects / firmware dumps, or
+# any newly-added file over the size cap. Source is unaffected.
+#
+# Intentional override (use sparingly, and prefer staging specific paths):
+#   ALLOW_JUNK=1 git commit ...
+[ "$ALLOW_JUNK" = "1" ] && exit 0
+
+added=$(git diff --cached --name-only --diff-filter=A)
+[ -z "$added" ] && exit 0
+
+maxbytes=1048576   # 1 MiB
+fail=0
+
+for f in $added; do
+	case "$f" in
+		*/ghidra/*|ghidra/*|*.rep/*|*.gpr|*.prp|*/proj/*|*/proj_ota/*|*/xtroadmap/*)
+			echo "pre-commit: refusing local analysis/project artifact: $f"
+			fail=1
+			continue
+			;;
+		*.bin|*.bndb|*.bin.*)
+			echo "pre-commit: refusing binary dump: $f (gitignore it or stage deliberately with ALLOW_JUNK=1)"
+			fail=1
+			continue
+			;;
+	esac
+	if [ -f "$f" ]; then
+		sz=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+		if [ "${sz:-0}" -gt "$maxbytes" ]; then
+			echo "pre-commit: refusing large new file (${sz}B > ${maxbytes}B): $f"
+			fail=1
+		fi
+	fi
+done
+
+if [ "$fail" = "1" ]; then
+	echo ""
+	echo "Blocked: these look like local artifacts, not source. Stage only what you"
+	echo "mean (avoid 'git add -A'). Override an intentional case with ALLOW_JUNK=1."
+	exit 1
+fi
+exit 0

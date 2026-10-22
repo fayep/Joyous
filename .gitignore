@@ -58,3 +58,10 @@ proxy.log
 .design-ref/
 *.png
 !joyous-hub/wipes/*.png
+# Local Ghidra / reverse-engineering projects and analysis artifacts (not source)
+InkJoy/ghidra/
+InkJoy/intended_scene.jpg
+*.rep/
+*.gpr
+# xtroadmap tool (local; un-ignore deliberately if we decide to version it)
+GooDisplay/xtroadmap/
