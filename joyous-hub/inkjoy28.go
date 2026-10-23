@@ -255,7 +255,7 @@ func inkjoy28PanelImage(img image.Image, meta ImageMeta, portrait bool) image.Im
 	} else {
 		img = centerCropToAspect(img, float64(w)/float64(h))
 	}
-	img = resizeHQ(img, w, h)
+	img = resizeTo(img, w, h)
 	if !portrait {
 		img = rotate90CCW(img)
 	}
