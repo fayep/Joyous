@@ -21,9 +21,9 @@ type SessionIDStore interface {
 	SetCloudSessionIDs(mac, deviceID, uid string)
 }
 
-// loginAckGrace is how long a cloud-relayed frame's login waits for the
-// cloud's own login_ack before the bridge answers with a synthetic one (the
-// cloud doesn't answer some frames at all, e.g. the 28.5").
+// loginAckGrace is how long a cloud-relayed frame's login, once actually sent
+// upstream, waits for the cloud's own login_ack before the bridge answers with
+// a synthetic one (the cloud doesn't answer some frames at all, e.g. the 28.5").
 var loginAckGrace = 3 * time.Second
 
 type sessionIDs struct{ deviceID, uid string }
@@ -31,7 +31,7 @@ type sessionIDs struct{ deviceID, uid string }
 type loginAcks struct {
 	mu      sync.Mutex
 	known   map[string]sessionIDs  // mac → cloud-issued IDs
-	pending map[string]*time.Timer // login msgid → synthetic-ack fallback
+	pending map[string]*time.Timer // login msgid → synthetic-ack fallback (nil until sent upstream)
 }
 
 func (bs *bridgeSet) sessionStore() SessionIDStore {
@@ -64,8 +64,10 @@ func (bs *bridgeSet) cloudSessionIDs(mac string) (sessionIDs, bool) {
 
 // ackLogin answers a frame's login locally. Local-only frames get the
 // synthetic IDs at once. A cloud-relayed frame gets its cloud-issued IDs at
-// once if known; otherwise the bridge waits loginAckGrace for the cloud's
-// ack (noteCloudLoginAck cancels the wait) and only then synthesizes one.
+// once if known; otherwise the login is held until it has really gone
+// upstream (loginSentUpstream — the cloud link may still be connecting, e.g.
+// right after a bridge restart), then the bridge waits loginAckGrace for the
+// cloud's ack (noteCloudLoginAck cancels the wait) and only then synthesizes one.
 func (bs *bridgeSet) ackLogin(mac, msgid string, localOnly bool) {
 	if localOnly {
 		bs.publishLocalAck(mac, BuildLoginAck(mac, msgid))
@@ -82,6 +84,18 @@ func (bs *bridgeSet) ackLogin(mac, msgid string, localOnly bool) {
 	}
 	if t := bs.acks.pending[msgid]; t != nil {
 		t.Stop()
+	}
+	bs.acks.pending[msgid] = nil
+}
+
+// loginSentUpstream starts the synthetic-ack fallback for a login that has
+// just been published to the cloud, if ackLogin is holding it.
+func (bs *bridgeSet) loginSentUpstream(mac, msgid string) {
+	bs.acks.mu.Lock()
+	defer bs.acks.mu.Unlock()
+	t, held := bs.acks.pending[msgid]
+	if !held || t != nil {
+		return
 	}
 	bs.acks.pending[msgid] = time.AfterFunc(loginAckGrace, func() {
 		bs.acks.mu.Lock()
@@ -109,8 +123,10 @@ func (bs *bridgeSet) noteCloudLoginAck(mac string, payload []byte) {
 	}
 	ids := sessionIDs{msg.Data.DeviceID, msg.Data.UID}
 	bs.acks.mu.Lock()
-	if t := bs.acks.pending[msg.Data.AckMsgid]; t != nil {
-		t.Stop()
+	if t, held := bs.acks.pending[msg.Data.AckMsgid]; held {
+		if t != nil {
+			t.Stop()
+		}
 		delete(bs.acks.pending, msg.Data.AckMsgid)
 	}
 	changed := false

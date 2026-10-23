@@ -98,6 +98,7 @@ func TestCloudRelayedLoginAckUsesCloudIDs(t *testing.T) {
 
 	// IDs unknown: the bridge holds its ack; the cloud answers in time.
 	bs.ackLogin(mac, "m1", false)
+	bs.loginSentUpstream(mac, "m1")
 	bs.noteCloudLoginAck(mac, cloudLoginAck("m1", realD, realU))
 	time.Sleep(3 * loginAckGrace)
 	if a := capt.loginAcks(); len(a) != 0 {
@@ -122,6 +123,7 @@ func TestSilentCloudFallsBackToSyntheticAck(t *testing.T) {
 	t.Cleanup(func() { loginAckGrace = saved })
 	bs, capt := newAckTestBridges(t, &memSessionStore{ids: map[string][2]string{}})
 	bs.ackLogin("3844BE396C90", "m1", false)
+	bs.loginSentUpstream("3844BE396C90", "m1")
 	d, u := localOnlySessionIDs("3844BE396C90")
 	if a := waitAcks(t, capt, 1); a[0].AckMsgid != "m1" || a[0].DeviceID != d || a[0].UID != u {
 		t.Fatalf("fallback ack %+v", a[0])
@@ -135,5 +137,38 @@ func TestLocalOnlyLoginAckImmediate(t *testing.T) {
 	d, _ := localOnlySessionIDs("94A990D08BE0")
 	if a := waitAcks(t, capt, 1); a[0].DeviceID != d {
 		t.Fatalf("local-only ack %+v", a[0])
+	}
+}
+
+// Right after a bridge restart the cloud link is still connecting when the
+// frame logs in: no synthetic ack may fire before the login has gone upstream.
+func TestLoginHeldUntilSentUpstream(t *testing.T) {
+	saved := loginAckGrace
+	loginAckGrace = 30 * time.Millisecond
+	t.Cleanup(func() { loginAckGrace = saved })
+	const mac = "D0CF13EF4080"
+	bs, capt := newAckTestBridges(t, &memSessionStore{ids: map[string][2]string{}})
+	bs.ackLogin(mac, "m1", false)
+	time.Sleep(5 * loginAckGrace)
+	if a := capt.loginAcks(); len(a) != 0 {
+		t.Fatalf("synthetic ack before the login reached the cloud: %+v", a)
+	}
+	// Link comes up, login is sent, the cloud answers: still no synthetic ack.
+	bs.loginSentUpstream(mac, "m1")
+	bs.noteCloudLoginAck(mac, cloudLoginAck("m1", "real-d", "real-u"))
+	time.Sleep(3 * loginAckGrace)
+	if a := capt.loginAcks(); len(a) != 0 {
+		t.Fatalf("synthetic ack despite the cloud's: %+v", a)
+	}
+}
+
+// Frame messages sent while the cloud link is down are queued, not dropped.
+func TestForwardQueuesUntilConnected(t *testing.T) {
+	b := &upstreamBridge{mac: "D0CF13EF4080", set: &bridgeSet{}}
+	for i := range upstreamQueueMax + 5 {
+		b.forward([]byte{byte(i)})
+	}
+	if len(b.queue) != upstreamQueueMax || b.queue[0][0] != 0 {
+		t.Fatalf("queued %d, want the first %d", len(b.queue), upstreamQueueMax)
 	}
 }

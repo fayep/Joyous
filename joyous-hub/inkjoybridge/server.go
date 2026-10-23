@@ -204,7 +204,14 @@ type upstreamBridge struct {
 	set    *bridgeSet
 	client mqtt.Client
 	cfg    UpstreamConfig
+
+	mu    sync.Mutex
+	queue [][]byte // frame→cloud messages held until the cloud link is up
 }
+
+// upstreamQueueMax bounds the frame→cloud messages held while the cloud link
+// connects (a frame sends a handful — login, heart, reports — on connect).
+const upstreamQueueMax = 32
 
 func (b *upstreamBridge) connect() {
 	host := b.set.upstreamHost
@@ -228,13 +235,17 @@ func (b *upstreamBridge) connect() {
 		SetOnConnectHandler(func(c mqtt.Client) {
 			log.Printf("[%s] upstream connected to %s", b.mac, host)
 			c.Subscribe("/inkjoyap/"+b.mac, 0, b.onCloudMessage)
+			b.flushQueue(c)
 		}).
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
 			log.Printf("[%s] upstream disconnected: %v", b.mac, err)
 		})
 
-	b.client = mqtt.NewClient(opts)
-	tok := b.client.Connect()
+	client := mqtt.NewClient(opts)
+	b.mu.Lock()
+	b.client = client
+	b.mu.Unlock()
+	tok := client.Connect()
 	tok.Wait()
 	if err := tok.Error(); err != nil {
 		log.Printf("[%s] upstream connect error: %v", b.mac, err)
@@ -333,12 +344,40 @@ func (bs *bridgeSet) captureRecordDownstream(mac, action string, payload []byte)
 	return bs.capture.RecordDownstream(mac, action, payload)
 }
 
+// forward relays a frame message to the cloud. While the cloud link is still
+// connecting (it is opened on a frame's first message, so right after a bridge
+// restart the frame's login always arrives first) the message is queued and
+// sent on connect, rather than dropped.
 func (b *upstreamBridge) forward(payload []byte) {
-	if b.client == nil || !b.client.IsConnected() {
+	b.mu.Lock()
+	c := b.client
+	if c == nil || !c.IsConnected() {
+		if len(b.queue) < upstreamQueueMax {
+			b.queue = append(b.queue, payload)
+		}
+		b.mu.Unlock()
 		return
 	}
+	b.mu.Unlock()
+	b.publishUp(c, payload)
+}
+
+func (b *upstreamBridge) flushQueue(c mqtt.Client) {
+	b.mu.Lock()
+	q := b.queue
+	b.queue = nil
+	b.mu.Unlock()
+	for _, p := range q {
+		b.publishUp(c, p)
+	}
+}
+
+func (b *upstreamBridge) publishUp(c mqtt.Client, payload []byte) {
 	b.set.logCloudOut(b.mac, payload, "")
-	b.client.Publish("/device/report/"+b.mac, 0, false, payload)
+	c.Publish("/device/report/"+b.mac, 0, false, payload)
+	if MQTTAction(payload) == "login" {
+		b.set.loginSentUpstream(b.mac, MQTTMsgid(payload))
+	}
 }
 
 func (b *upstreamBridge) sendBlockedOTAAcks(interceptedAction string, requestPayload []byte) {
