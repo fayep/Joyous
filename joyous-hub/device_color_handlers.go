@@ -27,7 +27,8 @@ func (h *Hub) handleDeviceColorGet(w http.ResponseWriter, r *http.Request, id st
 	case dev.Type == DeviceTypeSamsung:
 		bridgeDefault = pipe.SamsungDisplay[:]
 	case len(names) == len(paletteInkJoy28Display):
-		// 28.5": its own measured 8-ink set, not the 10"'s 6.
+		// 8-ink panel: the measured 28.5" set (the only 8-ink measurement so
+		// far), not the 10"'s 6.
 		bridgeDefault = paletteInkJoy28Display[:]
 	case dev.DeviceReportedP2 != nil:
 		// Non-Samsung device that reported its own P2 at login (e.g. a Seeed

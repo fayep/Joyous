@@ -421,15 +421,16 @@ func (r *DeviceRegistry) SetPortrait(id string, portrait bool) bool {
 	return true
 }
 
-// inkNames28 names paletteInkJoy28Display's 8 inks: the shared 6, then the two
-// only the 28.5" panel has.
-var inkNames28 = append(append([]string(nil), colorNames...), "goldenrod", "orange")
+// inkNames8 names an 8-ink InkJoy palette (paletteInkJoy28Display's order):
+// the shared 6, then goldenrod and orange.
+var inkNames8 = append(append([]string(nil), colorNames...), "goldenrod", "orange")
 
 // InkNames lists this device's panel inks in palette-index order; its length
-// is the size a ColorOverride must have.
+// is the size a ColorOverride must have. For InkJoy it follows the hardware
+// model and firmware (inkjoybridge.PanelInkCount).
 func (d *Device) InkNames() []string {
-	if d.Type != DeviceTypeSamsung && d.HardwareModel == inkjoybridge.HardwareModelInkJoy28 {
-		return inkNames28
+	if d.Type == DeviceTypeInkJoy && inkjoybridge.PanelInkCount(d.HardwareModel, d.Firmware) == len(inkNames8) {
+		return inkNames8
 	}
 	return colorNames
 }
