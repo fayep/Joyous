@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -110,6 +111,26 @@ func (ui *inkjoyBridgeUI) registerRoutes() {
 	ui.mux.HandleFunc("POST /inkjoy/api/ble/scan", ui.handleBLEScan)
 	ui.mux.HandleFunc("POST /inkjoy/api/ble/adopt", ui.handleBLEAdopt)
 	ui.mux.HandleFunc("GET /inkjoy/api/mqtt/logs", ui.handleMQTTLogs)
+	ui.mux.HandleFunc("POST /inkjoy/api/devices/{id}/replay-cloud", func(w http.ResponseWriter, r *http.Request) {
+		ui.handleReplayCloud(w, r, r.PathValue("id"))
+	})
+}
+
+// handleReplayCloud re-runs a saved cloud→frame message (body: the raw MQTT
+// payload, e.g. a play from the MQTT log) as if the cloud had just sent it.
+func (ui *inkjoyBridgeUI) handleReplayCloud(w http.ResponseWriter, r *http.Request, id string) {
+	dev, ok := ui.devices.Get(id)
+	if !ok || dev.Type != DeviceTypeInkJoy {
+		http.Error(w, "inkjoy device not found", http.StatusNotFound)
+		return
+	}
+	payload, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil || inkjoybridge.MQTTAction(payload) == "" {
+		http.Error(w, "body must be an MQTT payload with an action", http.StatusBadRequest)
+		return
+	}
+	go ui.srv.ReplayCloudMessage(dev.MAC, payload)
+	writeJSON(w, map[string]any{"ok": true, "action": inkjoybridge.MQTTAction(payload), "msgid": inkjoybridge.MQTTMsgid(payload)})
 }
 
 func (ui *inkjoyBridgeUI) handlePage(w http.ResponseWriter, r *http.Request) {

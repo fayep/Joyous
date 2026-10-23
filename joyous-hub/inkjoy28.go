@@ -1,10 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"image"
+	"log"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/pierrec/lz4/v4"
@@ -114,18 +118,31 @@ func (s *ImageStore) serveInkJoy28IJI3(id string, portrait bool, mutate overlayF
 	return scanWrapInkJoy28(inkjoy28StampOverlay(base, overlaid, pal))
 }
 
-// inkjoy28BaseIndices returns the dithered 8-ink index grid for the photo,
-// cached in-process per (image, orientation, colour override) so overlay/date
-// re-renders reuse the dither instead of repeating the ~90s pass. A redeploy
-// (new process) drops the cache, so a palette/pipeline code change re-dithers once.
+// inkjoy28BaseIndices returns the dithered 8-ink index grid for the photo, so
+// overlay/date re-renders reuse the dither instead of repeating it. Grids are
+// cached in memory and on disk (beside the 10"'s .bin cache, so ClearBinCache
+// drops them too), keyed by everything the dither reads: the source file, its
+// crop/rotation, orientation, the colour override and the full colour
+// pipeline — so a settings or photo change can't be served a stale render,
+// and a bridge restart or deploy doesn't force a re-dither.
 func (s *ImageStore) inkjoy28BaseIndices(id string, portrait bool, colorOverride []PaletteRGB) ([][]byte, error) {
-	key := fmt.Sprintf("%s|p=%t|%s", id, portrait, inkjoy28OverrideKey(colorOverride))
-	if v, ok := inkjoy28IdxCache.get(key); ok {
-		return v, nil
-	}
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return nil, err
+	}
+	pipe := s.colorPipelineForMetaOverride(meta, colorOverride)
+	st, err := os.Stat(s.rawPath(id))
+	if err != nil {
+		return nil, fmt.Errorf("raw file missing for %s", id)
+	}
+	key := inkjoy28RenderKey(id, portrait, colorOverride, pipe, meta, st)
+	if v, ok := inkjoy28IdxCache.get(key); ok {
+		return v, nil
+	}
+	diskPath := filepath.Join(s.cacheDir(), id+".ij28-"+key[:16])
+	if v, err := readInkJoy28Indices(diskPath); err == nil {
+		inkjoy28IdxCache.put(key, v)
+		return v, nil
 	}
 	raw, err := os.ReadFile(s.rawPath(id))
 	if err != nil {
@@ -138,13 +155,67 @@ func (s *ImageStore) inkjoy28BaseIndices(id string, portrait bool, colorOverride
 	img = inkjoy28PanelImage(img, meta, portrait)
 	// Dither against the 8-ink 28.5" palette (not pipe.InkJoyDisplay, the 10"'s
 	// 6-ink set); goldenrod/orange (6,7) widen the dither gamut.
-	pipe := s.colorPipelineForMetaOverride(meta, colorOverride)
 	indices := StuckiTwoPalette(img, inkjoy28Palette(colorOverride), pipe, false, stuckiOptionsInkJoy(pipe))
 	if len(indices) != ij28H || len(indices[0]) != ij28W {
 		return nil, fmt.Errorf("inkjoy28: dither grid %dx%d, want %dx%d",
 			len(indices[0]), len(indices), ij28W, ij28H)
 	}
 	inkjoy28IdxCache.put(key, indices)
+	if err := writeInkJoy28Indices(diskPath, indices); err != nil {
+		log.Printf("inkjoy28: disk cache write %s: %v", diskPath, err)
+	}
+	return indices, nil
+}
+
+// inkjoy28RenderKey hashes every input of the 28.5" dither.
+func inkjoy28RenderKey(id string, portrait bool, colorOverride []PaletteRGB, pipe ColorPipeline, meta ImageMeta, src os.FileInfo) string {
+	cropKey := "1:√2"
+	if !portrait {
+		cropKey = "√2:1"
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("v1|%s|p=%t|%s|%#v|crop=%#v|rot=%v|src=%d@%d",
+		id, portrait, inkjoy28OverrideKey(colorOverride), pipe,
+		meta.Crops[cropKey], meta.RotateOverride, src.Size(), src.ModTime().UnixNano())))
+	return hex.EncodeToString(sum[:])
+}
+
+// writeInkJoy28Indices stores an index grid as an IJI3 container of the
+// unscanned plane (LZ4 + CRC), written atomically.
+func writeInkJoy28Indices(path string, indices [][]byte) error {
+	plane := make([]byte, 0, ij28W*ij28H)
+	for _, row := range indices {
+		plane = append(plane, row...)
+	}
+	b, err := writeInkJoy28IJI3(plane)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func readInkJoy28Indices(path string) ([][]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	w, h, _, plane, err := parseIJI3(b)
+	if err != nil {
+		return nil, err
+	}
+	if w != ij28W || h != ij28H || len(plane) != ij28W*ij28H {
+		return nil, fmt.Errorf("inkjoy28: cached grid %dx%d", w, h)
+	}
+	indices := make([][]byte, ij28H)
+	for y := range indices {
+		indices[y] = plane[y*ij28W : (y+1)*ij28W : (y+1)*ij28W]
+	}
 	return indices, nil
 }
 

@@ -122,14 +122,28 @@ func downloadPlayBin(rawURL string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	bin, err := io.ReadAll(io.LimitReader(resp.Body, frameW*frameH*2+1))
+	bin, err := io.ReadAll(io.LimitReader(resp.Body, iji3MaxRaw+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(bin) != frameW*frameH*2 {
-		return nil, fmt.Errorf("bin size %d != %d", len(bin), frameW*frameH*2)
+	if err := validatePlayBin(bin); err != nil {
+		return nil, err
 	}
 	return bin, nil
+}
+
+// validatePlayBin accepts a cloud play image in either format the frames take:
+// the 10"'s raw 1600x1200 hi/lo .bin, or any intact IJI3 container (the
+// 28.5"'s, and whatever else the cloud starts sending as IJI3).
+func validatePlayBin(bin []byte) error {
+	if isIJI3(bin) {
+		_, _, _, _, err := parseIJI3(bin)
+		return err
+	}
+	if len(bin) != frameW*frameH*2 {
+		return fmt.Errorf("bin size %d: neither IJI3 nor a %d-byte raw .bin", len(bin), frameW*frameH*2)
+	}
+	return nil
 }
 
 func (h *Hub) saveDisplayPreviewFromBin(mac string, bin []byte) error {
@@ -137,7 +151,13 @@ func (h *Hub) saveDisplayPreviewFromBin(mac string, bin []byte) error {
 	if dev, ok := h.devices.Get(inkjoyID(mac)); ok {
 		portrait = dev.Portrait
 	}
-	jpeg, err := binToDisplayPreviewJPEG(bin, portrait, h.colorPipeline().InkJoyDisplay)
+	var jpeg []byte
+	var err error
+	if isIJI3(bin) {
+		jpeg, err = iji3PreviewJPEG(bin, portrait)
+	} else {
+		jpeg, err = binToDisplayPreviewJPEG(bin, portrait, h.colorPipeline().InkJoyDisplay)
+	}
 	if err != nil {
 		return err
 	}

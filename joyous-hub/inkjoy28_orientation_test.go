@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"image"
 	"image/color"
 	"image/png"
@@ -76,20 +75,7 @@ func inkCodeToIndex(code byte) int {
 
 // inkjoy28UnscanIndices inverts scanWrapInkJoy28's panel scan, returning the
 // upright 2160x3060 grid of panel ink codes.
-func inkjoy28UnscanIndices(plane []byte) [][]byte {
-	idx := make([][]byte, ij28H)
-	for i := range idx {
-		idx[i] = make([]byte, ij28W)
-	}
-	for i := 0; i < ij28H/2; i++ {
-		for c := 0; c < ij28W; c++ {
-			w := binary.BigEndian.Uint16(plane[(i*ij28W+c)*2:])
-			idx[2*i][ij28W-1-c] = byte(w>>8) & 7
-			idx[2*i+1][ij28W-1-c] = byte(w) & 7
-		}
-	}
-	return idx
-}
+func inkjoy28UnscanIndices(plane []byte) [][]byte { return unpackInkJoy28Plane(plane) }
 
 // On a landscape frame the overlay is composited after the dither onto the
 // rotated panel image, so drawWeatherOverlay's rotate flag must put it on the

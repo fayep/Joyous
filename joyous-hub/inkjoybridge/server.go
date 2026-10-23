@@ -196,6 +196,7 @@ type bridgeSet struct {
 	localOnly       sync.Map // mac → struct{} for Seeed H:9 etc. (no cloud upstream)
 	acks            loginAcks
 	injected        sync.Map // msgid → struct{} of bridge-originated frame messages
+	held            heldPlays
 }
 
 func (bs *bridgeSet) markLocalOnly(mac string) {
@@ -276,7 +277,19 @@ func (b *upstreamBridge) connect() {
 }
 
 func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
-	payload := msg.Payload()
+	b.handleCloudPayload(msg.Payload())
+}
+
+// ReplayCloudMessage feeds a saved cloud→frame message for mac through the
+// same path as if the cloud had just sent it: intercepts, the play relay's
+// download/cache/rewrite, held delivery, and the frame's responses going
+// back to the cloud (it is not marked bridge-originated).
+func (s *Server) ReplayCloudMessage(mac string, payload []byte) {
+	log.Printf("[%s] replaying cloud %s %s", mac, MQTTAction(payload), MQTTMsgid(payload))
+	s.bridges.get(mac).handleCloudPayload(payload)
+}
+
+func (b *upstreamBridge) handleCloudPayload(payload []byte) {
 	action := MQTTAction(payload)
 
 	if ShouldIntercept(action, b.set.intercept) {
@@ -347,7 +360,11 @@ func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
 		}
 		b.set.mqttLog.AddLocal("bridge→frame", topic, forwardPayload, note)
 	}
-	b.set.broker.Publish(topic, forwardPayload, false, 1)
+	if action == "play" {
+		b.set.deliverCloudPlay(b.mac, topic, forwardPayload)
+	} else {
+		b.set.broker.Publish(topic, forwardPayload, false, 1)
+	}
 	if action == "play" && b.set.onExternalPlay != nil {
 		b.set.onExternalPlay(b.mac, forwardPayload)
 	}
@@ -515,6 +532,7 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		if h.devices != nil {
 			h.devices.OnDeviceLogin(mac)
 		}
+		h.bridges.releaseHeldPlay(mac)
 	case "heart":
 		info, err := ParseHeartPayload(payload)
 		if err == nil && h.devices != nil {
