@@ -1002,6 +1002,9 @@ func stuckiEdgeAttenuation(lumA, lumB, preserve float64) float64 {
 // LAB/portrait/pre-dither preprocessing. Kernel is Stucki or Floyd–Steinberg.
 // Map indices to send values with RenderIndicesToRGB (Samsung P1) or indicesToHi (InkJoy).
 func StuckiTwoPalette(img image.Image, displayPalette [][3]float64, pipe ColorPipeline, flatRGB bool, opts stuckiOptions) [][]byte {
+	if shouldSharpen(pipe, img, flatRGB) {
+		img = sharpenL(img, pipe.SharpenAmount, pipe.SharpenRadius, sharpenThresholdL)
+	}
 	src := img
 	// The ray pass was tuned on the 10"'s black-anchored DR fit, whose
 	// highlights sit well under panel white (L*≈51 at 3.5 stops); its face/blown

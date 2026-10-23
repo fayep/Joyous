@@ -43,6 +43,12 @@ type ColorConfig struct {
 	LABInkAffinityRayEnabled  bool    `json:"lab_ink_affinity_ray_enabled"`
 	LABInkAffinityRayStrength float64 `json:"lab_ink_affinity_ray_strength"`
 
+	// Sharpen is an unsharp mask on L* before the LAB passes (see sharpen.go);
+	// amount scales the edge boost, radius is the blur sigma in panel pixels.
+	SharpenEnabled bool    `json:"sharpen_enabled"`
+	SharpenAmount  float64 `json:"sharpen_amount"`
+	SharpenRadius  float64 `json:"sharpen_radius"`
+
 	InkJoyWipe string `json:"inkjoy_wipe"` // uniform:0–uniform:248, uniform248, random, luminance, or wipe PNG name
 	// InkJoy28Wipe is the 28.5" refresh transition: off, luminance, random,
 	// or captured:<name> (see inkjoy28_wipe.go).
@@ -81,6 +87,9 @@ type ColorPipeline struct {
 	LABInkAffinityMixStrength float64
 	LABInkAffinityRayEnabled  bool
 	LABInkAffinityRayStrength float64
+	SharpenEnabled bool
+	SharpenAmount  float64
+	SharpenRadius  float64
 	InkJoyDisplay        [6][3]float64
 	SamsungDisplay       [6][3]float64
 	SamsungSend          [6][3]float64
@@ -127,6 +136,9 @@ func defaultColorConfig() ColorConfig {
 		LABInkAffinityMixStrength: 1.0,
 		LABInkAffinityRayEnabled:  false,
 		LABInkAffinityRayStrength: 1.0,
+		SharpenEnabled:            true,
+		SharpenAmount:             defaultSharpenAmount,
+		SharpenRadius:             defaultSharpenRadius,
 		InkJoyWipe:                DefaultInkJoyWipe,
 		InkJoyDisplayPreset:  ColorPresetCalibrated,
 		SamsungDisplayPreset: ColorPresetCalibrated,
@@ -151,6 +163,9 @@ func (s *ColorStore) load() {
 	}
 	if _, ok := raw["lab_ink_affinity_enabled"]; !ok {
 		cfg.LABInkAffinityEnabled = true
+	}
+	if _, ok := raw["sharpen_enabled"]; !ok {
+		cfg.SharpenEnabled = true
 	}
 	s.cfg = normalizeColorConfig(cfg)
 }
@@ -196,6 +211,12 @@ func normalizeColorConfig(cfg ColorConfig) ColorConfig {
 	}
 	if cfg.LABInkAffinityRayStrength <= 0 {
 		cfg.LABInkAffinityRayStrength = 1.0
+	}
+	if cfg.SharpenAmount <= 0 {
+		cfg.SharpenAmount = defaultSharpenAmount
+	}
+	if cfg.SharpenRadius <= 0 {
+		cfg.SharpenRadius = defaultSharpenRadius
 	}
 	cfg.InkJoyWipe = normalizeInkJoyWipe(cfg.InkJoyWipe)
 	cfg.InkJoy28Wipe = normalizeInkJoy28Wipe(cfg.InkJoy28Wipe)
@@ -255,6 +276,9 @@ func ResolveColorPipeline(cfg ColorConfig) ColorPipeline {
 		LABInkAffinityMixStrength: cfg.LABInkAffinityMixStrength,
 		LABInkAffinityRayEnabled:  cfg.LABInkAffinityRayEnabled,
 		LABInkAffinityRayStrength: cfg.LABInkAffinityRayStrength,
+		SharpenEnabled:            cfg.SharpenEnabled,
+		SharpenAmount:             cfg.SharpenAmount,
+		SharpenRadius:             cfg.SharpenRadius,
 		InkJoyDisplay:          resolvePalette(cfg.InkJoyDisplayPreset, cfg.InkJoyDisplay, inkjoyDisplayPresets()),
 		SamsungDisplay:         resolvePalette(cfg.SamsungDisplayPreset, cfg.SamsungDisplay, samsungDisplayPresets()),
 		SamsungSend:            resolvePalette(cfg.SamsungSendPreset, cfg.SamsungSend, samsungSendPresets()),
@@ -367,6 +391,12 @@ func validateColorConfig(cfg ColorConfig) error {
 	}
 	if cfg.LABInkAffinityRayStrength < 0 || cfg.LABInkAffinityRayStrength > 3 {
 		return fmt.Errorf("lab_ink_affinity_ray_strength must be between 0 and 3")
+	}
+	if cfg.SharpenAmount < 0 || cfg.SharpenAmount > 3 {
+		return fmt.Errorf("sharpen_amount must be between 0 and 3")
+	}
+	if cfg.SharpenRadius < 0.5 || cfg.SharpenRadius > 3 {
+		return fmt.Errorf("sharpen_radius must be between 0.5 and 3")
 	}
 	if err := validateInkJoyWipe(cfg.InkJoyWipe); err != nil {
 		return err
