@@ -72,7 +72,7 @@ func parseWFUpdate(payload []byte) (wfUpdateInfo, error) {
 func wfCacheName(info wfUpdateInfo, crc uint32) string {
 	parts := []string{"wf"}
 	for _, p := range []string{info.Panel, info.Batch, info.Date, info.Scene} {
-		if p = sanitizeCaptureName(p); p != "" && p != "unknown" {
+		if p = artifactNamePart(p); p != "" {
 			parts = append(parts, p)
 		}
 	}
