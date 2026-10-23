@@ -6,12 +6,16 @@ import (
 )
 
 // Defaults chosen on the Samsung (23 Oct 2026): at 0.6 / 1.0 px the boost was
-// lost in the dither; 0.9 / 1.4 px survives it without etching faces.
+// lost in the dither; 0.9 / 1.4 px survived it but over-crisped hard edges
+// (cart wheels, harness), hence the taper: fine detail gets ~amount, strong
+// edges at most amount*knee L*.
 const (
-	defaultSharpenAmount = 0.9
+	defaultSharpenAmount = 1.2
 	defaultSharpenRadius = 1.4
 	// sharpenThresholdL is the soft threshold in L* units.
 	sharpenThresholdL = 1.5
+	// sharpenKneeL is where the boost starts to roll off, in L* units.
+	sharpenKneeL = 5.0
 )
 
 // shouldSharpen gates the unsharp mask like the LAB passes: never for flat
@@ -30,7 +34,9 @@ func shouldSharpen(pipe ColorPipeline, img image.Image, flatRGB bool) bool {
 // with only six inks. sigma is the Gaussian blur radius in pixels; amount
 // scales the edge boost; changes smaller than thresholdL (L* units) are
 // ignored and larger ones reduced by it (a soft threshold), so smooth skin,
-// sky and JPEG noise aren't turned into dither grit.
+// sky and JPEG noise aren't turned into dither grit. Above the threshold the
+// boost tapers, amount*m/(1+m/sharpenKneeL), so it lifts low-contrast detail
+// (faces, texture) without etching edges that are already strong.
 func sharpenL(img image.Image, amount, sigma, thresholdL float64) image.Image {
 	if amount <= 0 || sigma <= 0 {
 		return img
@@ -50,7 +56,8 @@ func sharpenL(img image.Image, amount, sigma, thresholdL float64) image.Image {
 		if mag <= 0 {
 			return false
 		}
-		lab[0] = math.Max(0, math.Min(100, lab[0]+amount*math.Copysign(mag, d)))
+		boost := amount * mag / (1 + mag/sharpenKneeL)
+		lab[0] = math.Max(0, math.Min(100, lab[0]+math.Copysign(boost, d)))
 		return true
 	})
 }

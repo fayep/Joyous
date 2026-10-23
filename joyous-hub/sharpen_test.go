@@ -120,3 +120,27 @@ func TestSharpenConfigDefaultsAndPersistence(t *testing.T) {
 		t.Error("radius 5 should be rejected")
 	}
 }
+
+func TestSharpenLTapersHardEdges(t *testing.T) {
+	// Black/white step: the untapered boost would be tens of L*; the taper
+	// caps it at amount*knee.
+	img := image.NewRGBA(image.Rect(0, 0, 32, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 32; x++ {
+			v := uint8(40)
+			if x >= 16 {
+				v = 220
+			}
+			v += uint8(y % 3)
+			img.SetRGBA(x, y, color.RGBA{v, v, v, 255})
+		}
+	}
+	out := sharpenL(img, defaultSharpenAmount, defaultSharpenRadius, sharpenThresholdL)
+	limit := defaultSharpenAmount * sharpenKneeL
+	for _, x := range []int{15, 16} {
+		a, b := sharpenTestL(img, x, 4), sharpenTestL(out, x, 4)
+		if d := b - a; d == 0 || d > limit+0.5 || -d > limit+0.5 {
+			t.Errorf("x=%d boost %.2f L*, want non-zero and within ±%.1f", x, d, limit)
+		}
+	}
+}

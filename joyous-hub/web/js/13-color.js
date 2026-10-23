@@ -68,7 +68,7 @@ function onColorPresetChange(groupKey){
 
 function applyColorForm(cfg){
   document.getElementById('clr-sharpen').checked=cfg.sharpen_enabled!==false;
-  const sharpenAmount=cfg.sharpen_amount||0.9, sharpenRadius=cfg.sharpen_radius||1.4;
+  const sharpenAmount=cfg.sharpen_amount||1.2, sharpenRadius=cfg.sharpen_radius||1.4;
   document.getElementById('clr-sharpen-amount').value=sharpenAmount;
   document.getElementById('clr-sharpen-amount-val').textContent=String(sharpenAmount);
   document.getElementById('clr-sharpen-radius').value=sharpenRadius;
@@ -119,7 +119,7 @@ function applyColorForm(cfg){
 function colorFormValues(){
   const out={
     sharpen_enabled:document.getElementById('clr-sharpen').checked,
-    sharpen_amount:parseFloat(document.getElementById('clr-sharpen-amount').value)||0.9,
+    sharpen_amount:parseFloat(document.getElementById('clr-sharpen-amount').value)||1.2,
     sharpen_radius:parseFloat(document.getElementById('clr-sharpen-radius').value)||1.4,
     lab_chroma_enabled:document.getElementById('clr-lab-chroma').checked,
     lab_chroma_strength:parseFloat(document.getElementById('clr-lab-chroma-strength').value)||1,
