@@ -205,6 +205,11 @@ func (h *Hub) rewriteExternalPlay(mac string, payload []byte) ([]byte, error) {
 	if err := h.saveDisplayPreviewFromBin(mac, bin); err != nil {
 		log.Printf("[%s] display preview from relayed play: %v", mac, err)
 	}
+	if path, err := h.inkjoy.saveCapturedWipe(name, bin); err != nil {
+		log.Printf("[%s] transition capture from relayed play: %v", mac, err)
+	} else if path != "" {
+		log.Printf("[%s] cloud transition saved as %s", mac, path)
+	}
 
 	log.Printf("[%s] play relayed via %s (from %s)", mac, localPath, remoteURL)
 	return rewritten, nil

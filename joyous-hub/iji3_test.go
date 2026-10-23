@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"image/jpeg"
+	"strings"
 	"testing"
 )
 
@@ -76,5 +77,62 @@ func TestIJI3PreviewOrientation(t *testing.T) {
 		if portrait != (h > w) {
 			t.Fatalf("portrait=%v preview %dx%d", portrait, w, h)
 		}
+	}
+}
+
+// The 28.5" transition step (upper 5 bits) and the 10" lo byte come out as
+// wipe images in the embedded wipes' gray = step*8 format, upright.
+func TestPlayBinWipe(t *testing.T) {
+	// 28.5": upright grid of whole bytes (step<<3 | code), scanned as the panel reads it.
+	step := func(x, y int) byte { return byte(1 + (x/100+y/150)%31) }
+	plane := make([]byte, ij28W*ij28H)
+	for i := 0; i < ij28H/2; i++ {
+		for c := 0; c < ij28W; c++ {
+			x := ij28W - 1 - c
+			plane[(i*ij28W+c)*2] = step(x, 2*i)<<3 | 2
+			plane[(i*ij28W+c)*2+1] = step(x, 2*i+1)<<3 | 1
+		}
+	}
+	b, err := writeInkJoy28IJI3(plane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := playBinWipe(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range [][2]int{{0, 0}, {ij28W - 1, 0}, {5, ij28H - 1}, {1234, 2345}} {
+		if got, want := g.GrayAt(p[0], p[1]).Y, step(p[0], p[1])*8; got != want {
+			t.Fatalf("28.5 wipe at %v = %d, want %d", p, got, want)
+		}
+	}
+
+	// 10": lo bytes via applyLoToBin's layout.
+	lo := make([][]byte, frameH)
+	for y := range lo {
+		lo[y] = make([]byte, frameW)
+		for x := range lo[y] {
+			lo[y][x] = byte((x + y) % 31 * 8)
+		}
+	}
+	bin := make([]byte, frameW*frameH*2)
+	applyLoToBin(bin, lo)
+	g, err = playBinWipe(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range [][2]int{{0, 0}, {frameW - 1, 0}, {3, frameH - 1}} {
+		if got := g.GrayAt(p[0], p[1]).Y; got != lo[p[1]][p[0]] {
+			t.Fatalf("10 wipe at %v = %d, want %d", p, got, lo[p[1]][p[0]])
+		}
+	}
+
+	c := NewInkJoyCache(t.TempDir())
+	path, err := c.saveCapturedWipe("art", b)
+	if err != nil || !strings.HasSuffix(path, "wipes-captured/2160x3060/art.png") {
+		t.Fatalf("capture path %q err %v", path, err)
+	}
+	if again, err := c.saveCapturedWipe("art", b); err != nil || again != "" {
+		t.Fatalf("second capture %q %v, want no rewrite", again, err)
 	}
 }

@@ -101,8 +101,20 @@ func iji3PreviewJPEG(b []byte, portrait bool) ([]byte, error) {
 }
 
 // unpackInkJoy28Plane inverts packInkJoy28Plane, returning the upright
-// 2160x3060 grid of panel ink codes.
+// 2160x3060 grid of panel ink codes (each byte's low 3 bits).
 func unpackInkJoy28Plane(plane []byte) [][]byte {
+	idx := unpackInkJoy28PlaneBytes(plane)
+	for _, row := range idx {
+		for x := range row {
+			row[x] &= 7
+		}
+	}
+	return idx
+}
+
+// unpackInkJoy28PlaneBytes undoes the panel scan, returning each pixel's whole
+// byte: ink code in the low 3 bits, transition step in the upper 5.
+func unpackInkJoy28PlaneBytes(plane []byte) [][]byte {
 	idx := make([][]byte, ij28H)
 	for i := range idx {
 		idx[i] = make([]byte, ij28W)
@@ -110,9 +122,46 @@ func unpackInkJoy28Plane(plane []byte) [][]byte {
 	for i := 0; i < ij28H/2; i++ {
 		for c := 0; c < ij28W; c++ {
 			w := binary.BigEndian.Uint16(plane[(i*ij28W+c)*2:])
-			idx[2*i][ij28W-1-c] = byte(w>>8) & 7
-			idx[2*i+1][ij28W-1-c] = byte(w) & 7
+			idx[2*i][ij28W-1-c] = byte(w >> 8)
+			idx[2*i+1][ij28W-1-c] = byte(w)
 		}
 	}
 	return idx
+}
+
+// playBinWipe extracts a play image's refresh transition as a wipe image in
+// the embedded wipes' format (8-bit gray, value = step*8, so 0..248):
+//   - 10" raw .bin: the lo byte of each pixel (rows stored bottom-to-top,
+//     see applyLoToBin), 1600x1200.
+//   - 28.5" IJI3: the upper 5 bits of each pixel byte (byte & 0xF8), upright
+//     panel-native 2160x3060.
+func playBinWipe(bin []byte) (*image.Gray, error) {
+	if isIJI3(bin) {
+		w, h, flags, raw, err := parseIJI3(bin)
+		if err != nil {
+			return nil, err
+		}
+		if w != ij28W || h != ij28H || flags&iji3Flag8bpp == 0 || len(raw) != ij28W*ij28H {
+			return nil, fmt.Errorf("iji3: no transition decoder for %dx%d flags %#04x", w, h, flags)
+		}
+		g := image.NewGray(image.Rect(0, 0, ij28W, ij28H))
+		for y, row := range unpackInkJoy28PlaneBytes(raw) {
+			for x, b := range row {
+				g.Pix[y*g.Stride+x] = b & 0xF8
+			}
+		}
+		return g, nil
+	}
+	if len(bin) != frameW*frameH*2 {
+		return nil, fmt.Errorf("bin size %d: not a 10\" .bin", len(bin))
+	}
+	g := image.NewGray(image.Rect(0, 0, frameW, frameH))
+	i := 0
+	for row := frameH - 1; row >= 0; row-- {
+		for x := range frameW {
+			g.Pix[row*g.Stride+x] = bin[i+1]
+			i += 2
+		}
+	}
+	return g, nil
 }
