@@ -15,12 +15,12 @@ const uiRevisionPlaceholder = "__JOYOUS_UI_REVISION__"
 var uiRevision string
 
 func init() {
-	sum := sha256.Sum256([]byte(linkmeta.Version + "\x00" + indexHTML))
+	sum := sha256.Sum256([]byte(linkmeta.Version + "\x00" + uiContentForRevision()))
 	uiRevision = hex.EncodeToString(sum[:])[:12]
 }
 
 func uiRevisionHTML() string {
-	return strings.Replace(indexHTML, uiRevisionPlaceholder, uiRevision, 1)
+	return strings.ReplaceAll(uiIndexHTML, uiRevisionPlaceholder, uiRevision)
 }
 
 func (h *Hub) handleUIRevision(w http.ResponseWriter, r *http.Request) {

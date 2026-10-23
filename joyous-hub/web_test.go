@@ -347,24 +347,24 @@ func TestStaticRoot(t *testing.T) {
 
 // TestWebBranding: embedded UI uses Joyous branding, not legacy InkJoy Hub strings.
 func TestWebBranding(t *testing.T) {
-	if !strings.Contains(indexHTML, "<title>Joyous</title>") {
+	if !strings.Contains(uiContentForRevision(), "<title>Joyous</title>") {
 		t.Fatal("indexHTML title should be Joyous")
 	}
-	if !strings.Contains(indexHTML, "<h1>Joyous</h1>") {
+	if !strings.Contains(uiContentForRevision(), "<h1>Joyous</h1>") {
 		t.Fatal("indexHTML header should be Joyous")
 	}
 	for _, legacy := range []string{"InkJoy Hub", "InkJoy hub", "inkjoy hub"} {
-		if strings.Contains(indexHTML, legacy) {
+		if strings.Contains(uiContentForRevision(), legacy) {
 			t.Fatalf("indexHTML still contains legacy branding %q", legacy)
 		}
 	}
-	if strings.Contains(indexHTML, "/thumb?t=") {
+	if strings.Contains(uiContentForRevision(), "/thumb?t=") {
 		t.Fatal("indexHTML should not cache-bust album thumbs with ?t=")
 	}
-	if strings.Contains(indexHTML, ".png?t=") {
+	if strings.Contains(uiContentForRevision(), ".png?t=") {
 		t.Fatal("indexHTML should not cache-bust Samsung preview PNGs with ?t=")
 	}
-	if !strings.Contains(indexHTML, "samsungPreviewURL") {
+	if !strings.Contains(uiContentForRevision(), "samsungPreviewURL") {
 		t.Fatal("indexHTML should define samsungPreviewURL for etag/album cache busting")
 	}
 }
