@@ -426,7 +426,17 @@ type frameHook struct {
 
 func (h *frameHook) ID() string { return "frame-hook" }
 
-func (h *frameHook) Provides(b byte) bool { return b == mochi.OnPublished }
+func (h *frameHook) Provides(b byte) bool {
+	return b == mochi.OnPublished || b == mochi.OnDisconnect
+}
+
+// OnDisconnect logs why a frame's MQTT session to the bridge ended.
+func (h *frameHook) OnDisconnect(cl *mochi.Client, err error, expire bool) {
+	if cl == nil || cl.Net.Inline {
+		return
+	}
+	log.Printf("[%s] frame disconnected from bridge: %v", cl.ID, err)
+}
 
 func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 	topic := pk.TopicName
@@ -525,18 +535,20 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		}
 	}
 
-	// Ack login/heart locally so the frame session stays healthy regardless of
-	// the cloud. Local-only clones have no cloud to reply; and real-InkJoy H:3
-	// frames relayed upstream don't get a timely cloud login_ack either (the
-	// cloud's newer registration needs a device-pubkey attestation the relay
-	// can't satisfy), so without a local ack they login-loop every keepalive
-	// and never receive plays. A cloud-relayed frame's local login_ack must
-	// carry the cloud's own device_id/uid, never synthetic ones — see ackLogin.
+	// Ack login/heart locally only when nobody else will: local-only clones
+	// have no cloud, and real-InkJoy H:3 frames relayed upstream get no cloud
+	// login_ack (the cloud's newer registration needs a device-pubkey
+	// attestation the relay can't satisfy), so without a local ack they
+	// login-loop and never receive plays. A frame the cloud answers gets the
+	// cloud's replies alone — see ackLogin.
+	localOnly := skipUpstream || h.bridges.upstreamHost == ""
 	switch action {
 	case "login":
-		h.bridges.ackLogin(mac, MQTTMsgid(payload), skipUpstream || h.bridges.upstreamHost == "")
+		h.bridges.ackLogin(mac, MQTTMsgid(payload), localOnly)
 	case "heart":
-		h.bridges.publishLocalAck(mac, BuildHeartAck(mac, MQTTMsgid(payload)))
+		h.bridges.ackHeart(mac, MQTTMsgid(payload), localOnly)
+	case "pubkey_report":
+		h.bridges.noteFramePubkeyReport(mac, payload)
 	}
 
 	if !skipUpstream && h.upstreamAllow.Allows(action) && h.bridges.upstreamHost != "" {

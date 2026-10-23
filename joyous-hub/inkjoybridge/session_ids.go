@@ -7,31 +7,46 @@ import (
 	"time"
 )
 
-// A frame persists the device_id/uid from whichever login_ack it acts on and
-// reports them back (pubkey_report). Two acks carrying different identities —
-// the bridge's synthetic local ack and the cloud's real one — make a
-// cloud-relayed frame flip between them; the 10" was seen restarting right
-// after each such pair. So the bridge's own login_ack must carry the IDs the
-// cloud issued, and is only synthesized when the cloud has issued none.
+// The bridge answers a frame's login/heart itself only when nobody else will:
+// local-only frames (no cloud), and cloud-relayed frames whose cloud didn't
+// answer (the 28.5"). A frame the cloud does answer gets the cloud's replies
+// alone. Before this the 10" got two login_acks per login carrying different
+// identities, adopted whichever it acted on, and restarted (rst:0xc SW_CPU)
+// ~3s after each mismatch.
+//
+// A frame persists the device_id/uid from the login_ack it acts on and reports
+// them back (pubkey_report). When the bridge must answer, it uses the IDs the
+// frame already holds, so a local reply never changes a frame's identity;
+// synthetic IDs are only for a frame that has never had any.
 
-// SessionIDStore optionally persists each frame's cloud-issued session IDs
-// across bridge restarts. Config.Devices may implement it.
+// SessionIDStore optionally persists each frame's session IDs across bridge
+// restarts. Config.Devices may implement it.
 type SessionIDStore interface {
-	CloudSessionIDs(mac string) (deviceID, uid string, ok bool)
-	SetCloudSessionIDs(mac, deviceID, uid string)
+	SessionIDs(mac string) (deviceID, uid string, ok bool)
+	SetSessionIDs(mac, deviceID, uid string)
 }
 
 // loginAckGrace is how long a cloud-relayed frame's login, once actually sent
-// upstream, waits for the cloud's own login_ack before the bridge answers with
-// a synthetic one (the cloud doesn't answer some frames at all, e.g. the 28.5").
+// upstream, waits for the cloud's own login_ack before the bridge answers.
 var loginAckGrace = 3 * time.Second
+
+// upstreamSendWait bounds how long a login is held for the cloud link to come
+// up (it is opened on a frame's first message) before the bridge answers anyway.
+var upstreamSendWait = 15 * time.Second
 
 type sessionIDs struct{ deviceID, uid string }
 
 type loginAcks struct {
 	mu      sync.Mutex
-	known   map[string]sessionIDs  // mac → cloud-issued IDs
-	pending map[string]*time.Timer // login msgid → synthetic-ack fallback (nil until sent upstream)
+	known   map[string]sessionIDs // mac → IDs the frame holds
+	pending map[string]*loginWait // login msgid → held login
+	silent  map[string]bool       // mac → cloud didn't answer its last login
+}
+
+type loginWait struct {
+	mac  string
+	sent bool // published upstream; now waiting loginAckGrace for the cloud
+	t    *time.Timer
 }
 
 func (bs *bridgeSet) sessionStore() SessionIDStore {
@@ -39,8 +54,8 @@ func (bs *bridgeSet) sessionStore() SessionIDStore {
 	return s
 }
 
-// cloudSessionIDs returns the IDs the cloud last issued this frame, if any.
-func (bs *bridgeSet) cloudSessionIDs(mac string) (sessionIDs, bool) {
+// frameSessionIDs returns the IDs this frame holds, if known.
+func (bs *bridgeSet) frameSessionIDs(mac string) (sessionIDs, bool) {
 	bs.acks.mu.Lock()
 	ids, ok := bs.acks.known[mac]
 	bs.acks.mu.Unlock()
@@ -48,7 +63,7 @@ func (bs *bridgeSet) cloudSessionIDs(mac string) (sessionIDs, bool) {
 		return ids, true
 	}
 	if st := bs.sessionStore(); st != nil {
-		if d, u, ok := st.CloudSessionIDs(mac); ok && d != "" && u != "" {
+		if d, u, ok := st.SessionIDs(mac); ok && d != "" && u != "" {
 			ids = sessionIDs{d, u}
 			bs.acks.mu.Lock()
 			if bs.acks.known == nil {
@@ -62,54 +77,97 @@ func (bs *bridgeSet) cloudSessionIDs(mac string) (sessionIDs, bool) {
 	return sessionIDs{}, false
 }
 
-// ackLogin answers a frame's login locally. Local-only frames get the
-// synthetic IDs at once. A cloud-relayed frame gets its cloud-issued IDs at
-// once if known; otherwise the login is held until it has really gone
-// upstream (loginSentUpstream — the cloud link may still be connecting, e.g.
-// right after a bridge restart), then the bridge waits loginAckGrace for the
-// cloud's ack (noteCloudLoginAck cancels the wait) and only then synthesizes one.
+// recordSessionIDs notes the IDs a frame holds (from the cloud's login_ack it
+// will act on, or the frame's own pubkey_report) and persists any change.
+func (bs *bridgeSet) recordSessionIDs(mac string, ids sessionIDs, source string) {
+	if ids.deviceID == "" || ids.uid == "" {
+		return
+	}
+	bs.acks.mu.Lock()
+	if bs.acks.known == nil {
+		bs.acks.known = map[string]sessionIDs{}
+	}
+	changed := bs.acks.known[mac] != ids
+	bs.acks.known[mac] = ids
+	bs.acks.mu.Unlock()
+	if changed {
+		log.Printf("[%s] session ids (%s) device_id=%s uid=%s", mac, source, ids.deviceID, ids.uid)
+		if st := bs.sessionStore(); st != nil {
+			st.SetSessionIDs(mac, ids.deviceID, ids.uid)
+		}
+	}
+}
+
+// ackLogin handles the bridge's side of a frame login. Local-only frames are
+// answered at once. A cloud-relayed frame's login is held: once it has gone
+// upstream (loginSentUpstream) the cloud gets loginAckGrace to answer
+// (noteCloudLoginAck), and only if it doesn't, or the link never comes up
+// within upstreamSendWait, does the bridge answer, with the frame's own IDs.
 func (bs *bridgeSet) ackLogin(mac, msgid string, localOnly bool) {
 	if localOnly {
 		bs.publishLocalAck(mac, BuildLoginAck(mac, msgid))
 		return
 	}
-	if ids, ok := bs.cloudSessionIDs(mac); ok {
-		bs.publishLocalAck(mac, buildLoginAckWithIDs(mac, msgid, ids))
-		return
-	}
 	bs.acks.mu.Lock()
 	defer bs.acks.mu.Unlock()
 	if bs.acks.pending == nil {
-		bs.acks.pending = map[string]*time.Timer{}
+		bs.acks.pending = map[string]*loginWait{}
 	}
-	if t := bs.acks.pending[msgid]; t != nil {
-		t.Stop()
+	if w := bs.acks.pending[msgid]; w != nil {
+		w.t.Stop()
 	}
-	bs.acks.pending[msgid] = nil
+	w := &loginWait{mac: mac}
+	w.t = time.AfterFunc(upstreamSendWait, func() { bs.loginAckTimeout(msgid, w) })
+	bs.acks.pending[msgid] = w
 }
 
-// loginSentUpstream starts the synthetic-ack fallback for a login that has
-// just been published to the cloud, if ackLogin is holding it.
+// loginSentUpstream starts the cloud's answer window for a held login.
 func (bs *bridgeSet) loginSentUpstream(mac, msgid string) {
 	bs.acks.mu.Lock()
 	defer bs.acks.mu.Unlock()
-	t, held := bs.acks.pending[msgid]
-	if !held || t != nil {
+	w := bs.acks.pending[msgid]
+	if w == nil || w.sent {
 		return
 	}
-	bs.acks.pending[msgid] = time.AfterFunc(loginAckGrace, func() {
-		bs.acks.mu.Lock()
-		_, still := bs.acks.pending[msgid]
-		delete(bs.acks.pending, msgid)
-		bs.acks.mu.Unlock()
-		if still {
-			bs.publishLocalAck(mac, BuildLoginAck(mac, msgid))
-		}
-	})
+	w.t.Stop()
+	w.sent = true
+	w.t = time.AfterFunc(loginAckGrace, func() { bs.loginAckTimeout(msgid, w) })
 }
 
-// noteCloudLoginAck records the IDs in a cloud login_ack and cancels any
-// pending synthetic ack for the login it answers.
+// loginAckTimeout answers a held login the cloud didn't, and marks the frame
+// cloud-silent so its heartbeats are answered locally too.
+func (bs *bridgeSet) loginAckTimeout(msgid string, w *loginWait) {
+	bs.acks.mu.Lock()
+	if bs.acks.pending[msgid] != w {
+		bs.acks.mu.Unlock()
+		return
+	}
+	delete(bs.acks.pending, msgid)
+	if bs.acks.silent == nil {
+		bs.acks.silent = map[string]bool{}
+	}
+	bs.acks.silent[w.mac] = true
+	bs.acks.mu.Unlock()
+	ids, ok := bs.frameSessionIDs(w.mac)
+	if !ok {
+		ids.deviceID, ids.uid = localOnlySessionIDs(w.mac)
+	}
+	bs.publishLocalAck(w.mac, buildLoginAckWithIDs(w.mac, msgid, ids))
+}
+
+// ackHeart answers a heartbeat locally only for frames nobody else answers.
+func (bs *bridgeSet) ackHeart(mac, msgid string, localOnly bool) {
+	bs.acks.mu.Lock()
+	silent := bs.acks.silent[mac]
+	bs.acks.mu.Unlock()
+	if localOnly || silent {
+		bs.publishLocalAck(mac, BuildHeartAck(mac, msgid))
+	}
+}
+
+// noteCloudLoginAck records a cloud login_ack: that login needs no local
+// reply, the frame isn't cloud-silent, and its IDs are the ones the frame
+// will hold.
 func (bs *bridgeSet) noteCloudLoginAck(mac string, payload []byte) {
 	var msg struct {
 		Data struct {
@@ -121,28 +179,26 @@ func (bs *bridgeSet) noteCloudLoginAck(mac string, payload []byte) {
 	if json.Unmarshal(payload, &msg) != nil {
 		return
 	}
-	ids := sessionIDs{msg.Data.DeviceID, msg.Data.UID}
 	bs.acks.mu.Lock()
-	if t, held := bs.acks.pending[msg.Data.AckMsgid]; held {
-		if t != nil {
-			t.Stop()
-		}
+	if w := bs.acks.pending[msg.Data.AckMsgid]; w != nil {
+		w.t.Stop()
 		delete(bs.acks.pending, msg.Data.AckMsgid)
 	}
-	changed := false
-	if ids.deviceID != "" && ids.uid != "" {
-		if bs.acks.known == nil {
-			bs.acks.known = map[string]sessionIDs{}
-		}
-		changed = bs.acks.known[mac] != ids
-		bs.acks.known[mac] = ids
-	}
+	delete(bs.acks.silent, mac)
 	bs.acks.mu.Unlock()
-	if changed {
-		log.Printf("[%s] cloud session ids device_id=%s uid=%s", mac, ids.deviceID, ids.uid)
-		if st := bs.sessionStore(); st != nil {
-			st.SetCloudSessionIDs(mac, ids.deviceID, ids.uid)
-		}
+	bs.recordSessionIDs(mac, sessionIDs{msg.Data.DeviceID, msg.Data.UID}, "cloud login_ack")
+}
+
+// noteFramePubkeyReport records the IDs a frame reports holding.
+func (bs *bridgeSet) noteFramePubkeyReport(mac string, payload []byte) {
+	var msg struct {
+		Data struct {
+			DeviceID string `json:"device_id"`
+			UID      string `json:"uid"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(payload, &msg) == nil {
+		bs.recordSessionIDs(mac, sessionIDs{msg.Data.DeviceID, msg.Data.UID}, "frame pubkey_report")
 	}
 }
 

@@ -54,13 +54,13 @@ func (a *inkjoyDeviceAdapter) UpdateHeart(mac string, info inkjoybridge.HeartInf
 
 func (a *inkjoyDeviceAdapter) SetHubIP(mac, ip string) { a.reg.SetHubIP(mac, ip) }
 
-// CloudSessionIDs / SetCloudSessionIDs implement inkjoybridge.SessionIDStore.
-func (a *inkjoyDeviceAdapter) CloudSessionIDs(mac string) (string, string, bool) {
-	return a.reg.CloudSessionIDs(mac)
+// SessionIDs / SetSessionIDs implement inkjoybridge.SessionIDStore.
+func (a *inkjoyDeviceAdapter) SessionIDs(mac string) (string, string, bool) {
+	return a.reg.SessionIDs(mac)
 }
 
-func (a *inkjoyDeviceAdapter) SetCloudSessionIDs(mac, deviceID, uid string) {
-	a.reg.SetCloudSessionIDs(mac, deviceID, uid)
+func (a *inkjoyDeviceAdapter) SetSessionIDs(mac, deviceID, uid string) {
+	a.reg.SetSessionIDs(mac, deviceID, uid)
 }
 
 func (a *inkjoyDeviceAdapter) OnPlayAck(ackMsgid string, result int) {

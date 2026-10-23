@@ -83,12 +83,13 @@ type Device struct {
 	// other non-real-InkJoy panel) starts from a value tuned for its own panel
 	// instead of the real-InkJoy-panel bridge default.
 	DeviceReportedP2 *[6]PaletteRGB `json:"device_reported_p2,omitempty"`
-	// CloudDeviceID / CloudUID are the session IDs the InkJoy cloud issued in
-	// this frame's last login_ack. The bridge's own login_ack reuses them so a
-	// cloud-relayed frame never sees two identities (see inkjoybridge.SessionIDStore).
-	CloudDeviceID string `json:"cloud_device_id,omitempty"`
-	CloudUID      string `json:"cloud_uid,omitempty"`
-	bridgeID      string `json:"-"` // owning bridge when synced via joyous protocol
+	// SessionDeviceID / SessionUID are the login session IDs this frame holds
+	// (from the cloud's login_ack, or its own pubkey_report). When the bridge
+	// has to answer a login itself it reuses them, so it never changes the
+	// frame's identity (see inkjoybridge.SessionIDStore).
+	SessionDeviceID string `json:"session_device_id,omitempty"`
+	SessionUID      string `json:"session_uid,omitempty"`
+	bridgeID        string `json:"-"` // owning bridge when synced via joyous protocol
 }
 
 // DeviceRegistry tracks known frames in memory and persists them to disk.
@@ -440,23 +441,23 @@ func (d *Device) InkNames() []string {
 	return colorNames
 }
 
-// CloudSessionIDs returns the cloud-issued login_ack IDs last seen for mac.
-func (r *DeviceRegistry) CloudSessionIDs(mac string) (deviceID, uid string, ok bool) {
+// SessionIDs returns the login session IDs last seen for mac's frame.
+func (r *DeviceRegistry) SessionIDs(mac string) (deviceID, uid string, ok bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	d, found := r.m[mac]
-	if !found || d.CloudDeviceID == "" || d.CloudUID == "" {
+	if !found || d.SessionDeviceID == "" || d.SessionUID == "" {
 		return "", "", false
 	}
-	return d.CloudDeviceID, d.CloudUID, true
+	return d.SessionDeviceID, d.SessionUID, true
 }
 
-// SetCloudSessionIDs records the cloud-issued login_ack IDs for mac and saves.
-func (r *DeviceRegistry) SetCloudSessionIDs(mac, deviceID, uid string) {
+// SetSessionIDs records mac's frame's login session IDs and saves.
+func (r *DeviceRegistry) SetSessionIDs(mac, deviceID, uid string) {
 	r.mu.Lock()
 	d, found := r.m[mac]
 	if found {
-		d.CloudDeviceID, d.CloudUID = deviceID, uid
+		d.SessionDeviceID, d.SessionUID = deviceID, uid
 	}
 	r.mu.Unlock()
 	if found {
