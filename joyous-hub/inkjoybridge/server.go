@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	mochi "github.com/mochi-mqtt/server/v2"
@@ -55,10 +56,12 @@ type MQTTLogger interface {
 
 // Config holds InkJoy bridge startup options.
 type Config struct {
-	ListenMQTT      string
-	Upstream        string
-	UpstreamUsr     string
-	UpstreamPwd     string
+	ListenMQTT  string
+	Upstream    string
+	UpstreamUsr string
+	UpstreamPwd string
+	// UpstreamAllow is ignored: every frame→cloud message is relayed except
+	// responses to bridge-injected plays (see frameHook.OnPublished).
 	UpstreamAllow   AllowList
 	DownstreamAllow AllowList
 	Intercept       AllowList
@@ -94,7 +97,6 @@ func NewServer(cfg Config) *Server {
 		upstreamHost:    cfg.Upstream,
 		upstreamUsr:     cfg.UpstreamUsr,
 		upstreamPwd:     cfg.UpstreamPwd,
-		upstreamAllow:   cfg.UpstreamAllow,
 		downstreamAllow: cfg.DownstreamAllow,
 		intercept:       cfg.Intercept,
 		capture:         cfg.Capture,
@@ -108,9 +110,8 @@ func NewServer(cfg Config) *Server {
 		s.bridges.rewritePlay = cfg.PlayRelay.RewritePlay
 	}
 	s.hook = &frameHook{
-		bridges:       s.bridges,
-		devices:       cfg.Devices,
-		upstreamAllow: cfg.UpstreamAllow,
+		bridges: s.bridges,
+		devices: cfg.Devices,
 	}
 	return s
 }
@@ -142,11 +143,32 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Publish sends a command to a frame on /inkjoyap/{mac} at QoS1 so the
 // broker retries while the frame is momentarily radio-napping (modem-sleep).
+// Everything sent this way is bridge-originated (cloud traffic is relayed
+// separately), so its msgid is recorded and the frame's responses to it are
+// kept from the cloud — see frameHook.OnPublished.
 func (s *Server) Publish(topic string, payload []byte) error {
 	if s.cfg.MQTTLog != nil {
 		s.cfg.MQTTLog.AddLocal("bridge→frame", topic, payload, "")
 	}
+	s.bridges.markInjected(MQTTMsgid(payload))
 	return s.broker.Publish(topic, payload, false, 1)
+}
+
+// injectedTTL is how long a bridge-originated message's responses are kept
+// from the cloud (a play's display_done can follow its send by minutes).
+const injectedTTL = time.Hour
+
+func (bs *bridgeSet) markInjected(msgid string) {
+	if msgid == "" {
+		return
+	}
+	bs.injected.Store(msgid, struct{}{})
+	time.AfterFunc(injectedTTL, func() { bs.injected.Delete(msgid) })
+}
+
+func (bs *bridgeSet) isInjected(msgid string) bool {
+	_, ok := bs.injected.Load(msgid)
+	return ok
 }
 
 // PublishToFrame publishes to /inkjoyap/{mac}.
@@ -160,7 +182,6 @@ type bridgeSet struct {
 	upstreamHost    string
 	upstreamUsr     string
 	upstreamPwd     string
-	upstreamAllow   AllowList
 	downstreamAllow AllowList
 	intercept       AllowList
 	capture         CaptureSink
@@ -173,6 +194,7 @@ type bridgeSet struct {
 	m               map[string]*upstreamBridge
 	localOnly       sync.Map // mac → struct{} for Seeed H:9 etc. (no cloud upstream)
 	acks            loginAcks
+	injected        sync.Map // msgid → struct{} of bridge-originated frame messages
 }
 
 func (bs *bridgeSet) markLocalOnly(mac string) {
@@ -417,11 +439,10 @@ func writeCaptureErr(where string, sink CaptureSink, err error) {
 
 type frameHook struct {
 	mochi.HookBase
-	bridges       *bridgeSet
-	devices       DeviceEvents
-	upstreamAllow AllowList
-	injectedPlay  func(ackMsgid string) bool
-	onPlayAck     func(ackMsgid string, result int)
+	bridges      *bridgeSet
+	devices      DeviceEvents
+	injectedPlay func(ackMsgid string) bool
+	onPlayAck    func(ackMsgid string, result int)
 }
 
 func (h *frameHook) ID() string { return "frame-hook" }
@@ -459,6 +480,17 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 	writeCaptureErr("upstream", h.bridges.capture, h.bridges.captureRecordUpstream(mac, action, payload))
 
 	skipUpstream := h.bridges.isLocalOnly(mac)
+	// A frame response names the message it answers in data.ack_msgid. Every
+	// response to something the bridge sent (a Joyous play — play_ack, then
+	// display_start/display_done — or an image_refresh, overlay, wifi_sleep,
+	// ...) stays local: the cloud never sent it and mustn't learn of it.
+	if ackMsgid := MQTTAckMsgid(payload); ackMsgid != "" &&
+		(h.bridges.isInjected(ackMsgid) || (h.injectedPlay != nil && h.injectedPlay(ackMsgid))) {
+		skipUpstream = true
+		if action != "play_ack" {
+			log.Printf("[%s] %s suppressed (bridge-initiated)", mac, action)
+		}
+	}
 	switch action {
 	case "login":
 		info, err := ParseLoginPayload(payload)
@@ -551,7 +583,8 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		h.bridges.noteFramePubkeyReport(mac, payload)
 	}
 
-	if !skipUpstream && h.upstreamAllow.Allows(action) && h.bridges.upstreamHost != "" {
+	// Everything else the frame sends is relayed to the cloud as-is.
+	if !skipUpstream && h.bridges.upstreamHost != "" {
 		bridge := h.bridges.get(mac)
 		bridge.forward(payload)
 	}
