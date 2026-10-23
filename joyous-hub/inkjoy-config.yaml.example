@@ -15,8 +15,11 @@ hub_http: "http://127.0.0.1:18080"
 # Frame-facing MQTT broker (frames connect here — :11883 on macOS installs)
 listen_mqtt: ":11883"
 
-# InkJoy cloud MQTT broker (empty = local-only, no cloud forwarding)
-upstream: "13.39.148.101:1883"
+# InkJoy cloud MQTT broker (empty = local-only, no cloud forwarding).
+# Cloud hosts (emqx.inkjoyframe.com, or the old 13.39.148.101 etc.) use MQTTS
+# on :8886 like firmware v1.3.8, falling back to plain :1883; write
+# tcp://host:1883 to force plain.
+upstream: "mqtts://emqx.inkjoyframe.com:8886"
 upstream_usr: ""
 upstream_pwd: ""
 

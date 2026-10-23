@@ -22,7 +22,7 @@ HUB_HOST="${SERVER_ADDR%%:*}"
 HUB_HTTP="${HUB_HTTP:-http://${HUB_HOST}:${HTTP_PORT#:}}"
 # MDC content URLs must point at the hub HTTP cache (:18080).
 SAMSUNG_SERVER_ADDR="${SAMSUNG_SERVER_ADDR:-${HUB_HOST}:${HTTP_PORT#:}}"
-INKJOY_UPSTREAM="${INKJOY_UPSTREAM:-13.39.148.101:1883}"
+INKJOY_UPSTREAM="${INKJOY_UPSTREAM:-mqtts://emqx.inkjoyframe.com:8886}"
 LABEL="com.joyous.hub"
 APP_BUNDLE="JoyousHub.app"
 APP_DISPLAY_NAME="Joyous Hub"
