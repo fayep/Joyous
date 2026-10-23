@@ -6,12 +6,17 @@ import (
 	"github.com/mochi-mqtt/server/v2/packets"
 )
 
-// Frame→cloud messages are all relayed, except every response to a play the
-// bridge injected (play_ack, display_start, display_done).
-func TestRelayAllButInjectedPlayResponses(t *testing.T) {
+// Frame→cloud messages on the allow list are relayed, except every response
+// to a play the bridge injected (play_ack, display_start, display_done);
+// anything not on the list stays local.
+func TestRelayAllowedButNotInjectedPlayResponses(t *testing.T) {
 	const mac = "D0CF13EF4080"
 	bs := &bridgeSet{upstreamHost: "127.0.0.1:1"} // link never connects, so relayed messages queue
-	h := &frameHook{bridges: bs, injectedPlay: func(id string) bool { return id == "injected" }}
+	h := &frameHook{
+		bridges:       bs,
+		upstreamAllow: ParseAllowList(DefaultUpstreamAllowCSV() + ",fpga_asset_report"),
+		injectedPlay:  func(id string) bool { return id == "injected" },
+	}
 	ub := bs.get(mac)
 
 	msg := func(action, ackMsgid string) []byte {
@@ -32,8 +37,8 @@ func TestRelayAllButInjectedPlayResponses(t *testing.T) {
 		{msg("display_start", "cloud-play"), true},
 		{msg("display_done", "cloud-play"), true},
 		{msg("fpga_asset_report", ""), true},
-		{msg("pubkey_report", ""), true},
-		{msg("some_new_action", ""), true},
+		{msg("ota_ack", ""), true},
+		{msg("some_new_action", ""), false},
 	}
 	want := 0
 	for _, m := range sent {

@@ -56,12 +56,10 @@ type MQTTLogger interface {
 
 // Config holds InkJoy bridge startup options.
 type Config struct {
-	ListenMQTT  string
-	Upstream    string
-	UpstreamUsr string
-	UpstreamPwd string
-	// UpstreamAllow is ignored: every frame→cloud message is relayed except
-	// responses to bridge-injected plays (see frameHook.OnPublished).
+	ListenMQTT      string
+	Upstream        string
+	UpstreamUsr     string
+	UpstreamPwd     string
 	UpstreamAllow   AllowList
 	DownstreamAllow AllowList
 	Intercept       AllowList
@@ -97,6 +95,7 @@ func NewServer(cfg Config) *Server {
 		upstreamHost:    cfg.Upstream,
 		upstreamUsr:     cfg.UpstreamUsr,
 		upstreamPwd:     cfg.UpstreamPwd,
+		upstreamAllow:   cfg.UpstreamAllow,
 		downstreamAllow: cfg.DownstreamAllow,
 		intercept:       cfg.Intercept,
 		capture:         cfg.Capture,
@@ -110,8 +109,9 @@ func NewServer(cfg Config) *Server {
 		s.bridges.rewritePlay = cfg.PlayRelay.RewritePlay
 	}
 	s.hook = &frameHook{
-		bridges: s.bridges,
-		devices: cfg.Devices,
+		bridges:       s.bridges,
+		devices:       cfg.Devices,
+		upstreamAllow: cfg.UpstreamAllow,
 	}
 	return s
 }
@@ -182,6 +182,7 @@ type bridgeSet struct {
 	upstreamHost    string
 	upstreamUsr     string
 	upstreamPwd     string
+	upstreamAllow   AllowList
 	downstreamAllow AllowList
 	intercept       AllowList
 	capture         CaptureSink
@@ -439,10 +440,11 @@ func writeCaptureErr(where string, sink CaptureSink, err error) {
 
 type frameHook struct {
 	mochi.HookBase
-	bridges      *bridgeSet
-	devices      DeviceEvents
-	injectedPlay func(ackMsgid string) bool
-	onPlayAck    func(ackMsgid string, result int)
+	bridges       *bridgeSet
+	devices       DeviceEvents
+	upstreamAllow AllowList
+	injectedPlay  func(ackMsgid string) bool
+	onPlayAck     func(ackMsgid string, result int)
 }
 
 func (h *frameHook) ID() string { return "frame-hook" }
@@ -583,8 +585,7 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		h.bridges.noteFramePubkeyReport(mac, payload)
 	}
 
-	// Everything else the frame sends is relayed to the cloud as-is.
-	if !skipUpstream && h.bridges.upstreamHost != "" {
+	if !skipUpstream && h.upstreamAllow.Allows(action) && h.bridges.upstreamHost != "" {
 		bridge := h.bridges.get(mac)
 		bridge.forward(payload)
 	}
