@@ -89,6 +89,7 @@ func (h *Hub) handleDevices(w http.ResponseWriter, r *http.Request) {
 			sleepWindowToLocal(devs[i].SleepBeginTime, devs[i].SleepEndTime)
 	}
 	h.applySamsungFriendlyNames(devs)
+	h.applyInkJoyCurrentDisplay(devs)
 	for i := range devs {
 		if devs[i].Type == DeviceTypeSamsung {
 			applySamsungBatterySummary(&devs[i], h.samsungBatterySummary(devs[i].ID, 8))
@@ -123,7 +124,45 @@ func (h *Hub) devicesSnapshotForUI() []Device {
 			ApplySamsungConnected(&devs[i])
 		}
 	}
+	h.applyInkJoyCurrentDisplay(devs)
 	return devs
+}
+
+// applyInkJoyCurrentDisplay sets what each InkJoy frame is showing from disk
+// rather than the registry: sends and relayed cloud plays happen in the
+// bridge process, so the hub's registry never hears of most of them. The
+// newest cached play wins — a hub image shows its frame preview
+// (last_image_id); a relayed cloud play (not a hub image) shows the preview
+// JPEG the relay saved (display_preview_at).
+func (h *Hub) applyInkJoyCurrentDisplay(devs []Device) {
+	if h.inkjoy == nil {
+		return
+	}
+	for i := range devs {
+		d := &devs[i]
+		if d.Type != DeviceTypeInkJoy {
+			continue
+		}
+		imageID, token, sentAt, ok := h.inkjoy.LatestBin(d.MAC)
+		previewAt := h.displayPreview.ModTime(d.MAC)
+		hubImage := false
+		if ok && h.images != nil {
+			_, err := h.images.readMeta(imageID)
+			hubImage = err == nil
+		}
+		if ok && h.latestPlayIsIJI3(d.MAC) && !previewAt.After(sentAt) {
+			// The hub's frame preview renders the 10" layout; an IJI3 play
+			// (28.5") is previewed from the played file itself instead.
+			d.LastImageID, d.LastOverlayHash, d.DisplayPreviewAt = "", "", sentAt
+			continue
+		}
+		switch {
+		case hubImage && !previewAt.After(sentAt):
+			d.LastImageID, d.LastOverlayHash, d.DisplayPreviewAt = imageID, token, time.Time{}
+		case !previewAt.IsZero():
+			d.LastImageID, d.LastOverlayHash, d.DisplayPreviewAt = "", "", previewAt
+		}
+	}
 }
 
 // utcHHMMToLocal converts a "HH:MM" string from UTC to the server's local timezone.
