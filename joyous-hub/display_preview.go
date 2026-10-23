@@ -45,6 +45,18 @@ func (s *DisplayPreviewStore) RestoreFromDisk(devices *DeviceRegistry) {
 	}
 }
 
+// ModTime is when mac's preview was saved (zero if there is none).
+func (s *DisplayPreviewStore) ModTime(mac string) time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	info, err := os.Stat(s.jpegPath(mac))
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
 func (s *DisplayPreviewStore) Clear(mac string) {
 	if s == nil {
 		return
@@ -179,5 +191,37 @@ func (h *Hub) handleDeviceDisplayPreview(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "inkjoy device required", http.StatusNotFound)
 		return
 	}
+	// An IJI3 play newer than the saved preview (e.g. a Joyous send to the
+	// 28.5") is previewed straight from the played file.
+	if h.inkjoy != nil {
+		if path, sentAt, ok := h.inkjoy.latestBinPath(dev.MAC); ok && !h.displayPreview.ModTime(dev.MAC).After(sentAt) {
+			if bin, err := os.ReadFile(path); err == nil && isIJI3(bin) {
+				jpeg, err := iji3PreviewJPEG(bin, dev.Portrait)
+				if err == nil {
+					w.Header().Set("Content-Type", "image/jpeg")
+					w.Header().Set("Cache-Control", "no-cache")
+					w.Write(jpeg)
+					return
+				}
+				log.Printf("[%s] iji3 preview: %v", dev.MAC, err)
+			}
+		}
+	}
 	h.displayPreview.ServeHTTP(w, r, dev.MAC)
+}
+
+// latestPlayIsIJI3 reports whether mac's newest cached play is an IJI3.
+func (h *Hub) latestPlayIsIJI3(mac string) bool {
+	path, _, ok := h.inkjoy.latestBinPath(mac)
+	if !ok {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 4)
+	n, _ := f.Read(head)
+	return isIJI3(head[:n])
 }

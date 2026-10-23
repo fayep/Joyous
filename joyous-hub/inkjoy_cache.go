@@ -282,14 +282,51 @@ func (c *InkJoyCache) pngPath(mac, name string) string {
 // one is invisible to (and gets silently overwritten by) the other. The cache directory has
 // no such split-brain problem: whichever process sent the image, it landed on this disk.
 func (c *InkJoyCache) LatestImageID(mac string) (imageID, overlayToken string, ok bool) {
+	imageID, overlayToken, _, ok = c.LatestBin(mac)
+	return imageID, overlayToken, ok
+}
+
+// isPlayCacheFile reports a cached play: .bin (or IJI3), or .png for the
+// PNG-protocol clone frames (see InkJoyPNGProtocolT).
+func isPlayCacheFile(name string) bool {
+	return strings.HasSuffix(name, ".bin") || strings.HasSuffix(name, ".png")
+}
+
+// latestBinPath is the newest cached play file for mac, if any.
+func (c *InkJoyCache) latestBinPath(mac string) (string, time.Time, bool) {
+	dir := filepath.Join(c.dir, inkjoyMACDir(mac))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	var name string
+	var mod time.Time
+	for _, e := range entries {
+		if e.IsDir() || !isPlayCacheFile(e.Name()) {
+			continue
+		}
+		if info, err := e.Info(); err == nil && info.ModTime().After(mod) {
+			name, mod = e.Name(), info.ModTime()
+		}
+	}
+	if name == "" {
+		return "", time.Time{}, false
+	}
+	return filepath.Join(dir, name), mod, true
+}
+
+// LatestBin is LatestImageID plus the cached file's modification time (when
+// it was sent). For a relayed cloud play imageID is the cloud's imgid, not a
+// hub image.
+func (c *InkJoyCache) LatestBin(mac string) (imageID, overlayToken string, at time.Time, ok bool) {
 	entries, err := os.ReadDir(filepath.Join(c.dir, inkjoyMACDir(mac)))
 	if err != nil {
-		return "", "", false
+		return "", "", time.Time{}, false
 	}
 	var latestName string
 	var latestMod time.Time
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".bin") {
+		if e.IsDir() || !isPlayCacheFile(e.Name()) {
 			continue
 		}
 		info, err := e.Info()
@@ -302,14 +339,14 @@ func (c *InkJoyCache) LatestImageID(mac string) (imageID, overlayToken string, o
 		}
 	}
 	if latestName == "" {
-		return "", "", false
+		return "", "", time.Time{}, false
 	}
-	name := strings.TrimSuffix(latestName, ".bin")
+	name := strings.TrimSuffix(strings.TrimSuffix(latestName, ".bin"), ".png")
 	name = strings.TrimSuffix(name, "-p")
 	if id, token, found := strings.Cut(name, "~"); found {
-		return id, token, true
+		return id, token, latestMod, true
 	}
-	return name, "", true
+	return name, "", latestMod, true
 }
 
 // Save writes bin (a .bin file) -- see SaveExt for the general form.

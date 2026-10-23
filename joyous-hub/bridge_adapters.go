@@ -168,7 +168,18 @@ func (r *DeviceRegistry) SyncBridgeDevices(bridgeID string, devices []protocol.B
 		lastIP          string
 	}
 	preserved := make(map[string]contact)
+	// Fields the hub owns (bridge snapshots don't carry them) survive the
+	// rebuild; before, a saved colour override was gone within one sync.
+	type hubOwned struct {
+		lastImageID, lastOverlayHash string
+		displayPreviewAt             time.Time
+		colorOverride                []PaletteRGB
+	}
+	owned := make(map[string]hubOwned)
 	for id, d := range r.m {
+		if d.bridgeID == bridgeID {
+			owned[id] = hubOwned{d.LastImageID, d.LastOverlayHash, d.DisplayPreviewAt, d.ColorOverride}
+		}
 		if d.bridgeID == bridgeID && d.Type == DeviceTypeSamsung {
 			preserved[id] = contact{
 				lastSeen:        d.LastSeen,
@@ -185,6 +196,10 @@ func (r *DeviceRegistry) SyncBridgeDevices(bridgeID string, devices []protocol.B
 	for _, bd := range devices {
 		r.applyBridgeDeviceLocked(bridgeID, bd)
 		d := r.m[bd.ID]
+		if o, ok := owned[bd.ID]; ok && d != nil {
+			d.LastImageID, d.LastOverlayHash, d.DisplayPreviewAt, d.ColorOverride =
+				o.lastImageID, o.lastOverlayHash, o.displayPreviewAt, o.colorOverride
+		}
 		if d == nil || d.Type != DeviceTypeSamsung {
 			continue
 		}
