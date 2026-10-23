@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Joyous</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/ui/app.css?v=__JOYOUS_UI_REVISION__">
+</head>
+<body>
+<div id="toast-stack"></div>
+<header>
+  <h1>Joyous</h1>
+  <nav>
+    <button onclick="showTab('devices',this)">Devices</button>
+    <button class="active" onclick="showTab('album',this)">Album</button>
+    <button onclick="showTab('overlays',this)">Overlays</button>
+    <button onclick="showTab('color',this)">Color</button>
+    <button id="nav-inkjoy" style="display:none" onclick="showTab('inkjoy',this)">InkJoy</button>
+    <button id="nav-mqtt" style="display:none" onclick="showTab('mqtt',this)">MQTT</button>
+    <button onclick="showTab('samsung',this)">Samsung</button>
+    <button id="nav-nixplay" style="display:none" onclick="showTab('nixplay',this)">Nixplay</button>
+  </nav>
+</header>
+<div id="send-picker"></div>
+<main>
+  <div id="tab-devices" style="display:none">
+    <div style="margin-bottom:1rem">
+      <button class="btn btn-primary btn-sm" id="discover-btn" onclick="discoverFrames()">Discover photo frames</button>
+      <span id="discover-status" style="margin-left:.75rem;color:#666;font-size:.9rem"></span>
+    </div>
+    <div id="device-list"><p>Loading…</p></div>
+  </div>
+  <div id="tab-album" class="album-wall">
+    <div class="album-shell">
+      <aside class="album-sidebar">
+        <div class="album-sidebar-head">Albums</div>
+        <ul class="album-nav" id="album-nav"></ul>
+        <button type="button" class="album-sidebar-btn" onclick="createSmartAlbum()">+ New smart album</button>
+      </aside>
+      <div class="album-main">
+        <div class="album-toolbar" id="album-toolbar"></div>
+        <div class="album-upload-wrap">
+          <div id="upload-zone" class="album-upload" onclick="document.getElementById('file-input').click()">
+            Drop images here or click to upload <span class="album-upload-mono">(.bin, .png, .jpg, .avif)</span>
+          </div>
+        </div>
+        <p class="album-reorder-hint" id="album-reorder-hint" hidden>Drag a photo onto the left edge of another to reorder</p>
+        <div id="image-grid" class="album-grid"></div>
+        <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg,.avif" multiple>
+      </div>
+    </div>
+  </div>
+  <div id="album-zoom" aria-hidden="true">
+    <div class="album-zoom-rotate">
+      <button type="button" id="album-zoom-rotate-ccw" aria-label="Rotate left" onclick="rotateAlbumZoomImage(-90)">&#8634;</button>
+      <button type="button" id="album-zoom-rotate-cw" aria-label="Rotate right" onclick="rotateAlbumZoomImage(90)">&#8635;</button>
+    </div>
+    <button type="button" class="album-zoom-close" aria-label="Close" onclick="closeAlbumZoom()">&times;</button>
+    <div id="album-zoom-stage" onclick="if(event.target===this) closeAlbumZoom()">
+      <img id="album-zoom-img" alt="">
+    </div>
+    <div id="album-zoom-caption"></div>
+  </div>
+  <div id="tab-overlays" style="display:none">
+    <div style="display:flex;gap:1.5rem;align-items:flex-start;flex-wrap:wrap">
+      <div class="card" style="flex:1;min-width:280px;max-width:420px">
+        <div class="section-label" style="margin-top:0">Settings</div>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+          <input type="checkbox" id="ovl-enabled"> Enable overlay on send
+        </label>
+        <label style="display:block;margin:.5rem 0;font-size:.85rem">Location (city)
+          <input id="ovl-location" placeholder="Seattle" style="width:100%;box-sizing:border-box;padding:.35rem .5rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin:.5rem 0">
+          <label style="font-size:.85rem">Latitude
+            <input id="ovl-lat" type="number" step="any" placeholder="optional" style="width:100%;box-sizing:border-box;padding:.35rem .5rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+          </label>
+          <label style="font-size:.85rem">Longitude
+            <input id="ovl-lon" type="number" step="any" placeholder="optional" style="width:100%;box-sizing:border-box;padding:.35rem .5rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+          </label>
+        </div>
+        <label style="display:block;margin:.5rem 0;font-size:.85rem">Timezone (optional)
+          <input id="ovl-timezone" placeholder="America/Los_Angeles" style="width:100%;box-sizing:border-box;padding:.35rem .5rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+        </label>
+        <div class="section-label">Overlay template</div>
+        <p style="font-size:.8rem;color:#666;margin:.25rem 0 .5rem;line-height:1.4">One line per row on the frame. Go <code>text/template</code> syntax — fields and helpers below.</p>
+        <textarea id="ovl-template" rows="6" spellcheck="false" style="width:100%;box-sizing:border-box;padding:.5rem;font-family:ui-monospace,Menlo,monospace;font-size:.8rem;line-height:1.35;border:1px solid #ccc;border-radius:4px;resize:vertical" oninput="debouncedOverlayPreview()"></textarea>
+        <div id="ovl-template-metrics" style="margin:.5rem 0;font-size:.8rem;color:#555"></div>
+        <details style="margin:.5rem 0;font-size:.8rem;color:#555">
+          <summary style="cursor:pointer;margin-bottom:.35rem">Fields &amp; helpers</summary>
+          <div style="line-height:1.5;font-family:ui-monospace,Menlo,monospace;font-size:.75rem">
+            <div><b>.City</b> · <b>.Condition</b></div>
+            <div><b>.Rain</b> — cloud + rain icon (1em wide; wrap in <code>{{if gt .Precipitation.Hour 0}}…{{end}}</code> to hide when dry)</div>
+            <div><b>.Temperature.Current</b> · <b>.Temperature.Min</b> · <b>.Temperature.Max</b></div>
+            <div><b>.Precipitation.Hour</b> (this hour %) · <b>.Precipitation.Max</b> (daily max %)</div>
+            <div><b>{{date .Date .DateStyle}}</b> · <b>{{fahrenheit .Temperature.Min}}</b> · <b>{{celsius .Temperature.Current}}</b> · <b>{{pct .Precipitation.Hour}}</b></div>
+            <div style="margin-top:.35rem;color:#666">Example: <code>{{fahrenheit .Temperature.Min}}-{{fahrenheit .Temperature.Max}}  {{pct .Precipitation.Max}}</code></div>
+          </div>
+        </details>
+        <label style="display:block;margin:.75rem 0 .35rem;font-size:.85rem">Weather display
+          <select id="ovl-weather-style" onchange="debouncedOverlayPreview()" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+            <option value="box">Opaque box</option>
+            <option value="outline">Bordered text</option>
+          </select>
+        </label>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem"><input type="checkbox" id="ovl-fahrenheit" checked onchange="debouncedOverlayPreview()"> Use Fahrenheit in templates</label>
+        <label style="display:block;margin:.75rem 0 .35rem;font-size:.85rem">Date format
+          <select id="ovl-date-style" onchange="debouncedOverlayPreview()" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+            <option value="1">Jun 20, 2026</option>
+            <option value="2">20 Jun 2026</option>
+            <option value="3">June 20 2026</option>
+          </select>
+        </label>
+        <div class="section-label" style="margin-top:.75rem">Photo name</div>
+        <label style="display:flex;align-items:center;gap:.5rem;margin:.35rem 0;font-size:.9rem">
+          <input type="checkbox" id="ovl-show-photo-name" onchange="debouncedOverlayPreview()"> Show filename (without extension)
+        </label>
+        <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Position
+          <select id="ovl-photo-name-position" onchange="debouncedOverlayPreview()" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px">
+            <option value="bottom_right">Bottom right</option>
+            <option value="bottom_center">Bottom center</option>
+          </select>
+        </label>
+        <p style="font-size:.8rem;color:#666;margin:0 0 .5rem;line-height:1.4">Caveat handwriting (matches album captions), white with black outline and a light shadow, no background panel.</p>
+        <button class="btn btn-primary btn-sm" style="margin-top:.75rem" onclick="saveOverlayConfig()">Save settings</button>
+        <div id="ovl-save-status" style="font-size:.85rem;color:#666;margin-top:.5rem"></div>
+      </div>
+      <div class="card" style="flex:2;min-width:320px">
+        <div class="section-label" style="margin-top:0">Preview</div>
+        <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:center;margin-bottom:.75rem">
+          <label style="font-size:.85rem">Preview image
+            <select id="ovl-preview-image" onchange="refreshOverlayPreview()" style="display:block;min-width:220px;margin-top:.25rem;padding:.35rem;border:1px solid #ccc;border-radius:4px"></select>
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.85rem;margin-top:1.1rem">
+            <input type="checkbox" id="ovl-preview-portrait" onchange="refreshOverlayPreview()"> Portrait
+          </label>
+          <button class="btn btn-sm" style="margin-top:1.1rem" onclick="refreshOverlayPreview()">Refresh preview</button>
+        </div>
+        <div id="ovl-preview-wrap"><p style="color:#888;font-size:.9rem">Pick an album image to preview.</p></div>
+        <div class="section-label">Send with overlay</div>
+        <p style="font-size:.85rem;color:#666;margin:.25rem 0 .75rem">Re-sends each frame’s current album image with a fresh weather overlay. Album → Send also adds the overlay when enabled.</p>
+        <div id="ovl-send-list"><p style="color:#888;font-size:.9rem">Loading frames…</p></div>
+      </div>
+    </div>
+  </div>
+  <div id="tab-color" style="display:none">
+    <div class="card" style="max-width:760px">
+      <div class="section-label" style="margin-top:0">Pre-dither LAB processing</div>
+      <p style="font-size:.85rem;color:#666;margin:.25rem 0 .75rem">Optional steps before Stucki dithering (skipped for calibration swatches and ≤6-color images). Dynamic range, chroma, highlight, and shadow are independent.</p>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-dynamic-range"> Fit dynamic range (InkJoy &amp; Samsung — compress scene luminance to N stops in log space)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Target stops
+        <input type="range" id="clr-lab-dynamic-range-stops" min="2" max="6" step="0.5" value="4.5" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-dynamic-range-stops-val').textContent=this.value">
+        <span id="clr-lab-dynamic-range-stops-val" style="font-family:monospace">4.5</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-chroma"> Chroma boost (pulls neutrals toward their hue)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Chroma strength
+        <input type="range" id="clr-lab-chroma-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-chroma-strength-val').textContent=this.value">
+        <span id="clr-lab-chroma-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-highlight"> Highlight rolloff (targets bright blue sky/water; leaves neutral snow and clouds mostly alone)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Highlight strength
+        <input type="range" id="clr-lab-highlight-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-highlight-strength-val').textContent=this.value">
+        <span id="clr-lab-highlight-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-shadow"> Shadow lift (L channel — brightens dark areas)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Shadow strength
+        <input type="range" id="clr-lab-shadow-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-shadow-strength-val').textContent=this.value">
+        <span id="clr-lab-shadow-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-skin-tone" checked> Portrait skin tones (auto when people detected — warm shadows, preserve depth; not frame orientation)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Skin tone strength
+        <input type="range" id="clr-lab-skin-tone-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-skin-tone-strength-val').textContent=this.value">
+        <span id="clr-lab-skin-tone-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-ink-affinity" checked> Ink affinity (nudge hues toward nearest P2 ink before dither)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Ink affinity strength
+        <input type="range" id="clr-lab-ink-affinity-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-ink-affinity-strength-val').textContent=this.value">
+        <span id="clr-lab-ink-affinity-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Ink affinity keeps lightness similar but pulls a*/b* toward the calibrated ink that will carry each region, so Stucki has less impossible color error. Re-send test images after saving.</p>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-ink-affinity-mix"> Stucki 2×2 mix affinity (nudge toward nearest four-ink average — ~126 mixtures from 6 primaries)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Mix affinity strength
+        <input type="range" id="clr-lab-ink-affinity-mix-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-ink-affinity-mix-strength-val').textContent=this.value">
+        <span id="clr-lab-ink-affinity-mix-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Runs after primary ink affinity. Targets colors Stucki can actually render in a 2×2 tile (e.g. brown from black+red+yellow), not just the six primaries.</p>
+      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
+        <input type="checkbox" id="clr-lab-ink-affinity-ray"> High-DPI ray affinity (7″ GooDisplay — K/W carry lightness)
+      </label>
+      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Ray affinity strength
+        <input type="range" id="clr-lab-ink-affinity-ray-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-ink-affinity-ray-strength-val').textContent=this.value">
+        <span id="clr-lab-ink-affinity-ray-strength-val" style="font-family:monospace">1</span>
+      </label>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">For the 7.09″ 282&nbsp;PPI panel. Labels face vs sky fields first (same peach in a cloud is not a forehead). Histograms skin L* only on faces, keeps the modal band, and merges the highlight tail into it. Pale skies keep their lightness and get a blue dust. Replaces primary and 2×2 mix affinity while on. Leave off on 13″.</p>
+      <div class="section-label">InkJoy refresh wipe</div>
+      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Transition pattern
+        <select id="clr-inkjoy-wipe" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px" onchange="onInkJoyWipePatternChange()"></select>
+      </label>
+      <label id="clr-inkjoy-uniform-wrap" style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Uniform lo level (step 0 = lo 0 … step 30 = lo 248)
+        <input type="range" id="clr-inkjoy-uniform-step" min="0" max="30" step="1" value="30" style="width:100%;margin-top:.35rem" oninput="updateInkJoyUniformLoLabel()">
+        <span id="clr-inkjoy-uniform-step-val" style="font-family:monospace">step 30 · lo 248</span>
+      </label>
+      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">28.5″ transition
+        <select id="clr-inkjoy28-wipe" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
+      </label>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">The 28.5″ stores a refresh step (1–31) per pixel. <strong>Luminance</strong> refreshes each pixel by its brightness in the photo, black first and white last. <strong>Captured</strong> transitions are copied from artwork the InkJoy cloud has sent; <strong>Random</strong> picks one each send.</p>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Uniform lo fills the whole frame with one sub-tone step (31 levels). Lower lo may read brighter if the panel runs more refresh phases — try step 0 vs 30 on the same photo. Spatial patterns (box, clock, …) also vary lo by region. <strong>Random</strong> picks a bundled pattern each send.</p>
+      <div class="section-label">InkJoy dither palette (P2)</div>
+      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
+        <select id="clr-inkjoy-display-preset" onchange="onColorPresetChange('inkjoy_display')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
+      </label>
+      <div id="clr-inkjoy-display-swatches"></div>
+      <div class="section-label">Samsung dither palette (P2)</div>
+      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
+        <select id="clr-samsung-display-preset" onchange="onColorPresetChange('samsung_display')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
+      </label>
+      <div id="clr-samsung-display-swatches"></div>
+      <div class="section-label">Samsung send palette (P1 PNG)</div>
+      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
+        <select id="clr-samsung-send-preset" onchange="onColorPresetChange('samsung_send')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
+      </label>
+      <div id="clr-samsung-send-swatches"></div>
+      <button class="btn btn-primary btn-sm" style="margin-top:1rem" onclick="saveColorConfig()">Save color settings</button>
+      <div id="clr-save-status" style="font-size:.85rem;color:#666;margin-top:.5rem"></div>
+      <p style="font-size:.8rem;color:#888;margin-top:.75rem">Saving clears the converted .bin cache. Re-send album images to frames to apply new palettes.</p>
+    </div>
+  </div>
+  <div id="tab-inkjoy" style="display:none">
+    <iframe id="inkjoy-bridge-frame" title="InkJoy configuration" style="width:100%;border:none;min-height:calc(100vh - 5rem);background:#f8f9fa"></iframe>
+  </div>
+  <div id="tab-nixplay" style="display:none">
+    <iframe id="nixplay-bridge-frame" title="Nixplay configuration" style="width:100%;border:none;min-height:calc(100vh - 5rem);background:#f8f9fa"></iframe>
+  </div>
+  <div id="tab-mqtt" style="display:none">
+    <p style="color:#666;font-size:.9rem;margin-top:0">Joyous hub broker (<code>:1883</code>) — last 20 messages per direction. Newest at top.</p>
+    <label style="display:flex;align-items:center;gap:.5rem;margin:.25rem 0 .75rem;font-size:.9rem;color:#555">
+      <input type="checkbox" id="mqtt-hide-ui" onchange="onMqttHideUIChange()"> Hide ui.*, devices.sync, bridge.hello (keeps play &amp; send.image)
+    </label>
+    <div class="mqtt-grid">
+      <div class="mqtt-col card">
+        <h2>Bridge → Hub</h2>
+        <div id="mqtt-local" class="mqtt-log"><p class="mqtt-empty">No messages yet.</p></div>
+      </div>
+      <div class="mqtt-col card">
+        <h2>Hub → Bridge</h2>
+        <div id="mqtt-upstream" class="mqtt-log"><p class="mqtt-empty">No messages yet.</p></div>
+      </div>
+    </div>
+  </div>
+  <div id="tab-samsung" style="display:none">
+    <div style="display:flex;gap:1.5rem;align-items:flex-start">
+      <div style="min-width:220px">
+        <div class="section-label">Frames</div>
+        <div id="samsung-frame-list"><p style="color:#888;font-size:.9rem">No Samsung frames yet.</p></div>
+        <div style="margin-top:.75rem">
+          <button class="btn btn-sm btn-primary" id="samsung-discover-btn" onclick="discoverSamsungFrames()">Discover displays</button>
+          <span id="samsung-discover-status" style="display:block;font-size:.8rem;color:#666;margin-top:.4rem"></span>
+        </div>
+      </div>
+      <div id="samsung-editor" style="flex:1;display:none">
+        <div class="card">
+          <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem">
+            <div class="dot" id="samsung-dot"></div>
+            <h3 style="margin:0" id="samsung-frame-title"></h3>
+            <span id="samsung-status-badge" class="badge"></span>
+            <span style="margin-left:auto;display:flex;gap:.35rem">
+              <button type="button" class="btn btn-sm samsung-icon-btn wake" id="samsung-wake-btn" onclick="samsungWake()" title="Wake display" style="display:none" aria-label="Wake display">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              </button>
+              <button type="button" class="btn btn-sm samsung-icon-btn sleep" id="samsung-sleep-btn" onclick="samsungSleep()" title="Sleep display" style="display:none" aria-label="Sleep display">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2v10"/><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/></svg>
+              </button>
+            </span>
+          </div>
+          <div style="display:flex;gap:.5rem;margin-bottom:.75rem">
+            <input id="samsung-name-input" placeholder="Friendly name" style="padding:.3rem .5rem;border:1px solid #ccc;border-radius:4px;flex:1">
+            <button class="btn btn-sm btn-primary" onclick="saveSamsungName()">Rename</button>
+          </div>
+          <div class="info-grid" id="samsung-info"></div>
+        </div>
+        <div class="card">
+          <div class="section-label" style="margin-top:0">Currently displayed</div>
+          <div id="samsung-preview-wrap"><p style="color:#888;font-size:.9rem">No image uploaded yet.</p></div>
+          <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" onclick="samsungPushCurrent()">Push to display</button>
+            <button class="btn btn-sm" onclick="openCalibrationModal('samsung')">Calibration chart</button>
+          </div>
+          <div id="samsung-upload-zone" style="border:2px dashed #ccc;border-radius:8px;padding:1.5rem;text-align:center;cursor:pointer;margin-top:1rem" onclick="document.getElementById('samsung-file-input').click()">
+            Drop image to upload for this frame
+          </div>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">To send from the shared album, use <strong>Album → Send</strong> and pick this frame.</p>
+          <input type="file" id="samsung-file-input" accept=".png,.jpg,.jpeg,.heic" style="display:none">
+          <div id="samsung-status" style="font-size:.85rem;color:#666;margin-top:.75rem"></div>
+        </div>
+        <div class="card">
+          <div class="section-label" style="margin-top:0">Display settings</div>
+          <div style="display:flex;flex-wrap:wrap;gap:1rem;align-items:end">
+            <label style="font-size:.9rem">WiFi MAC (wake)<br><input type="text" id="samsung-wifi-mac" placeholder="AA:BB:CC:DD:EE:FF" style="width:11rem;padding:.3rem;margin-top:.25rem;font-family:monospace"></label>
+            <label style="font-size:.9rem">Poll interval (min)<br><input type="number" id="samsung-poll" min="1" value="60" style="width:5rem;padding:.3rem;margin-top:.25rem"></label>
+            <label style="font-size:.9rem">Inactive begin<br><input type="time" id="samsung-inactive-begin" style="padding:.3rem;margin-top:.25rem"></label>
+            <label style="font-size:.9rem">Inactive end<br><input type="time" id="samsung-inactive-end" style="padding:.3rem;margin-top:.25rem"></label>
+            <label style="font-size:.9rem">Daily refresh<br><input type="time" id="samsung-daily-refresh" style="padding:.3rem;margin-top:.25rem" title="Frame e-ink refresh time"></label>
+            <button type="button" class="btn btn-sm" id="samsung-daily-refresh-sync" onclick="samsungSyncDailyRefresh()" title="Set frame daily refresh to inactive end">Sync to inactive end</button>
+            <span id="samsung-daily-refresh-status" style="font-size:.8rem;color:#666;align-self:end;padding-bottom:.3rem"></span>
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.9rem;cursor:pointer;padding-bottom:.3rem">
+              <input type="checkbox" id="samsung-overnight-deep-sleep" checked>
+              Overnight deep sleep
+            </label>
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.9rem;cursor:pointer;padding-bottom:.3rem">
+              <input type="checkbox" id="samsung-portrait">
+              Portrait orientation
+            </label>
+            <label style="font-size:.9rem">Width<br><input type="number" id="samsung-display-width" min="0" placeholder="2560" style="width:6rem;padding:.3rem;margin-top:.25rem"></label>
+            <label style="font-size:.9rem">Height<br><input type="number" id="samsung-display-height" min="0" placeholder="1440" style="width:6rem;padding:.3rem;margin-top:.25rem"></label>
+            <label style="font-size:.9rem;display:flex;align-items:center;gap:.35rem;margin-top:1.1rem">
+              <input type="checkbox" id="samsung-auto-sleep" checked>
+              Sleep after send
+            </label>
+            <label style="font-size:.9rem">Sleep delay (sec)<br><input type="number" id="samsung-sleep-delay" min="5" value="15" style="width:5rem;padding:.3rem;margin-top:.25rem"></label>
+            <button class="btn btn-sm btn-primary" onclick="saveSamsungConfig()">Save settings</button>
+          </div>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">With <strong>Sleep after send</strong> on, the usual cycle is wake → deliver image → sleep (after delay). With it off, a successful send means the frame is <strong>active</strong>; the hub reads the frame’s idle sleep setting and marks it asleep after that many minutes (each new send resets the countdown). Always-on leaves it active. WiFi MAC required for remote wake. Moon/power are for manual override only.</p>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0">Set inactive begin and end to the <strong>same time</strong> (e.g. 00:00–00:00) to disable hub-managed network sleep — the frame keeps its current deep sleep or network standby mode.</p>
+          <p style="font-size:.8rem;color:#888;margin:.75rem 0 0"><strong>Overnight deep sleep:</strong> at inactive begin the hub wakes the frame, turns off network standby, and sleeps it (lower battery drain). Skipped while the frame reports <strong>USB</strong> power — network sleep only, so remote wake still works. A send during inactive hours on battery needs a <strong>3s power-button wake</strong> and returns to deep sleep after; outside those hours the hub restores network standby for remote wake.</p>
+          <p style="font-size:.8rem;color:#888;margin:.5rem 0 0"><strong>Daily refresh:</strong> the frame pre-refreshes a few minutes before the scheduled time, then refreshes at inactive end. While it is awake for that cycle, the hub tries to restore network standby from <em>10 minutes before</em> inactive end through inactive end (e.g. 8:50–9:00). Sync daily refresh to <em>inactive end</em>.</p>
+        </div>
+        <div class="card" style="border:1px solid #f5c6cb">
+          <div class="section-label" style="margin-top:0;color:#dc3545">Danger zone</div>
+          <button class="btn btn-sm" style="background:#dc3545;color:#fff" onclick="samsungDeleteDevice()">Remove frame from hub</button>
+          <span style="margin-left:.75rem;font-size:.85rem;color:#888">Does not affect the display itself.</span>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:1.5rem">
+      <div class="section-label" style="margin-top:0">Handshake log</div>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .5rem">Live discover / reachability / MDC / WoL lines from the <strong>samsung-bridge</strong> (LAN probes), oldest → newest. Frame photo pulls stay on the hub HTTP cache and are not listed here.</p>
+      <div id="samsung-handshake-log" class="samsung-log"><p class="mqtt-empty">No messages yet.</p></div>
+    </div>
+  </div>
+</main>
+<script>const JOYOUS_UI_REVISION='__JOYOUS_UI_REVISION__';</script>
+<script src="/ui/app.js?v=__JOYOUS_UI_REVISION__"></script>
+
+<!-- ── Crop editor modal ─────────────────────────────────────── -->
+<div id="crop-modal">
+<div id="crop-ui">
+  <div id="crop-toolbar">
+    <label>Frame format</label>
+    <select id="crop-format" onchange="onFormatChange()">
+      <option value="4:3">Landscape 4:3</option>
+      <option value="3:4">Portrait 3:4</option>
+      <option value="16:9">Landscape 16:9</option>
+      <option value="9:16">Portrait 9:16</option>
+      <option value="1:1">Square 1:1</option>
+      <option value="√2:1">Landscape √2:1</option>
+      <option value="1:√2">Portrait 1:√2</option>
+    </select>
+    <label id="crop-chroma-wrap" style="display:none;align-items:center;gap:.35rem;font-size:.8rem;color:#aaa">
+      Chroma
+      <select id="crop-chroma" onchange="saveChromaBoost()">
+        <option value="global">Global</option>
+        <option value="on">On</option>
+        <option value="off">Off</option>
+      </select>
+    </label>
+    <span id="crop-chroma-hint" style="font-size:.75rem;color:#888;max-width:14rem;line-height:1.3"></span>
+    <button class="btn btn-primary btn-sm" onclick="saveCrop()">Save crop</button>
+    <button class="btn btn-sm" id="crop-download-btn" onclick="downloadCropImage()">Save file</button>
+    <button id="crop-delete-btn" class="btn btn-sm" style="background:#c0392b;color:#fff;display:none" onclick="deleteCrop()">Delete</button>
+    <button class="btn btn-sm" onclick="closeCrop()">Close</button>
+    <span id="crop-hint"></span>
+  </div>
+  <div id="crop-stage">
+    <img id="crop-img" draggable="false">
+    <div id="crop-box">
+      <div class="ch" data-h="tl"></div>
+      <div class="ch" data-h="tr"></div>
+      <div class="ch" data-h="bl"></div>
+      <div class="ch" data-h="br"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script src="/ui/crop.js?v=__JOYOUS_UI_REVISION__"></script>
+</body>
+</html>
