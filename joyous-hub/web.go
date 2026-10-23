@@ -39,6 +39,10 @@ type Hub struct {
 	hubIP          string
 	publisher      MQTTPublisher
 	serverAddr     string
+	// publicHTTPSURL is the hub's HTTPS base URL with a publicly trusted
+	// certificate (e.g. https://joyous.zippysoft.com); relayed waveform
+	// files are served from it when set.
+	publicHTTPSURL string
 	mqttLog        *MQTTLogBuffer // inkjoy-bridge frame MQTT (unused on hub)
 	joyousMQTTLog  *MQTTLogBuffer // hub broker: bridge↔hub joyous protocol
 }

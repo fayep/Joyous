@@ -28,6 +28,9 @@ type InkJoyBridgeConfig struct {
 	HubDataDir      string `yaml:"hub_data_dir"`
 	HubHTTP         string `yaml:"hub_http"`
 	ServerAddr      string `yaml:"server_addr"`
+	// PublicHTTPSURL is the hub's HTTPS base URL with a publicly trusted
+	// certificate; relayed waveform files (wf_update) are served from it.
+	PublicHTTPSURL  string `yaml:"public_https_url"`
 	CaptureDir      string `yaml:"capture_dir"`
 	OTADir          string `yaml:"ota_dir"`
 	LogDir          string `yaml:"log_dir"`

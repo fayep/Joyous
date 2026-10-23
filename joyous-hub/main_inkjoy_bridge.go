@@ -44,6 +44,7 @@ func main() {
 	listenMQTT := flag.String("listen-mqtt", fileCfg.ListenMQTT, "InkJoy frame MQTT broker")
 	hubHTTP := flag.String("hub-http", fileCfg.HubHTTP, "Joyous hub HTTP base URL for play relay")
 	serverAddr := flag.String("server-addr", fileCfg.ServerAddr, "hostname:port shown to frames for image URLs and BLE adopt")
+	publicHTTPSURL := flag.String("public-https-url", fileCfg.PublicHTTPSURL, "hub HTTPS base URL with a publicly trusted certificate, for relayed waveform files")
 	upstream := flag.String("upstream", fileCfg.Upstream, "InkJoy cloud MQTT broker")
 	upstreamUsr := flag.String("upstream-usr", fileCfg.UpstreamUsr, "cloud MQTT username")
 	upstreamPwd := flag.String("upstream-pwd", fileCfg.UpstreamPwd, "cloud MQTT password")
@@ -122,6 +123,7 @@ func main() {
 
 	relay := &playRelayAdapter{hub: &Hub{
 		inkjoy:         hubInkjoyCache,
+		publicHTTPSURL: *publicHTTPSURL,
 		serverAddr:     hubPlayAddr,
 		hubIP:          hubPlayIP,
 		devices:        devices,
