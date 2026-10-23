@@ -275,6 +275,23 @@ func MQTTAction(payload []byte) string {
 }
 
 // MQTTMsgid extracts the msgid field from an InkJoy MQTT JSON payload.
+// MQTTAckMsgid returns data.ack_msgid: the msgid of the message this one answers.
+func MQTTAckMsgid(payload []byte) string {
+	var env struct {
+		Data struct {
+			AckMsgid json.RawMessage `json:"ack_msgid"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(payload, &env) != nil || len(env.Data.AckMsgid) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(env.Data.AckMsgid, &s) == nil {
+		return s
+	}
+	return strings.Trim(string(env.Data.AckMsgid), `"`)
+}
+
 func MQTTMsgid(payload []byte) string {
 	var env struct {
 		Msgid json.RawMessage `json:"msgid"`

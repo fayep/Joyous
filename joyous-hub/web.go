@@ -1023,6 +1023,10 @@ const indexHTML = `<!DOCTYPE html>
         <input type="range" id="clr-inkjoy-uniform-step" min="0" max="30" step="1" value="30" style="width:100%;margin-top:.35rem" oninput="updateInkJoyUniformLoLabel()">
         <span id="clr-inkjoy-uniform-step-val" style="font-family:monospace">step 30 · lo 248</span>
       </label>
+      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">28.5″ transition
+        <select id="clr-inkjoy28-wipe" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
+      </label>
+      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">The 28.5″ stores a refresh step (1–31) per pixel. <strong>Luminance</strong> refreshes each pixel by its brightness in the photo, black first and white last. <strong>Captured</strong> transitions are copied from artwork the InkJoy cloud has sent; <strong>Random</strong> picks one each send.</p>
       <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Uniform lo fills the whole frame with one sub-tone step (31 levels). Lower lo may read brighter if the panel runs more refresh phases — try step 0 vs 30 on the same photo. Spatial patterns (box, clock, …) also vary lo by region. <strong>Random</strong> picks a bundled pattern each send.</p>
       <div class="section-label">InkJoy dither palette (P2)</div>
       <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
@@ -3841,6 +3845,7 @@ function applyColorForm(cfg){
   document.getElementById('clr-lab-ink-affinity-ray-strength-val').textContent=String(inkRayStrength);
   fillInkJoyWipeSelect(cfg.inkjoy_wipe||'uniform:248');
   applyInkJoyUniformWipe(cfg.inkjoy_wipe||'uniform:248');
+  fillInkJoy28WipeSelect(cfg.inkjoy28_wipe||'off');
   for(const g of COLOR_GROUPS){
     document.getElementById(g.presetId).value=cfg[g.cfgPreset]||'calibrated';
     const preset=cfg[g.cfgPreset]||'calibrated';
@@ -3868,6 +3873,7 @@ function colorFormValues(){
     lab_ink_affinity_ray_enabled:document.getElementById('clr-lab-ink-affinity-ray').checked,
     lab_ink_affinity_ray_strength:parseFloat(document.getElementById('clr-lab-ink-affinity-ray-strength').value)||1,
     inkjoy_wipe:inkjoyWipeFormValue(),
+    inkjoy28_wipe:(document.getElementById('clr-inkjoy28-wipe')||{}).value||'off',
     inkjoy_display_preset:document.getElementById('clr-inkjoy-display-preset').value,
     samsung_display_preset:document.getElementById('clr-samsung-display-preset').value,
     samsung_send_preset:document.getElementById('clr-samsung-send-preset').value
@@ -3891,6 +3897,26 @@ async function loadColorPresets(){
   const r=await fetch('/api/color/presets');
   if(!r.ok) throw new Error(await r.text());
   colorPresets=await r.json();
+}
+
+function fillInkJoy28WipeSelect(selected){
+  const sel=document.getElementById('clr-inkjoy28-wipe');
+  if(!sel) return;
+  const wipes=colorPresets&&colorPresets.wipes28?colorPresets.wipes28:[{id:'off',label:'Off (no transition)'}];
+  sel.innerHTML='';
+  for(const w of wipes){
+    const o=document.createElement('option');
+    o.value=w.id;
+    o.textContent=w.label;
+    sel.appendChild(o);
+  }
+  if(selected&&!wipes.some(w=>w.id===selected)){
+    const o=document.createElement('option');
+    o.value=selected;
+    o.textContent=selected+' (missing)';
+    sel.appendChild(o);
+  }
+  sel.value=selected||'off';
 }
 
 function fillInkJoyWipeSelect(selected){

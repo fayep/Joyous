@@ -54,6 +54,15 @@ func (a *inkjoyDeviceAdapter) UpdateHeart(mac string, info inkjoybridge.HeartInf
 
 func (a *inkjoyDeviceAdapter) SetHubIP(mac, ip string) { a.reg.SetHubIP(mac, ip) }
 
+// SessionIDs / SetSessionIDs implement inkjoybridge.SessionIDStore.
+func (a *inkjoyDeviceAdapter) SessionIDs(mac string) (string, string, bool) {
+	return a.reg.SessionIDs(mac)
+}
+
+func (a *inkjoyDeviceAdapter) SetSessionIDs(mac, deviceID, uid string) {
+	a.reg.SetSessionIDs(mac, deviceID, uid)
+}
+
 func (a *inkjoyDeviceAdapter) OnPlayAck(ackMsgid string, result int) {
 	if a.retry != nil {
 		a.retry.OnPlayAck(ackMsgid, result)
@@ -341,3 +350,5 @@ func (p *bridgeCoordinatorPublisher) Publish(topic string, payload []byte) error
 		Body:     body,
 	})
 }
+
+var _ inkjoybridge.SessionIDStore = (*inkjoyDeviceAdapter)(nil)

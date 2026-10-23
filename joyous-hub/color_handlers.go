@@ -41,8 +41,17 @@ func (h *Hub) handleColorPresets(w http.ResponseWriter, r *http.Request) {
 		"presets":        colorPresetCatalog(),
 		"names":          colorNames,
 		"wipes":          inkJoyWipeChoices(),
+		"wipes28":        inkJoy28WipeChoices(h.imagesDataDir()),
 		"uniform_levels": inkJoyWipeUniformLevels(),
 	})
+}
+
+// imagesDataDir is the hub data dir ("" without an image store).
+func (h *Hub) imagesDataDir() string {
+	if h.images == nil {
+		return ""
+	}
+	return h.images.dir
 }
 
 func (h *Hub) colorPipeline() ColorPipeline {

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image/png"
 	"io"
 	"log"
 	"net"
@@ -235,6 +237,33 @@ func VerifyInkjoyCacheServing(ctx context.Context, hubBaseURL string) error {
 
 func (c *InkJoyCache) extPath(mac, name, ext string) string {
 	return filepath.Join(c.dir, inkjoyMACDir(mac), name+ext)
+}
+
+// saveCapturedWipe writes a relayed cloud play's refresh transition to
+// <data>/wipes-captured/<W>x<H>/<name>.png (the embedded wipes' format, see
+// playBinWipe), once per image. Returns the path written, or "" if it exists.
+func (c *InkJoyCache) saveCapturedWipe(name string, bin []byte) (string, error) {
+	g, err := playBinWipe(bin)
+	if err != nil {
+		return "", err
+	}
+	b := g.Bounds()
+	path := filepath.Join(filepath.Dir(c.dir), "wipes-captured", fmt.Sprintf("%dx%d", b.Dx(), b.Dy()), name+".png")
+	if _, err := os.Stat(path); err == nil {
+		return "", nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, g); err != nil {
+		return "", err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
+		return "", err
+	}
+	return path, os.Rename(tmp, path)
 }
 
 func (c *InkJoyCache) binPath(mac, name string) string {

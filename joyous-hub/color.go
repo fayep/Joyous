@@ -44,6 +44,9 @@ type ColorConfig struct {
 	LABInkAffinityRayStrength float64 `json:"lab_ink_affinity_ray_strength"`
 
 	InkJoyWipe string `json:"inkjoy_wipe"` // uniform:0–uniform:248, uniform248, random, luminance, or wipe PNG name
+	// InkJoy28Wipe is the 28.5" refresh transition: off, luminance, random,
+	// or captured:<name> (see inkjoy28_wipe.go).
+	InkJoy28Wipe string `json:"inkjoy28_wipe,omitempty"`
 
 	InkJoyDisplayPreset  string `json:"inkjoy_display_preset"`
 	SamsungDisplayPreset string `json:"samsung_display_preset"`
@@ -195,6 +198,7 @@ func normalizeColorConfig(cfg ColorConfig) ColorConfig {
 		cfg.LABInkAffinityRayStrength = 1.0
 	}
 	cfg.InkJoyWipe = normalizeInkJoyWipe(cfg.InkJoyWipe)
+	cfg.InkJoy28Wipe = normalizeInkJoy28Wipe(cfg.InkJoy28Wipe)
 	if cfg.InkJoyDisplayPreset == "" {
 		cfg.InkJoyDisplayPreset = ColorPresetCalibrated
 	}
@@ -365,6 +369,9 @@ func validateColorConfig(cfg ColorConfig) error {
 		return fmt.Errorf("lab_ink_affinity_ray_strength must be between 0 and 3")
 	}
 	if err := validateInkJoyWipe(cfg.InkJoyWipe); err != nil {
+		return err
+	}
+	if err := validateInkJoy28Wipe(cfg.InkJoy28Wipe); err != nil {
 		return err
 	}
 	for _, preset := range []string{cfg.InkJoyDisplayPreset, cfg.SamsungDisplayPreset, cfg.SamsungSendPreset} {

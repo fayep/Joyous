@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	mochi "github.com/mochi-mqtt/server/v2"
@@ -142,11 +143,32 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Publish sends a command to a frame on /inkjoyap/{mac} at QoS1 so the
 // broker retries while the frame is momentarily radio-napping (modem-sleep).
+// Everything sent this way is bridge-originated (cloud traffic is relayed
+// separately), so its msgid is recorded and the frame's responses to it are
+// kept from the cloud — see frameHook.OnPublished.
 func (s *Server) Publish(topic string, payload []byte) error {
 	if s.cfg.MQTTLog != nil {
 		s.cfg.MQTTLog.AddLocal("bridge→frame", topic, payload, "")
 	}
+	s.bridges.markInjected(MQTTMsgid(payload))
 	return s.broker.Publish(topic, payload, false, 1)
+}
+
+// injectedTTL is how long a bridge-originated message's responses are kept
+// from the cloud (a play's display_done can follow its send by minutes).
+const injectedTTL = time.Hour
+
+func (bs *bridgeSet) markInjected(msgid string) {
+	if msgid == "" {
+		return
+	}
+	bs.injected.Store(msgid, struct{}{})
+	time.AfterFunc(injectedTTL, func() { bs.injected.Delete(msgid) })
+}
+
+func (bs *bridgeSet) isInjected(msgid string) bool {
+	_, ok := bs.injected.Load(msgid)
+	return ok
 }
 
 // PublishToFrame publishes to /inkjoyap/{mac}.
@@ -172,6 +194,9 @@ type bridgeSet struct {
 	rewritePlay     func(mac string, payload []byte) ([]byte, error)
 	m               map[string]*upstreamBridge
 	localOnly       sync.Map // mac → struct{} for Seeed H:9 etc. (no cloud upstream)
+	acks            loginAcks
+	injected        sync.Map // msgid → struct{} of bridge-originated frame messages
+	held            heldPlays
 }
 
 func (bs *bridgeSet) markLocalOnly(mac string) {
@@ -203,7 +228,14 @@ type upstreamBridge struct {
 	set    *bridgeSet
 	client mqtt.Client
 	cfg    UpstreamConfig
+
+	mu    sync.Mutex
+	queue [][]byte // frame→cloud messages held until the cloud link is up
 }
+
+// upstreamQueueMax bounds the frame→cloud messages held while the cloud link
+// connects (a frame sends a handful — login, heart, reports — on connect).
+const upstreamQueueMax = 32
 
 func (b *upstreamBridge) connect() {
 	host := b.set.upstreamHost
@@ -227,13 +259,17 @@ func (b *upstreamBridge) connect() {
 		SetOnConnectHandler(func(c mqtt.Client) {
 			log.Printf("[%s] upstream connected to %s", b.mac, host)
 			c.Subscribe("/inkjoyap/"+b.mac, 0, b.onCloudMessage)
+			b.flushQueue(c)
 		}).
 		SetConnectionLostHandler(func(c mqtt.Client, err error) {
 			log.Printf("[%s] upstream disconnected: %v", b.mac, err)
 		})
 
-	b.client = mqtt.NewClient(opts)
-	tok := b.client.Connect()
+	client := mqtt.NewClient(opts)
+	b.mu.Lock()
+	b.client = client
+	b.mu.Unlock()
+	tok := client.Connect()
 	tok.Wait()
 	if err := tok.Error(); err != nil {
 		log.Printf("[%s] upstream connect error: %v", b.mac, err)
@@ -241,7 +277,19 @@ func (b *upstreamBridge) connect() {
 }
 
 func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
-	payload := msg.Payload()
+	b.handleCloudPayload(msg.Payload())
+}
+
+// ReplayCloudMessage feeds a saved cloud→frame message for mac through the
+// same path as if the cloud had just sent it: intercepts, the play relay's
+// download/cache/rewrite, held delivery, and the frame's responses going
+// back to the cloud (it is not marked bridge-originated).
+func (s *Server) ReplayCloudMessage(mac string, payload []byte) {
+	log.Printf("[%s] replaying cloud %s %s", mac, MQTTAction(payload), MQTTMsgid(payload))
+	s.bridges.get(mac).handleCloudPayload(payload)
+}
+
+func (b *upstreamBridge) handleCloudPayload(payload []byte) {
 	action := MQTTAction(payload)
 
 	if ShouldIntercept(action, b.set.intercept) {
@@ -291,6 +339,9 @@ func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
 
 	writeCaptureErr("downstream", b.set.capture, b.set.captureRecordDownstream(b.mac, action, payload))
 	b.set.logCloudIn(b.mac, payload, "")
+	if action == "login_ack" {
+		b.set.noteCloudLoginAck(b.mac, payload)
+	}
 
 	forwardPayload := payload
 	if action == "play" && b.set.rewritePlay != nil {
@@ -309,7 +360,11 @@ func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
 		}
 		b.set.mqttLog.AddLocal("bridge→frame", topic, forwardPayload, note)
 	}
-	b.set.broker.Publish(topic, forwardPayload, false, 1)
+	if action == "play" {
+		b.set.deliverCloudPlay(b.mac, topic, forwardPayload)
+	} else {
+		b.set.broker.Publish(topic, forwardPayload, false, 1)
+	}
 	if action == "play" && b.set.onExternalPlay != nil {
 		b.set.onExternalPlay(b.mac, forwardPayload)
 	}
@@ -329,12 +384,40 @@ func (bs *bridgeSet) captureRecordDownstream(mac, action string, payload []byte)
 	return bs.capture.RecordDownstream(mac, action, payload)
 }
 
+// forward relays a frame message to the cloud. While the cloud link is still
+// connecting (it is opened on a frame's first message, so right after a bridge
+// restart the frame's login always arrives first) the message is queued and
+// sent on connect, rather than dropped.
 func (b *upstreamBridge) forward(payload []byte) {
-	if b.client == nil || !b.client.IsConnected() {
+	b.mu.Lock()
+	c := b.client
+	if c == nil || !c.IsConnected() {
+		if len(b.queue) < upstreamQueueMax {
+			b.queue = append(b.queue, payload)
+		}
+		b.mu.Unlock()
 		return
 	}
+	b.mu.Unlock()
+	b.publishUp(c, payload)
+}
+
+func (b *upstreamBridge) flushQueue(c mqtt.Client) {
+	b.mu.Lock()
+	q := b.queue
+	b.queue = nil
+	b.mu.Unlock()
+	for _, p := range q {
+		b.publishUp(c, p)
+	}
+}
+
+func (b *upstreamBridge) publishUp(c mqtt.Client, payload []byte) {
 	b.set.logCloudOut(b.mac, payload, "")
-	b.client.Publish("/device/report/"+b.mac, 0, false, payload)
+	c.Publish("/device/report/"+b.mac, 0, false, payload)
+	if MQTTAction(payload) == "login" {
+		b.set.loginSentUpstream(b.mac, MQTTMsgid(payload))
+	}
 }
 
 func (b *upstreamBridge) sendBlockedOTAAcks(interceptedAction string, requestPayload []byte) {
@@ -383,7 +466,17 @@ type frameHook struct {
 
 func (h *frameHook) ID() string { return "frame-hook" }
 
-func (h *frameHook) Provides(b byte) bool { return b == mochi.OnPublished }
+func (h *frameHook) Provides(b byte) bool {
+	return b == mochi.OnPublished || b == mochi.OnDisconnect
+}
+
+// OnDisconnect logs why a frame's MQTT session to the bridge ended.
+func (h *frameHook) OnDisconnect(cl *mochi.Client, err error, expire bool) {
+	if cl == nil || cl.Net.Inline {
+		return
+	}
+	log.Printf("[%s] frame disconnected from bridge: %v", cl.ID, err)
+}
 
 func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 	topic := pk.TopicName
@@ -406,6 +499,17 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 	writeCaptureErr("upstream", h.bridges.capture, h.bridges.captureRecordUpstream(mac, action, payload))
 
 	skipUpstream := h.bridges.isLocalOnly(mac)
+	// A frame response names the message it answers in data.ack_msgid. Every
+	// response to something the bridge sent (a Joyous play — play_ack, then
+	// display_start/display_done — or an image_refresh, overlay, wifi_sleep,
+	// ...) stays local: the cloud never sent it and mustn't learn of it.
+	if ackMsgid := MQTTAckMsgid(payload); ackMsgid != "" &&
+		(h.bridges.isInjected(ackMsgid) || (h.injectedPlay != nil && h.injectedPlay(ackMsgid))) {
+		skipUpstream = true
+		if action != "play_ack" {
+			log.Printf("[%s] %s suppressed (bridge-initiated)", mac, action)
+		}
+	}
 	switch action {
 	case "login":
 		info, err := ParseLoginPayload(payload)
@@ -428,6 +532,7 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		if h.devices != nil {
 			h.devices.OnDeviceLogin(mac)
 		}
+		h.bridges.releaseHeldPlay(mac)
 	case "heart":
 		info, err := ParseHeartPayload(payload)
 		if err == nil && h.devices != nil {
@@ -482,18 +587,20 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 		}
 	}
 
-	// Ack login/heart locally so the frame session stays healthy regardless of
-	// the cloud. Local-only clones have no cloud to reply; and real-InkJoy H:3
-	// frames relayed upstream don't get a timely cloud login_ack either (the
-	// cloud's newer registration needs a device-pubkey attestation the relay
-	// can't satisfy), so without a local ack they login-loop every keepalive
-	// and never receive plays. A duplicate ack to a cloud-relayed frame (whose
-	// cloud also replies) is benign — the frame treats login_ack idempotently.
+	// Ack login/heart locally only when nobody else will: local-only clones
+	// have no cloud, and real-InkJoy H:3 frames relayed upstream get no cloud
+	// login_ack (the cloud's newer registration needs a device-pubkey
+	// attestation the relay can't satisfy), so without a local ack they
+	// login-loop and never receive plays. A frame the cloud answers gets the
+	// cloud's replies alone — see ackLogin.
+	localOnly := skipUpstream || h.bridges.upstreamHost == ""
 	switch action {
 	case "login":
-		h.bridges.publishLocalAck(mac, BuildLoginAck(mac, MQTTMsgid(payload)))
+		h.bridges.ackLogin(mac, MQTTMsgid(payload), localOnly)
 	case "heart":
-		h.bridges.publishLocalAck(mac, BuildHeartAck(mac, MQTTMsgid(payload)))
+		h.bridges.ackHeart(mac, MQTTMsgid(payload), localOnly)
+	case "pubkey_report":
+		h.bridges.noteFramePubkeyReport(mac, payload)
 	}
 
 	if !skipUpstream && h.upstreamAllow.Allows(action) && h.bridges.upstreamHost != "" {
