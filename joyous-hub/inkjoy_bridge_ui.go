@@ -23,6 +23,9 @@ type inkjoyBridgeUI struct {
 	mqttHost string
 	mqttPort int
 	mux      *http.ServeMux
+	// current works out what each frame is showing (the hub's rule, see
+	// applyInkJoyCurrentDisplay); nil falls back to the newest cached file.
+	current *Hub
 }
 
 func newInkJoyBridgeUI(mux *http.ServeMux, devices *DeviceRegistry, cache *InkJoyCache, srv *inkjoybridge.Server, mqttLog *MQTTLogBuffer, mqttHost string, mqttPort int) *inkjoyBridgeUI {
@@ -145,7 +148,7 @@ func (ui *inkjoyBridgeUI) inkjoyDevices() []Device {
 	for _, d := range all {
 		if d.Type == DeviceTypeInkJoy {
 			d.SleepBeginTime, d.SleepEndTime = sleepWindowToLocal(d.SleepBeginTime, d.SleepEndTime)
-			if ui.cache != nil {
+			if ui.current == nil && ui.cache != nil {
 				if imageID, overlayToken, ok := ui.cache.LatestImageID(d.MAC); ok {
 					d.LastImageID = imageID
 					d.LastOverlayHash = overlayToken
@@ -153,6 +156,9 @@ func (ui *inkjoyBridgeUI) inkjoyDevices() []Device {
 			}
 			out = append(out, d)
 		}
+	}
+	if ui.current != nil {
+		ui.current.applyInkJoyCurrentDisplay(out)
 	}
 	return out
 }

@@ -160,6 +160,7 @@ func main() {
 	mqttPort := bridgeMQTTPort(*listenMQTT)
 	mux := http.NewServeMux()
 	bridgeUI := newInkJoyBridgeUI(mux, devices, hubInkjoyCache, srv, mqttLog, mqttHost, mqttPort)
+	bridgeUI.current = relay.hub
 	_ = bridgeUI
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

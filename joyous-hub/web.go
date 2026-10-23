@@ -3004,9 +3004,13 @@ async function submitAdopt(){
 // ── InkJoy tab ───────────────────────────────────────────────────────────────
 let ijDevices=[], ijCurrentId=null, ijPreviewKey=null;
 
+function ijHasDisplayPreview(d){
+  return !!d.display_preview_at&&!d.display_preview_at.startsWith('0001-');
+}
+
 function ijPreviewSpec(d){
   if(d.last_image_id) return 'album:'+d.last_image_id;
-  if(d.display_preview_at) return 'ext:'+d.display_preview_at;
+  if(ijHasDisplayPreview(d)) return 'ext:'+d.display_preview_at;
   return '';
 }
 
@@ -3018,7 +3022,7 @@ function ijPreviewURL(d){
     const qs=q.toString();
     return '/images/'+encodeURIComponent(d.last_image_id)+'/frame-preview'+(qs?'?'+qs:'');
   }
-  if(d.display_preview_at){
+  if(ijHasDisplayPreview(d)){
     return '/api/devices/'+encodeURIComponent(d.id)+'/display-preview?t='+encodeURIComponent(d.display_preview_at);
   }
   return '';

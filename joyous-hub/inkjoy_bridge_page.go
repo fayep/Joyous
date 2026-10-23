@@ -223,6 +223,14 @@ function updateStatus(d){
       previewKey=key;
       li.innerHTML='<img class="last-image-preview" src="'+url+'" alt="currently displayed">';
     }
+  }else if(d.display_preview_at&&!d.display_preview_at.startsWith('0001-')){
+    // A relayed cloud play, or a 28.5" (IJI3) play: the hub previews the played file.
+    const key='ext:'+d.display_preview_at;
+    if(key!==previewKey){
+      previewKey=key;
+      const url='/api/devices/'+encodeURIComponent(d.id)+'/display-preview?t='+encodeURIComponent(d.display_preview_at);
+      li.innerHTML='<img class="last-image-preview" src="'+url+'" alt="currently displayed">';
+    }
   }else if(previewKey!==null){
     previewKey=null;
     li.innerHTML='<p style="color:#888;font-size:.9rem">Nothing sent yet.</p>';
