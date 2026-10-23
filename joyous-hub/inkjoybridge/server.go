@@ -33,10 +33,12 @@ type DeviceEvents interface {
 	MarkShutdown(mac string, info SleepInfo)
 }
 
-// PlayRelay handles cloud play URL rewriting and external play tracking.
+// PlayRelay handles cloud play URL rewriting and external play tracking, and
+// the same download-and-serve-locally relay for waveform pushes (wf_update).
 type PlayRelay interface {
 	RewritePlay(mac string, payload []byte) ([]byte, error)
 	OnExternalPlay(mac string, payload []byte)
+	RewriteWFUpdate(mac string, payload []byte) ([]byte, error)
 }
 
 // CaptureSink records unknown or intercepted MQTT traffic.
@@ -110,6 +112,7 @@ func NewServer(cfg Config) *Server {
 	if cfg.PlayRelay != nil {
 		s.bridges.onExternalPlay = cfg.PlayRelay.OnExternalPlay
 		s.bridges.rewritePlay = cfg.PlayRelay.RewritePlay
+		s.bridges.rewriteWF = cfg.PlayRelay.RewriteWFUpdate
 	}
 	s.hook = &frameHook{
 		bridges:       s.bridges,
@@ -195,6 +198,7 @@ type bridgeSet struct {
 	devices         DeviceEvents
 	onExternalPlay  func(mac string, payload []byte)
 	rewritePlay     func(mac string, payload []byte) ([]byte, error)
+	rewriteWF       func(mac string, payload []byte) ([]byte, error)
 	m               map[string]*upstreamBridge
 	localOnly       sync.Map // mac → struct{} for Seeed H:9 etc. (no cloud upstream)
 	acks            loginAcks
@@ -356,6 +360,10 @@ func (b *upstreamBridge) handleCloudPayload(payload []byte) {
 
 	writeCaptureErr("downstream", b.set.capture, b.set.captureRecordDownstream(b.mac, action, payload))
 	b.set.logCloudIn(b.mac, payload, "")
+	if action == "wf_update" {
+		// Rare and worth keeping: the waveform file's URL, size and CRC.
+		log.Printf("[%s] wf_update from cloud: %s", b.mac, payload)
+	}
 	if action == "login_ack" {
 		b.set.noteCloudLoginAck(b.mac, payload)
 	}
@@ -368,11 +376,18 @@ func (b *upstreamBridge) handleCloudPayload(payload []byte) {
 			forwardPayload = rewritten
 		}
 	}
+	if action == "wf_update" && b.set.rewriteWF != nil {
+		if rewritten, err := b.set.rewriteWF(b.mac, payload); err != nil {
+			log.Printf("[%s] wf_update relay: %v (forwarding original)", b.mac, err)
+		} else {
+			forwardPayload = rewritten
+		}
+	}
 
 	topic := "/inkjoyap/" + b.mac
 	if b.set.mqttLog != nil {
 		note := ""
-		if action == "play" && !bytes.Equal(forwardPayload, payload) {
+		if (action == "play" || action == "wf_update") && !bytes.Equal(forwardPayload, payload) {
 			note = "local relay"
 		}
 		b.set.mqttLog.AddLocal("bridge→frame", topic, forwardPayload, note)

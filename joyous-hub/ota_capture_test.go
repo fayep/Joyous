@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -8,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -42,9 +45,13 @@ func TestOTAArtifactURL(t *testing.T) {
 	}
 }
 
-func TestOTACaptureHandle(t *testing.T) {
+func TestOTACaptureStoresEachArtifactOnce(t *testing.T) {
 	dir := t.TempDir()
-	body := []byte("FIRMWARE_BYTES")
+	// A minimal ESP-IDF app image header carrying version v9.8.7.
+	body := make([]byte, 0x100)
+	body[0] = 0xE9
+	binary.LittleEndian.PutUint32(body[0x20:], 0xABCD5432)
+	copy(body[0x30:], "v9.8.7")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/fw.bin" {
 			http.NotFound(w, r)
@@ -53,54 +60,57 @@ func TestOTACaptureHandle(t *testing.T) {
 		w.Write(body)
 	}))
 	defer srv.Close()
-
-	host, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	host, portStr, _ := net.SplitHostPort(srv.Listener.Addr().String())
 	var port int
 	fmt.Sscanf(portStr, "%d", &port)
-
-	payload, _ := json.Marshal(map[string]any{
-		"action": "ota",
-		"msgid":  "12345",
-		"data": map[string]any{
-			"host": host,
-			"port": port,
-			"path": "/fw.bin",
-		},
-	})
+	push := func(msgid string) []byte {
+		b, _ := json.Marshal(map[string]any{"action": "ota", "msgid": msgid,
+			"data": map[string]any{"host": host, "port": port, "path": "/fw.bin"}})
+		return b
+	}
 
 	c := NewOTACapture(dir)
-	c.Handle("AABBCCDDEEFF", "ota", payload)
-	c.Handle("AABBCCDDEEFF", "ota", payload)
-
+	for _, id := range []string{"1", "1", "2", "3"} { // a repeated msgid and two re-pushes
+		c.Handle("AABBCCDDEEFF", "ota", push(id))
+	}
+	var recs []otaPush
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		matches, _ := filepath.Glob(filepath.Join(dir, "ota_*.bin"))
-		if len(matches) == 1 {
-			data, err := os.ReadFile(matches[0])
-			if err == nil && string(data) == string(body) {
-				jsonPath := matches[0][:len(matches[0])-4] + ".json"
-				if _, err := os.Stat(jsonPath); err != nil {
-					t.Fatalf("missing payload json: %v", err)
+		recs = nil
+		if b, err := os.ReadFile(filepath.Join(dir, otaPushLog)); err == nil {
+			for _, line := range bytes.Split(bytes.TrimSpace(b), []byte("\n")) {
+				var r otaPush
+				if json.Unmarshal(line, &r) == nil {
+					recs = append(recs, r)
 				}
-				return
 			}
+		}
+		if len(recs) == 3 {
+			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("expected downloaded firmware file")
-}
-
-func TestOTACaptureDedupMsgid(t *testing.T) {
-	dir := t.TempDir()
-	c := NewOTACapture(dir)
-	payload := []byte(`{"action":"ota","msgid":"same","data":{"host":"x","port":8080,"path":"/a"}}`)
-	c.Handle("MAC", "ota", payload)
-	c.Handle("MAC", "ota", payload)
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
-	if len(files) != 1 {
-		t.Fatalf("expected 1 payload file, got %d", len(files))
+	if len(recs) != 3 {
+		t.Fatalf("want 3 push records (one per msgid), got %d", len(recs))
+	}
+	bins, _ := filepath.Glob(filepath.Join(dir, "ota_*.bin"))
+	if len(bins) != 1 {
+		t.Fatalf("want 1 stored artifact, got %v", bins)
+	}
+	name := filepath.Base(bins[0])
+	if !strings.HasPrefix(name, "ota_v9.8.7_") {
+		t.Errorf("artifact %q should carry the app version", name)
+	}
+	newCount := 0
+	for _, r := range recs {
+		if r.Artifact != name || r.Bytes != int64(len(body)) || r.Error != "" {
+			t.Errorf("record %+v", r)
+		}
+		if r.New {
+			newCount++
+		}
+	}
+	if newCount != 1 {
+		t.Errorf("exactly one push should be marked new, got %d", newCount)
 	}
 }

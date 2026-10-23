@@ -66,14 +66,18 @@ func (a AllowList) Allows(action string) bool {
 // DefaultUpstreamAllowCSV is the default frame→broker (upstream) allow list.
 // "sleep" (not "shutdown" — an earlier guess that a 2026-07 capture proved
 // wrong; see research/firmware-notes.md) is the real frame→broker power-off
-// action name.
+// action name. wf_update_ack answers the cloud's waveform push (see
+// DefaultDownstreamAllowCSV).
 func DefaultUpstreamAllowCSV() string {
-	return "login,heart,play_ack,display_start,display_done,fpga_ota_ack,sleep,image_refresh_ack,ota_ack,wifi_sleep_ack,mqtt_config_ack"
+	return "login,heart,play_ack,display_start,display_done,fpga_ota_ack,sleep,image_refresh_ack,ota_ack,wifi_sleep_ack,mqtt_config_ack,wf_update_ack"
 }
 
 // DefaultDownstreamAllowCSV is the default broker→frame passthrough list.
+// wf_update delivers the panel waveform file (/spiffs/epd.wf, which the
+// frame downloads over HTTPS and streams to the FPGA); it is passed through
+// so frames can gain waveforms, e.g. more inks, from the vendor.
 func DefaultDownstreamAllowCSV() string {
-	return "login_ack,heart_ack,play,device_config,shutdown_ack,image_refresh_ack,wifi_sleep"
+	return "login_ack,heart_ack,play,device_config,shutdown_ack,image_refresh_ack,wifi_sleep,wf_update"
 }
 
 // DefaultInterceptCSV is the default broker→frame intercept list (bridge handles locally).

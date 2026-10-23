@@ -139,8 +139,11 @@ func registerInkJoyCacheRoutes(mux *http.ServeMux, hub *Hub, cache *InkJoyCache)
 		}
 		file := r.PathValue("file")
 		ext := ".bin"
-		if strings.HasSuffix(file, ".png") {
+		switch {
+		case strings.HasSuffix(file, ".png"):
 			ext = ".png"
+		case strings.HasSuffix(file, wfCacheExt):
+			ext = wfCacheExt
 		}
 		name := strings.TrimSuffix(file, ext)
 		cache.ServeHTTPExt(w, r, r.PathValue("mac"), name, ext)

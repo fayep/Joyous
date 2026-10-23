@@ -145,6 +145,13 @@ func (a *playRelayAdapter) RewritePlay(mac string, payload []byte) ([]byte, erro
 	return a.hub.rewriteExternalPlay(mac, payload)
 }
 
+func (a *playRelayAdapter) RewriteWFUpdate(mac string, payload []byte) ([]byte, error) {
+	if a.hub == nil {
+		return payload, nil
+	}
+	return a.hub.rewriteWFUpdate(mac, payload)
+}
+
 func (a *playRelayAdapter) OnExternalPlay(mac string, payload []byte) {
 	if a.hub != nil {
 		a.hub.handleExternalPlay(mac, payload)
