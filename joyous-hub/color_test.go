@@ -148,6 +148,8 @@ func TestLegacyColorJSONUnmarshal(t *testing.T) {
 	}
 }
 
+// The fit maps the scene onto each panel's own black..white range (the stops
+// setting only shapes the ray pass's working space).
 func TestLABDynamicRangeFit(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 128, 8))
 	for x := 0; x < 128; x++ {
@@ -163,19 +165,14 @@ func TestLABDynamicRangeFit(t *testing.T) {
 	pipe := ResolveColorPipeline(defaultColorConfig())
 	pipe.LABDynamicRangeEnabled = true
 	pipe.LABDynamicRangeStops = 4
-	out := ApplyLABProcessing(img, pipe, PaletteSamsungDisplay[:], true)
-	outLo, outHi := luminancePercentiles(out, 0.01, 0.99)
-	got := labLSpanStops(outLo, outHi)
-	if got > 4.6 || got < 2.8 {
-		t.Fatalf("output span %.2f stops (L %.1f–%.1f), want ~4", got, outLo, outHi)
-	}
-
-	pipe.InkJoyDisplay = PaletteInkJoyDisplay
-	inkOut := ApplyLABProcessing(img, pipe, PaletteInkJoyDisplay[:], true)
-	inkOutLo, inkOutHi := luminancePercentiles(inkOut, 0.01, 0.99)
-	inkGot := labLSpanStops(inkOutLo, inkOutHi)
-	if inkGot > 4.6 || inkGot < 2.8 {
-		t.Fatalf("InkJoy output span %.2f stops (L %.1f–%.1f), want ~4", inkGot, inkOutLo, inkOutHi)
+	for name, pal := range map[string][][3]float64{"samsung": PaletteSamsungDisplay[:], "inkjoy": PaletteInkJoyDisplay[:]} {
+		lo, hi := displayPaletteDRRange(pal)
+		out := ApplyLABProcessing(img, pipe, pal, true)
+		outLo, outHi := luminancePercentiles(out, 0.01, 0.99)
+		got, want := labLSpanStops(outLo, outHi), labLSpanStops(lo, hi)
+		if math.Abs(got-want) > 0.3 {
+			t.Errorf("%s output span %.2f stops (L %.1f–%.1f), want the panel's %.2f (L %.1f–%.1f)", name, got, outLo, outHi, want, lo, hi)
+		}
 	}
 }
 
