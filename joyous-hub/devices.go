@@ -70,11 +70,12 @@ type Device struct {
 	Panel            string    `json:"panel,omitempty"`             // panel SKU from login (e.g. "10", "28.5"); see inkjoybridge.PanelGeometries
 	ProtocolT        int       `json:"protocol_t,omitempty"`        // T from login ver; see inkjoybridge.InkJoyPNGProtocolT
 	DeepSleepActive  bool      `json:"deep_sleep_active,omitempty"` // samsung: overnight deep sleep (button wake)
-	// ColorOverride is a per-device snapshot of the 6 ink RGB values, captured at
-	// save time. nil means "use the bridge's current InkJoy display palette."
+	// ColorOverride is a per-device snapshot of the panel's ink RGB values (one
+	// per ink, in palette-index order: 6, or 8 for the 28.5" — see InkNames),
+	// captured at save time. nil means "use the bridge's current display palette."
 	// Unlike the bridge-wide ColorConfig, this does not track later bridge edits —
 	// re-save (or reset) to pick up a new bridge default.
-	ColorOverride *[6]PaletteRGB `json:"color_override,omitempty"`
+	ColorOverride []PaletteRGB `json:"color_override,omitempty"`
 	// DeviceReportedP2 is the device's own factory/NVS P2 calibration, reported
 	// at login (see inkjoybridge.LoginInfo.P2). Distinct from ColorOverride
 	// (a human-saved override via the calibration UI) — this is what the UI
@@ -420,9 +421,22 @@ func (r *DeviceRegistry) SetPortrait(id string, portrait bool) bool {
 	return true
 }
 
+// inkNames28 names paletteInkJoy28Display's 8 inks: the shared 6, then the two
+// only the 28.5" panel has.
+var inkNames28 = append(append([]string(nil), colorNames...), "goldenrod", "orange")
+
+// InkNames lists this device's panel inks in palette-index order; its length
+// is the size a ColorOverride must have.
+func (d *Device) InkNames() []string {
+	if d.Type != DeviceTypeSamsung && d.HardwareModel == inkjoybridge.HardwareModelInkJoy28 {
+		return inkNames28
+	}
+	return colorNames
+}
+
 // SetColorOverride stores (or, if palette is nil, clears) a per-device ink
 // palette snapshot. Returns false if the device isn't registered.
-func (r *DeviceRegistry) SetColorOverride(id string, palette *[6]PaletteRGB) bool {
+func (r *DeviceRegistry) SetColorOverride(id string, palette []PaletteRGB) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d, ok := r.m[id]

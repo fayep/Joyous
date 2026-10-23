@@ -68,7 +68,7 @@ var hiBytes8 = [8]byte{0x01, 0x02, 0x03, 0x04, 0x06, 0x07, 0x00, 0x05}
 // natively portrait: portrait=false means the frame is hung landscape, so the
 // photo is cropped √2:1 and rotated 90° CCW onto the panel (same convention as
 // the 10"'s portrait rotate, and as drawWeatherOverlay's portrait flag).
-func (s *ImageStore) ServeInkJoy28IJI3(id string, portrait bool, colorOverride *[6]PaletteRGB) ([]byte, error) {
+func (s *ImageStore) ServeInkJoy28IJI3(id string, portrait bool, colorOverride []PaletteRGB) ([]byte, error) {
 	return s.serveInkJoy28IJI3(id, portrait, nil, colorOverride)
 }
 
@@ -81,7 +81,7 @@ func (s *ImageStore) ServeInkJoy28IJI3(id string, portrait bool, colorOverride *
 // cache by overlay token, so the clean render remains under its own filename.
 // The mutate receives the panel-native 2160x3060 image; for a landscape frame
 // that is the photo rotated CCW, so the mutator must rotate its overlay to match.
-func (s *ImageStore) ServeInkJoy28IJI3Overlay(id string, portrait bool, mutate overlayFrameMutator, colorOverride *[6]PaletteRGB) ([]byte, error) {
+func (s *ImageStore) ServeInkJoy28IJI3Overlay(id string, portrait bool, mutate overlayFrameMutator, colorOverride []PaletteRGB) ([]byte, error) {
 	return s.serveInkJoy28IJI3(id, portrait, mutate, colorOverride)
 }
 
@@ -96,7 +96,7 @@ func (s *ImageStore) ServeInkJoy28IJI3Overlay(id string, portrait bool, mutate o
 // Non-overlay pixels are already exact palette colours, so they map to
 // themselves (untouched); only the overlay marks change, landing as crisp flat
 // black/white ink. Reusing the cached base dither makes overlay renders fast.
-func (s *ImageStore) serveInkJoy28IJI3(id string, portrait bool, mutate overlayFrameMutator, colorOverride *[6]PaletteRGB) ([]byte, error) {
+func (s *ImageStore) serveInkJoy28IJI3(id string, portrait bool, mutate overlayFrameMutator, colorOverride []PaletteRGB) ([]byte, error) {
 	base, err := s.inkjoy28BaseIndices(id, portrait, colorOverride)
 	if err != nil {
 		return nil, err
@@ -104,20 +104,21 @@ func (s *ImageStore) serveInkJoy28IJI3(id string, portrait bool, mutate overlayF
 	if mutate == nil {
 		return scanWrapInkJoy28(base)
 	}
-	display := inkjoy28IndicesToDisplayRGBA(base)
+	pal := inkjoy28Palette(colorOverride)
+	display := inkjoy28IndicesToDisplayRGBA(base, pal)
 	// flatRGB=false: the 28.5" path has no flat-calibration-wipe concept.
 	overlaid, err := mutate(display, false)
 	if err != nil {
 		return nil, err
 	}
-	return scanWrapInkJoy28(inkjoy28StampOverlay(base, overlaid))
+	return scanWrapInkJoy28(inkjoy28StampOverlay(base, overlaid, pal))
 }
 
 // inkjoy28BaseIndices returns the dithered 8-ink index grid for the photo,
 // cached in-process per (image, orientation, colour override) so overlay/date
 // re-renders reuse the dither instead of repeating the ~90s pass. A redeploy
 // (new process) drops the cache, so a palette/pipeline code change re-dithers once.
-func (s *ImageStore) inkjoy28BaseIndices(id string, portrait bool, colorOverride *[6]PaletteRGB) ([][]byte, error) {
+func (s *ImageStore) inkjoy28BaseIndices(id string, portrait bool, colorOverride []PaletteRGB) ([][]byte, error) {
 	key := fmt.Sprintf("%s|p=%t|%s", id, portrait, inkjoy28OverrideKey(colorOverride))
 	if v, ok := inkjoy28IdxCache.get(key); ok {
 		return v, nil
@@ -135,10 +136,10 @@ func (s *ImageStore) inkjoy28BaseIndices(id string, portrait bool, colorOverride
 		return nil, err
 	}
 	img = inkjoy28PanelImage(img, meta, portrait)
-	// Dither against the measured 8-ink 28.5" palette (not pipe.InkJoyDisplay,
-	// the 10"'s 6-ink set); goldenrod/orange (6,7) widen the dither gamut.
+	// Dither against the 8-ink 28.5" palette (not pipe.InkJoyDisplay, the 10"'s
+	// 6-ink set); goldenrod/orange (6,7) widen the dither gamut.
 	pipe := s.colorPipelineForMetaOverride(meta, colorOverride)
-	indices := StuckiTwoPalette(img, paletteInkJoy28Display[:], pipe, false, stuckiOptionsInkJoy(pipe))
+	indices := StuckiTwoPalette(img, inkjoy28Palette(colorOverride), pipe, false, stuckiOptionsInkJoy(pipe))
 	if len(indices) != ij28H || len(indices[0]) != ij28W {
 		return nil, fmt.Errorf("inkjoy28: dither grid %dx%d, want %dx%d",
 			len(indices[0]), len(indices), ij28W, ij28H)
@@ -170,13 +171,24 @@ func inkjoy28PanelImage(img image.Image, meta ImageMeta, portrait bool) image.Im
 	return img
 }
 
-// inkjoy28IndicesToDisplayRGBA paints each ink index back to its display colour.
-func inkjoy28IndicesToDisplayRGBA(indices [][]byte) *image.RGBA {
+// inkjoy28Palette is the 28.5" dither palette: the device's override when it
+// holds all 8 inks, else the measured paletteInkJoy28Display. A 6-ink override
+// (saved before overrides followed the panel's ink count) is ignored, as it
+// always was here.
+func inkjoy28Palette(override []PaletteRGB) [][3]float64 {
+	if len(override) == len(paletteInkJoy28Display) {
+		return paletteFromRGBs(override)
+	}
+	return paletteInkJoy28Display[:]
+}
+
+// inkjoy28IndicesToDisplayRGBA paints each ink index back to its display colour in pal.
+func inkjoy28IndicesToDisplayRGBA(indices [][]byte, pal [][3]float64) *image.RGBA {
 	out := image.NewRGBA(image.Rect(0, 0, ij28W, ij28H))
 	for y := 0; y < ij28H; y++ {
 		row := indices[y]
 		for x := 0; x < ij28W; x++ {
-			c := paletteInkJoy28Display[row[x]]
+			c := pal[row[x]]
 			o := out.PixOffset(x, y)
 			out.Pix[o] = uint8(c[0])
 			out.Pix[o+1] = uint8(c[1])
@@ -191,8 +203,8 @@ func inkjoy28IndicesToDisplayRGBA(indices [][]byte) *image.RGBA {
 // black/white ink only. Each pixel keeps its photo ink unless the overlaid colour
 // is nearer to black or white, so the photo dither is never touched and soft
 // text edges / the drop shadow can't snap to a third ink (yellow, orange, ...).
-func inkjoy28StampOverlay(base [][]byte, overlaid image.Image) [][]byte {
-	const black, white = 0, 1 // paletteInkJoy28Display indices
+func inkjoy28StampOverlay(base [][]byte, overlaid image.Image, pal [][3]float64) [][]byte {
+	const black, white = 0, 1 // palette indices
 	rgba := asRGBA(overlaid)
 	b := rgba.Bounds()
 	indices := make([][]byte, ij28H)
@@ -202,7 +214,7 @@ func inkjoy28StampOverlay(base [][]byte, overlaid image.Image) [][]byte {
 			o := rgba.PixOffset(b.Min.X+x, b.Min.Y+y)
 			rgb := [3]float64{float64(rgba.Pix[o]), float64(rgba.Pix[o+1]), float64(rgba.Pix[o+2])}
 			photo := base[y][x]
-			candidates := [][3]float64{paletteInkJoy28Display[photo], paletteInkJoy28Display[black], paletteInkJoy28Display[white]}
+			candidates := [][3]float64{pal[photo], pal[black], pal[white]}
 			indices[y][x] = [3]byte{photo, black, white}[nearestColor(rgb, candidates)]
 		}
 	}
@@ -269,11 +281,11 @@ func (c *inkjoy28IndexCache) put(key string, v [][]byte) {
 	}
 }
 
-func inkjoy28OverrideKey(o *[6]PaletteRGB) string {
+func inkjoy28OverrideKey(o []PaletteRGB) string {
 	if o == nil {
 		return "nil"
 	}
-	return fmt.Sprintf("%v", *o)
+	return fmt.Sprintf("%v", o)
 }
 
 // writeInkJoy28IJI3 wraps a raw 2160x3060 8bpp plane in the IJI3 container:

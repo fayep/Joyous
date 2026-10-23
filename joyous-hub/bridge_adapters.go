@@ -263,6 +263,8 @@ func (r *DeviceRegistry) applyBridgeDeviceLocked(bridgeID string, bd protocol.Br
 	d.DisplayWidth = bd.DisplayWidth
 	d.DisplayHeight = bd.DisplayHeight
 	d.DeepSleepActive = bd.DeepSleepActive
+	d.HardwareModel = bd.HardwareModel
+	d.Panel = bd.Panel
 	if d.Type == DeviceTypeSamsung {
 		ApplySamsungConnected(d)
 	}
@@ -293,6 +295,8 @@ func deviceToBridge(d Device) protocol.BridgeDevice {
 		DisplayWidth:      d.DisplayWidth,
 		DisplayHeight:     d.DisplayHeight,
 		DeepSleepActive:   d.DeepSleepActive,
+		HardwareModel:     d.HardwareModel,
+		Panel:             d.Panel,
 	}
 }
 

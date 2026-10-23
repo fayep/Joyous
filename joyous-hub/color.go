@@ -294,6 +294,29 @@ func resolvePalette(preset string, custom [6]PaletteRGB, presets map[string][6][
 	return PaletteInkJoyDisplay
 }
 
+// paletteOverride6 resolves a per-device override (Device.ColorOverride) for a
+// 6-ink panel. ok is false when there is no override or it was saved for a
+// panel with a different ink count (the 28.5"'s 8), so callers keep their default.
+func paletteOverride6(o []PaletteRGB) ([6][3]float64, bool) {
+	if len(o) != 6 {
+		return [6][3]float64{}, false
+	}
+	return paletteFromRGB([6]PaletteRGB(o)), true
+}
+
+// paletteFromRGBs is paletteFromRGB for any ink count.
+func paletteFromRGBs(custom []PaletteRGB) [][3]float64 {
+	out := make([][3]float64, len(custom))
+	for i, c := range custom {
+		out[i] = [3]float64{
+			float64(clampInt(c[0], 0, 255)),
+			float64(clampInt(c[1], 0, 255)),
+			float64(clampInt(c[2], 0, 255)),
+		}
+	}
+	return out
+}
+
 func paletteFromRGB(custom [6]PaletteRGB) [6][3]float64 {
 	var out [6][3]float64
 	for i := range out {
@@ -359,6 +382,15 @@ func validatePresetName(preset string) error {
 	default:
 		return fmt.Errorf("unknown palette preset %q", preset)
 	}
+}
+
+// paletteSliceToJSON is paletteToJSON for any ink count.
+func paletteSliceToJSON(p [][3]float64) []PaletteRGB {
+	out := make([]PaletteRGB, len(p))
+	for i, c := range p {
+		out[i] = PaletteRGB{int(c[0]), int(c[1]), int(c[2])}
+	}
+	return out
 }
 
 func paletteToJSON(p [6][3]float64) [6]PaletteRGB {

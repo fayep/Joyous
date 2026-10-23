@@ -124,10 +124,10 @@ func (s *ImageStore) colorPipelineForID(id string) ColorPipeline {
 
 // colorPipelineForMetaOverride is colorPipelineForMeta with a device's InkJoy ink
 // palette substituted in, if override is non-nil (see Device.ColorOverride).
-func (s *ImageStore) colorPipelineForMetaOverride(meta ImageMeta, override *[6]PaletteRGB) ColorPipeline {
+func (s *ImageStore) colorPipelineForMetaOverride(meta ImageMeta, override []PaletteRGB) ColorPipeline {
 	pipe := s.colorPipelineForMeta(meta)
-	if override != nil {
-		pipe.InkJoyDisplay = paletteFromRGB(*override)
+	if p, ok := paletteOverride6(override); ok {
+		pipe.InkJoyDisplay = p
 	}
 	return pipe
 }
@@ -238,7 +238,7 @@ func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, erro
 // the fixed frameW x frameH rotate-to-fit shape — see
 // prepareInkJoyFrameFromRaw's own comment; bridge-only, always false from
 // hub-compiled callers.
-func (s *ImageStore) ServeBinOrientationForDevice(id string, portrait bool, colorOverride *[6]PaletteRGB, cacheKeySuffix string, nativeDims bool) ([]byte, error) {
+func (s *ImageStore) ServeBinOrientationForDevice(id string, portrait bool, colorOverride []PaletteRGB, cacheKeySuffix string, nativeDims bool) ([]byte, error) {
 	cacheFile := s.cachePath(id)
 	if colorOverride != nil && cacheKeySuffix != "" {
 		cacheFile = s.cachePath(id) + "~dev-" + sanitizeCacheKey(cacheKeySuffix)
@@ -1106,7 +1106,7 @@ func (s *ImageStore) convertToBinOrientation(id string, portrait bool) ([]byte, 
 	return s.convertToBinOrientationForDevice(id, portrait, nil, false)
 }
 
-func (s *ImageStore) convertToBinOrientationForDevice(id string, portrait bool, colorOverride *[6]PaletteRGB, nativeDims bool) ([]byte, error) {
+func (s *ImageStore) convertToBinOrientationForDevice(id string, portrait bool, colorOverride []PaletteRGB, nativeDims bool) ([]byte, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return nil, err
@@ -1160,7 +1160,7 @@ func (s *ImageStore) ServeBinOrientationOverlay(id string, portrait bool, token 
 // ServeBinOrientationOverlayForDevice is ServeBinOrientationOverlay with an
 // optional per-device ink palette override — see ServeBinOrientationForDevice.
 // nativeDims — see ServeBinOrientationForDevice's own comment.
-func (s *ImageStore) ServeBinOrientationOverlayForDevice(id string, portrait bool, token string, mutate overlayFrameMutator, colorOverride *[6]PaletteRGB, cacheKeySuffix string, nativeDims bool) ([]byte, error) {
+func (s *ImageStore) ServeBinOrientationOverlayForDevice(id string, portrait bool, token string, mutate overlayFrameMutator, colorOverride []PaletteRGB, cacheKeySuffix string, nativeDims bool) ([]byte, error) {
 	cacheFile := s.overlayCacheFile(id, token, portrait)
 	if colorOverride != nil && cacheKeySuffix != "" {
 		cacheFile += "~dev-" + sanitizeCacheKey(cacheKeySuffix)

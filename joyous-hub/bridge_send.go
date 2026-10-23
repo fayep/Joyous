@@ -241,28 +241,29 @@ func bridgeEncodeInkJoy(
 }
 
 // paletteToProtocolRGB / protocolRGBToPalette convert between the hub's
-// Device.ColorOverride storage type and the protocol wire type ([6]RGB),
-// which has no dependency on the main package's PaletteRGB.
-func paletteToProtocolRGB(p *[6]PaletteRGB) *[6]protocol.RGB {
+// Device.ColorOverride storage type and the protocol wire type ([]RGB, one
+// entry per ink — 6, or 8 for the 28.5"), which has no dependency on the main
+// package's PaletteRGB.
+func paletteToProtocolRGB(p []PaletteRGB) []protocol.RGB {
 	if p == nil {
 		return nil
 	}
-	var out [6]protocol.RGB
+	out := make([]protocol.RGB, len(p))
 	for i, c := range p {
 		out[i] = protocol.RGB{c[0], c[1], c[2]}
 	}
-	return &out
+	return out
 }
 
-func protocolRGBToPalette(p *[6]protocol.RGB) *[6]PaletteRGB {
+func protocolRGBToPalette(p []protocol.RGB) []PaletteRGB {
 	if p == nil {
 		return nil
 	}
-	var out [6]PaletteRGB
+	out := make([]PaletteRGB, len(p))
 	for i, c := range p {
 		out[i] = PaletteRGB{c[0], c[1], c[2]}
 	}
-	return &out
+	return out
 }
 
 func overlayPhotoNameFromMeta(meta ImageMeta, cfg OverlayConfig) string {
@@ -432,8 +433,8 @@ func bridgeEncodeSamsung(
 	// per pixel) — never SamsungSend (P1, the fixed RGB written into the PNG
 	// that the panel firmware itself recognizes as "ink N"; overriding that
 	// would make the panel mis-identify inks and re-process/re-dither).
-	if colorOverride := protocolRGBToPalette(body.ColorOverride); colorOverride != nil {
-		pipe.SamsungDisplay = paletteFromRGB(*colorOverride)
+	if p, ok := paletteOverride6(protocolRGBToPalette(body.ColorOverride)); ok {
+		pipe.SamsungDisplay = p
 	}
 	if body.OverlayToken != "" {
 		cfg, weather, err := bridgeOverlayContext(ctx, hub, body, dev.Portrait)

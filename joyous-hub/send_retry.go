@@ -35,7 +35,7 @@ type inkjoyRetryEntry struct {
 	imageID       string
 	overlayToken  string
 	hubBaseURL    string
-	colorOverride *[6]protocol.RGB
+	colorOverride []protocol.RGB
 	attempts      int
 	created       time.Time
 	lastAttempt   time.Time
@@ -89,11 +89,11 @@ func (r *InkJoySendRetry) Track(sendID, deviceID, imageID, overlayToken string) 
 
 // TrackFromBridge is Track with hub_base_url and the hub-resolved color
 // override for bridge-side encode retries — see protocol.SendImageBody.ColorOverride.
-func (r *InkJoySendRetry) TrackFromBridge(sendID, deviceID, imageID, overlayToken, hubBaseURL string, colorOverride *[6]protocol.RGB) {
+func (r *InkJoySendRetry) TrackFromBridge(sendID, deviceID, imageID, overlayToken, hubBaseURL string, colorOverride []protocol.RGB) {
 	r.track(sendID, deviceID, imageID, overlayToken, hubBaseURL, colorOverride)
 }
 
-func (r *InkJoySendRetry) track(sendID, deviceID, imageID, overlayToken, hubBaseURL string, colorOverride *[6]protocol.RGB) {
+func (r *InkJoySendRetry) track(sendID, deviceID, imageID, overlayToken, hubBaseURL string, colorOverride []protocol.RGB) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if oldSendID, ok := r.byDevice[deviceID]; ok && oldSendID != sendID {
