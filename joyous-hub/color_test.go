@@ -239,15 +239,15 @@ func TestLABDynamicRangeFitFromBlackForRay(t *testing.T) {
 	}
 }
 
-// remapRayDRSpan stretches the ray pass's black-anchored working span over
-// the panel's full range: its floor lands on panel black, its ceiling on panel
-// white, and order is preserved in between.
+// remapRayDRSpan stretches the ray pass's black-anchored working span (fitted
+// in the 10" reference range on every panel) over the target panel's full
+// range: the span floor lands on that panel's black, the ceiling on its white,
+// and order is preserved in between.
 func TestRemapRayDRSpanStretchesToPanelRange(t *testing.T) {
-	pal := PaletteInkJoyDisplay[:]
 	pipe := ResolveColorPipeline(defaultColorConfig())
 	pipe.LABDynamicRangeStops = 3.5
-	outLoL, outHiL, stops := drFitParams(pipe, pal)
-	botY, topY := drOutputSpanY(outLoL, outHiL, stops, true)
+	fitLoL, fitHiL, stops := drFitParams(pipe, rayFitPalette)
+	botY, topY := drOutputSpanY(fitLoL, fitHiL, stops, true)
 	ls := []float64{linearYToLabL(botY), 0, 0, 0, linearYToLabL(topY)}
 	for i := 1; i < 4; i++ {
 		ls[i] = ls[0] + (ls[4]-ls[0])*float64(i)/4
@@ -257,23 +257,26 @@ func TestRemapRayDRSpanStretchesToPanelRange(t *testing.T) {
 		rgb := labToSRGB([3]float64{L, 0, 0})
 		img.SetRGBA(x, 0, color.RGBA{floatTo8(rgb[0]), floatTo8(rgb[1]), floatTo8(rgb[2]), 255})
 	}
-	out := remapRayDRSpan(img, pipe, pal)
-	prev := -1.0
-	for x := range ls {
-		c := out.(*image.RGBA).RGBAAt(x, 0)
-		L := srgbToLAB([3]float64{float64(c.R) / 255, float64(c.G) / 255, float64(c.B) / 255})[0]
-		if L <= prev {
-			t.Errorf("x=%d: L* %.1f not above %.1f (order lost)", x, L, prev)
-		}
-		prev = L
-		switch x {
-		case 0:
-			if math.Abs(L-outLoL) > 1.5 {
-				t.Errorf("span floor -> L*%.1f, want panel black L*%.1f", L, outLoL)
+	for name, pal := range map[string][][3]float64{"10in": PaletteInkJoyDisplay[:], "28in": paletteInkJoy28Display[:]} {
+		outLoL, outHiL, _ := drFitParams(pipe, pal)
+		out := remapRayDRSpan(img, pipe, rayFitPalette, pal)
+		prev := -1.0
+		for x := range ls {
+			c := out.(*image.RGBA).RGBAAt(x, 0)
+			L := srgbToLAB([3]float64{float64(c.R) / 255, float64(c.G) / 255, float64(c.B) / 255})[0]
+			if L <= prev {
+				t.Errorf("%s x=%d: L* %.1f not above %.1f (order lost)", name, x, L, prev)
 			}
-		case len(ls) - 1:
-			if math.Abs(L-outHiL) > 1.5 {
-				t.Errorf("span ceiling (L*%.1f) -> L*%.1f, want panel white L*%.1f", ls[x], L, outHiL)
+			prev = L
+			switch x {
+			case 0:
+				if math.Abs(L-outLoL) > 1.5 {
+					t.Errorf("%s: span floor -> L*%.1f, want panel black L*%.1f", name, L, outLoL)
+				}
+			case len(ls) - 1:
+				if math.Abs(L-outHiL) > 1.5 {
+					t.Errorf("%s: span ceiling (L*%.1f) -> L*%.1f, want panel white L*%.1f", name, ls[x], L, outHiL)
+				}
 			}
 		}
 	}

@@ -1003,24 +1003,29 @@ func stuckiEdgeAttenuation(lumA, lumB, preserve float64) float64 {
 // Map indices to send values with RenderIndicesToRGB (Samsung P1) or indicesToHi (InkJoy).
 func StuckiTwoPalette(img image.Image, displayPalette [][3]float64, pipe ColorPipeline, flatRGB bool, opts stuckiOptions) [][]byte {
 	src := img
-	// The ray pass was tuned on the black-anchored DR fit, whose highlights sit
-	// well under panel white; fed brighter output, it reads most of a face as
-	// blown and flattens it to one skin tone. So people photos (the only ones
-	// ray runs on) are fitted from black, run through ray in that space, then
-	// stretched over the panel's full black..white range.
+	// The ray pass was tuned on the 10"'s black-anchored DR fit, whose
+	// highlights sit well under panel white (L*≈51 at 3.5 stops); its face/blown
+	// thresholds are absolute L*. Fed brighter output it flattens faces, and on a
+	// panel with a lighter black (28.5": 3.5 stops from L*19 reaches L*≈65) it
+	// pulls the skin around a specular highlight down and leaves a hard-edged
+	// patch. So people photos (the only ones ray runs on) are fitted from black
+	// in the 10" range on every panel, run through ray there, then stretched over
+	// the actual panel's full black..white range.
 	ray := shouldApplyInkAffinityRay(pipe, img, flatRGB)
+	fitPalette := displayPalette
 	if ray {
 		pipe.LABDynamicRangeFromBlack = true
+		fitPalette = rayFitPalette
 	}
 	fitDR := false
 	if shouldApplyLABProcessing(pipe, img, flatRGB, opts.DynamicRange) {
-		src = ApplyLABProcessing(img, pipe, displayPalette, opts.DynamicRange)
+		src = ApplyLABProcessing(img, pipe, fitPalette, opts.DynamicRange)
 		fitDR = opts.DynamicRange && pipe.LABDynamicRangeStops > 0
 	}
 	if ray {
 		src = ApplyInkAffinityRay(src, displayPalette, pipe.LABInkAffinityRayStrength, pipe.PortraitEnhance)
 		if fitDR {
-			src = remapRayDRSpan(src, pipe, displayPalette)
+			src = remapRayDRSpan(src, pipe, rayFitPalette, displayPalette)
 		}
 		opts.SkipGreenOnSkin = true
 		if opts.EdgePreserve < 0.7 {
@@ -1416,16 +1421,21 @@ func drFitParams(pipe ColorPipeline, displayPalette [][3]float64) (outLoL, outHi
 	return outLoL, outHiL, stops
 }
 
-// remapRayDRSpan stretches an image fitted into the black-anchored DR span
-// (the ray pass's working space, where 10" highlights top out near L*51) over
-// the panel's whole black..white range, log-linearly in Y. The fit is
+// rayFitPalette sets the ray pass's working DR range on every panel: the 10"
+// it was tuned on (L* 13.9–86.0).
+var rayFitPalette = PaletteInkJoyDisplay[:]
+
+// remapRayDRSpan stretches an image fitted into fitPalette's black-anchored DR
+// span (the ray pass's working space, where highlights top out near L*51) over
+// displayPalette's whole black..white range, log-linearly in Y. The fit is
 // log-linear in the scene, so this is the same as fitting the scene to the full
 // panel range, except that the ray pass's face edits ride along unchanged
 // relative to everything else: faces keep their shading, and highlights and
 // shadows reach white and black ink.
-func remapRayDRSpan(img image.Image, pipe ColorPipeline, displayPalette [][3]float64) image.Image {
-	outLoL, outHiL, stops := drFitParams(pipe, displayPalette)
-	fromBot, fromTop := drOutputSpanY(outLoL, outHiL, stops, true)
+func remapRayDRSpan(img image.Image, pipe ColorPipeline, fitPalette, displayPalette [][3]float64) image.Image {
+	fitLoL, fitHiL, stops := drFitParams(pipe, fitPalette)
+	fromBot, fromTop := drOutputSpanY(fitLoL, fitHiL, stops, true)
+	outLoL, outHiL, _ := drFitParams(pipe, displayPalette)
 	toBot, toTop := labLToLinearY(outLoL), labLToLinearY(outHiL)
 	if fromBot == toBot && fromTop == toTop {
 		return img
