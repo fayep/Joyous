@@ -286,6 +286,12 @@ func (c *InkJoyCache) LatestImageID(mac string) (imageID, overlayToken string, o
 	return imageID, overlayToken, ok
 }
 
+// isPlayCacheFile reports a cached play: .bin (or IJI3), or .png for the
+// PNG-protocol clone frames (see InkJoyPNGProtocolT).
+func isPlayCacheFile(name string) bool {
+	return strings.HasSuffix(name, ".bin") || strings.HasSuffix(name, ".png")
+}
+
 // latestBinPath is the newest cached play file for mac, if any.
 func (c *InkJoyCache) latestBinPath(mac string) (string, time.Time, bool) {
 	dir := filepath.Join(c.dir, inkjoyMACDir(mac))
@@ -296,7 +302,7 @@ func (c *InkJoyCache) latestBinPath(mac string) (string, time.Time, bool) {
 	var name string
 	var mod time.Time
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".bin") {
+		if e.IsDir() || !isPlayCacheFile(e.Name()) {
 			continue
 		}
 		if info, err := e.Info(); err == nil && info.ModTime().After(mod) {
@@ -320,7 +326,7 @@ func (c *InkJoyCache) LatestBin(mac string) (imageID, overlayToken string, at ti
 	var latestName string
 	var latestMod time.Time
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".bin") {
+		if e.IsDir() || !isPlayCacheFile(e.Name()) {
 			continue
 		}
 		info, err := e.Info()
@@ -335,7 +341,7 @@ func (c *InkJoyCache) LatestBin(mac string) (imageID, overlayToken string, at ti
 	if latestName == "" {
 		return "", "", time.Time{}, false
 	}
-	name := strings.TrimSuffix(latestName, ".bin")
+	name := strings.TrimSuffix(strings.TrimSuffix(latestName, ".bin"), ".png")
 	name = strings.TrimSuffix(name, "-p")
 	if id, token, found := strings.Cut(name, "~"); found {
 		return id, token, latestMod, true

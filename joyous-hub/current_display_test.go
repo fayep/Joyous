@@ -87,3 +87,19 @@ func TestInkJoyCurrentDisplay(t *testing.T) {
 		t.Fatalf("IJI3 preview: %d %q %d bytes", rec.Code, rec.Header().Get("Content-Type"), rec.Body.Len())
 	}
 }
+
+// PNG-protocol clones (the 13") are sent .png plays; those count too.
+func TestInkJoyCurrentDisplayPNGFrame(t *testing.T) {
+	h := buildTestHub(t)
+	const mac = "94A990D08BE0"
+	h.devices.MarkConnected(mac)
+	id := storeSynthImage(t, h.images, 160, 120)
+	if err := h.inkjoy.SavePNG(mac, id, []byte("png")); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range h.devicesSnapshotForUI() {
+		if d.ID == mac && d.LastImageID != id {
+			t.Fatalf("13in currently displayed %q, want %q", d.LastImageID, id)
+		}
+	}
+}
