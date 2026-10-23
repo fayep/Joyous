@@ -101,12 +101,13 @@ func (s *ImageStore) ServeInkJoy28IJI3Overlay(id string, portrait bool, mutate o
 // themselves (untouched); only the overlay marks change, landing as crisp flat
 // black/white ink. Reusing the cached base dither makes overlay renders fast.
 func (s *ImageStore) serveInkJoy28IJI3(id string, portrait bool, mutate overlayFrameMutator, colorOverride []PaletteRGB) ([]byte, error) {
-	base, err := s.inkjoy28BaseIndices(id, portrait, colorOverride)
+	render, err := s.inkjoy28Render(id, portrait, colorOverride)
 	if err != nil {
 		return nil, err
 	}
+	base, steps := render.idx, s.inkjoy28Steps(render.lum)
 	if mutate == nil {
-		return scanWrapInkJoy28(base)
+		return scanWrapInkJoy28(base, steps)
 	}
 	pal := inkjoy28Palette(colorOverride)
 	display := inkjoy28IndicesToDisplayRGBA(base, pal)
@@ -115,7 +116,7 @@ func (s *ImageStore) serveInkJoy28IJI3(id string, portrait bool, mutate overlayF
 	if err != nil {
 		return nil, err
 	}
-	return scanWrapInkJoy28(inkjoy28StampOverlay(base, overlaid, pal))
+	return scanWrapInkJoy28(inkjoy28StampOverlay(base, overlaid, pal), steps)
 }
 
 // inkjoy28BaseIndices returns the dithered 8-ink index grid for the photo, so
@@ -126,45 +127,57 @@ func (s *ImageStore) serveInkJoy28IJI3(id string, portrait bool, mutate overlayF
 // pipeline — so a settings or photo change can't be served a stale render,
 // and a bridge restart or deploy doesn't force a re-dither.
 func (s *ImageStore) inkjoy28BaseIndices(id string, portrait bool, colorOverride []PaletteRGB) ([][]byte, error) {
+	r, err := s.inkjoy28Render(id, portrait, colorOverride)
+	return r.idx, err
+}
+
+// ij28Render is a cached 28.5" render: the dithered palette-index grid and the
+// photo's luminance transition steps (luminanceSteps28), both panel-native.
+type ij28Render struct {
+	idx, lum [][]byte
+}
+
+func (s *ImageStore) inkjoy28Render(id string, portrait bool, colorOverride []PaletteRGB) (ij28Render, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
-		return nil, err
+		return ij28Render{}, err
 	}
 	pipe := s.colorPipelineForMetaOverride(meta, colorOverride)
 	st, err := os.Stat(s.rawPath(id))
 	if err != nil {
-		return nil, fmt.Errorf("raw file missing for %s", id)
+		return ij28Render{}, fmt.Errorf("raw file missing for %s", id)
 	}
 	key := inkjoy28RenderKey(id, portrait, colorOverride, pipe, meta, st)
 	if v, ok := inkjoy28IdxCache.get(key); ok {
 		return v, nil
 	}
 	diskPath := filepath.Join(s.cacheDir(), id+".ij28-"+key[:16])
-	if v, err := readInkJoy28Indices(diskPath); err == nil {
+	if v, err := readInkJoy28Render(diskPath); err == nil {
 		inkjoy28IdxCache.put(key, v)
 		return v, nil
 	}
 	raw, err := os.ReadFile(s.rawPath(id))
 	if err != nil {
-		return nil, fmt.Errorf("raw file missing for %s", id)
+		return ij28Render{}, fmt.Errorf("raw file missing for %s", id)
 	}
 	img, err := decodeAnyImage(raw)
 	if err != nil {
-		return nil, err
+		return ij28Render{}, err
 	}
 	img = inkjoy28PanelImage(img, meta, portrait)
 	// Dither against the 8-ink 28.5" palette (not pipe.InkJoyDisplay, the 10"'s
 	// 6-ink set); goldenrod/orange (6,7) widen the dither gamut.
 	indices := StuckiTwoPalette(img, inkjoy28Palette(colorOverride), pipe, false, stuckiOptionsInkJoy(pipe))
 	if len(indices) != ij28H || len(indices[0]) != ij28W {
-		return nil, fmt.Errorf("inkjoy28: dither grid %dx%d, want %dx%d",
+		return ij28Render{}, fmt.Errorf("inkjoy28: dither grid %dx%d, want %dx%d",
 			len(indices[0]), len(indices), ij28W, ij28H)
 	}
-	inkjoy28IdxCache.put(key, indices)
-	if err := writeInkJoy28Indices(diskPath, indices); err != nil {
+	r := ij28Render{idx: indices, lum: luminanceSteps28(img)}
+	inkjoy28IdxCache.put(key, r)
+	if err := writeInkJoy28Render(diskPath, r); err != nil {
 		log.Printf("inkjoy28: disk cache write %s: %v", diskPath, err)
 	}
-	return indices, nil
+	return r, nil
 }
 
 // inkjoy28RenderKey hashes every input of the 28.5" dither.
@@ -173,18 +186,21 @@ func inkjoy28RenderKey(id string, portrait bool, colorOverride []PaletteRGB, pip
 	if !portrait {
 		cropKey = "√2:1"
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("v1|%s|p=%t|%s|%#v|crop=%#v|rot=%v|src=%d@%d",
+	sum := sha256.Sum256([]byte(fmt.Sprintf("v2|%s|p=%t|%s|%#v|crop=%#v|rot=%v|src=%d@%d",
 		id, portrait, inkjoy28OverrideKey(colorOverride), pipe,
 		meta.Crops[cropKey], meta.RotateOverride, src.Size(), src.ModTime().UnixNano())))
 	return hex.EncodeToString(sum[:])
 }
 
-// writeInkJoy28Indices stores an index grid as an IJI3 container of the
-// unscanned plane (LZ4 + CRC), written atomically.
-func writeInkJoy28Indices(path string, indices [][]byte) error {
+// writeInkJoy28Render stores a render as an IJI3 container of the unscanned
+// plane (LZ4 + CRC), written atomically. Each byte packs like the panel's:
+// palette index in the low 3 bits, luminance step in the upper 5.
+func writeInkJoy28Render(path string, r ij28Render) error {
 	plane := make([]byte, 0, ij28W*ij28H)
-	for _, row := range indices {
-		plane = append(plane, row...)
+	for y, row := range r.idx {
+		for x, v := range row {
+			plane = append(plane, v&7|r.lum[y][x]<<3)
+		}
 	}
 	b, err := writeInkJoy28IJI3(plane)
 	if err != nil {
@@ -200,23 +216,27 @@ func writeInkJoy28Indices(path string, indices [][]byte) error {
 	return os.Rename(tmp, path)
 }
 
-func readInkJoy28Indices(path string) ([][]byte, error) {
+func readInkJoy28Render(path string) (ij28Render, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return ij28Render{}, err
 	}
 	w, h, _, plane, err := parseIJI3(b)
 	if err != nil {
-		return nil, err
+		return ij28Render{}, err
 	}
 	if w != ij28W || h != ij28H || len(plane) != ij28W*ij28H {
-		return nil, fmt.Errorf("inkjoy28: cached grid %dx%d", w, h)
+		return ij28Render{}, fmt.Errorf("inkjoy28: cached grid %dx%d", w, h)
 	}
-	indices := make([][]byte, ij28H)
-	for y := range indices {
-		indices[y] = plane[y*ij28W : (y+1)*ij28W : (y+1)*ij28W]
+	r := ij28Render{idx: make([][]byte, ij28H), lum: make([][]byte, ij28H)}
+	for y := range r.idx {
+		src := plane[y*ij28W : (y+1)*ij28W]
+		r.idx[y], r.lum[y] = make([]byte, ij28W), make([]byte, ij28W)
+		for x, v := range src {
+			r.idx[y][x], r.lum[y][x] = v&7, v>>3
+		}
 	}
-	return indices, nil
+	return r, nil
 }
 
 // inkjoy28PanelImage crops, sizes and orients a decoded photo onto the natively
@@ -295,8 +315,8 @@ func inkjoy28StampOverlay(base [][]byte, overlaid image.Image, pal [][3]float64)
 // scanWrapInkJoy28 applies the panel scan transform to an ink-index grid and
 // wraps it as IJI3. (Split from the dither so both the clean and overlay paths
 // share the scan without re-dithering.)
-func scanWrapInkJoy28(indices [][]byte) ([]byte, error) {
-	plane, err := packInkJoy28Plane(indices)
+func scanWrapInkJoy28(indices, steps [][]byte) ([]byte, error) {
+	plane, err := packInkJoy28PlaneSteps(indices, steps)
 	if err != nil {
 		return nil, err
 	}
@@ -306,9 +326,26 @@ func scanWrapInkJoy28(indices [][]byte) ([]byte, error) {
 // packInkJoy28Plane lays an upright ink-index grid out as the panel's raw plane:
 // big-endian u16 words, one per vertical pixel pair, row-major, X flipped.
 func packInkJoy28Plane(indices [][]byte) ([]byte, error) {
+	return packInkJoy28PlaneSteps(indices, nil)
+}
+
+// packInkJoy28PlaneSteps is packInkJoy28Plane with each pixel's refresh
+// transition step (1..31, see inkjoy28_wipe.go) in the upper 5 bits of its
+// byte; steps nil leaves them 0.
+func packInkJoy28PlaneSteps(indices, steps [][]byte) ([]byte, error) {
 	if len(indices) != ij28H || len(indices[0]) != ij28W {
 		return nil, fmt.Errorf("inkjoy28: grid %dx%d, want %dx%d",
 			len(indices[0]), len(indices), ij28W, ij28H)
+	}
+	if steps != nil && (len(steps) != ij28H || len(steps[0]) != ij28W) {
+		return nil, fmt.Errorf("inkjoy28: transition grid %dx%d, want %dx%d",
+			len(steps[0]), len(steps), ij28W, ij28H)
+	}
+	step := func(y, x int) byte {
+		if steps == nil {
+			return 0
+		}
+		return steps[y][x] << 3
 	}
 	plane := make([]byte, ij28W*ij28H)
 	for i := 0; i < ij28H/2; i++ {
@@ -316,30 +353,32 @@ func packInkJoy28Plane(indices [][]byte) ([]byte, error) {
 		row := plane[i*ij28W*2:]
 		for c := 0; c < ij28W; c++ {
 			x := ij28W - 1 - c
-			binary.BigEndian.PutUint16(row[2*c:], uint16(hiBytes8[upper[x]])<<8|uint16(hiBytes8[lower[x]]))
+			hi := hiBytes8[upper[x]] | step(2*i, x)
+			lo := hiBytes8[lower[x]] | step(2*i+1, x)
+			binary.BigEndian.PutUint16(row[2*c:], uint16(hi)<<8|uint16(lo))
 		}
 	}
 	return plane, nil
 }
 
 // inkjoy28IdxCache memoizes dithered base index grids (see inkjoy28BaseIndices).
-var inkjoy28IdxCache = &inkjoy28IndexCache{m: map[string][][]byte{}, cap: 4}
+var inkjoy28IdxCache = &inkjoy28IndexCache{m: map[string]ij28Render{}, cap: 4}
 
 type inkjoy28IndexCache struct {
 	mu    sync.Mutex
-	m     map[string][][]byte
+	m     map[string]ij28Render
 	order []string
 	cap   int
 }
 
-func (c *inkjoy28IndexCache) get(key string) ([][]byte, bool) {
+func (c *inkjoy28IndexCache) get(key string) (ij28Render, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	v, ok := c.m[key]
 	return v, ok
 }
 
-func (c *inkjoy28IndexCache) put(key string, v [][]byte) {
+func (c *inkjoy28IndexCache) put(key string, v ij28Render) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.m[key]; !ok {

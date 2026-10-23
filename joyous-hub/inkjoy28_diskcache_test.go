@@ -8,7 +8,7 @@ import (
 
 func resetInkJoy28MemCache() {
 	inkjoy28IdxCache.mu.Lock()
-	inkjoy28IdxCache.m = map[string][][]byte{}
+	inkjoy28IdxCache.m = map[string]ij28Render{}
 	inkjoy28IdxCache.order = nil
 	inkjoy28IdxCache.mu.Unlock()
 }
