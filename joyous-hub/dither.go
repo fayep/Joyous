@@ -1319,11 +1319,16 @@ func ApplyLABProcessing(img image.Image, pipe ColorPipeline, displayPalette [][3
 	})
 }
 
-// applyLABDynamicRangeFit compresses scene luminance (1st..99th percentile L*)
-// into a log range of N stops ending at the panel's white, so highlights land on
-// white ink rather than a grey the dither has to build from scattered dots.
-// The compression goes into the shadows, floored at the panel's black.
-// pipe.LABDynamicRangeFromBlack anchors the span at panel black instead.
+// applyLABDynamicRangeFit maps scene luminance (1st..99th percentile L*)
+// log-linearly onto the panel's whole black..white range, so highlights land on
+// white ink and shadows on black rather than greys the dither has to build from
+// scattered dots. A shorter N-stop span (the setting) faded every photo: hung
+// from white it lifted the 10"'s blacks to L*≈29, climbing from black it capped
+// its whites at L*≈51.
+//
+// pipe.LABDynamicRangeFromBlack is the exception: the ray pass's working space,
+// N stops up from black, which StuckiTwoPalette stretches to the full panel
+// range after ray (remapRayDRSpan).
 func applyLABDynamicRangeFit(img image.Image, pipe ColorPipeline, outLoL, outHiL float64) image.Image {
 	inLoL, inHiL := luminancePercentiles(img, 0.01, 0.99)
 	if inHiL-inLoL < 0.5 {
@@ -1332,6 +1337,9 @@ func applyLABDynamicRangeFit(img image.Image, pipe ColorPipeline, outLoL, outHiL
 	stops := pipe.LABDynamicRangeStops
 	if stops <= 0 {
 		stops = 4
+	}
+	if !pipe.LABDynamicRangeFromBlack {
+		stops = math.Inf(1) // span = panel black..white (drOutputSpanY floors at black)
 	}
 	if outHiL <= outLoL {
 		outLoL, outHiL = 12, 75
