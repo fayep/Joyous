@@ -61,7 +61,7 @@ func defaultInkJoyBridgeConfig() InkJoyBridgeConfig {
 		HubMQTT:         fmt.Sprintf("tcp://127.0.0.1:%d", DefaultJoyousHubMQTTPort),
 		ListenMQTT:      fmt.Sprintf(":%d", DefaultInkJoyFrameMQTTPort),
 		HubHTTP:         fmt.Sprintf("http://127.0.0.1:%d", 18080),
-		Upstream:        "13.39.148.101:1883",
+		Upstream:        "mqtts://emqx.inkjoyframe.com:8886",
 		UpstreamAllow:   inkjoybridge.DefaultUpstreamAllowCSV(),
 		DownstreamAllow: inkjoybridge.DefaultDownstreamAllowCSV(),
 		Intercept:       inkjoybridge.DefaultInterceptCSV(),

@@ -3,11 +3,14 @@ package inkjoybridge
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -250,14 +253,28 @@ func (b *upstreamBridge) connect() {
 		return
 	}
 
-	opts := mqtt.NewClientOptions().
-		AddBroker("tcp://" + host).
+	brokers := upstreamBrokers(host)
+	var attempted atomic.Value // broker URL of the latest connection attempt
+	opts := mqtt.NewClientOptions()
+	for _, u := range brokers {
+		opts.AddBroker(u)
+	}
+	opts.SetTLSConfig(upstreamTLSConfig()).
+		SetConnectionAttemptHandler(func(broker *url.URL, tlsCfg *tls.Config) *tls.Config {
+			attempted.Store(broker.String())
+			return tlsCfg
+		}).
 		SetClientID(b.mac).
 		SetUsername(usr).
 		SetPassword(pwd).
 		SetAutoReconnect(true).
 		SetOnConnectHandler(func(c mqtt.Client) {
-			log.Printf("[%s] upstream connected to %s", b.mac, host)
+			via, _ := attempted.Load().(string)
+			if len(brokers) > 1 && via != brokers[0] {
+				log.Printf("[%s] upstream connected to %s — MQTTS %s FAILED, using plain fallback", b.mac, via, brokers[0])
+			} else {
+				log.Printf("[%s] upstream connected to %s", b.mac, via)
+			}
 			c.Subscribe("/inkjoyap/"+b.mac, 0, b.onCloudMessage)
 			b.flushQueue(c)
 		}).
