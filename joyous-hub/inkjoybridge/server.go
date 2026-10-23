@@ -356,6 +356,10 @@ func (b *upstreamBridge) handleCloudPayload(payload []byte) {
 
 	writeCaptureErr("downstream", b.set.capture, b.set.captureRecordDownstream(b.mac, action, payload))
 	b.set.logCloudIn(b.mac, payload, "")
+	if action == "wf_update" {
+		// Rare and worth keeping: the waveform file's URL, size and CRC.
+		log.Printf("[%s] wf_update from cloud (forwarded): %s", b.mac, payload)
+	}
 	if action == "login_ack" {
 		b.set.noteCloudLoginAck(b.mac, payload)
 	}
