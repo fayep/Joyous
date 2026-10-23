@@ -54,7 +54,7 @@ func TestBlueNoiseAB(t *testing.T) {
 		{"10", pipe.InkJoyDisplay[:], frameH, frameW},
 		{"28", paletteInkJoy28Display[:], ij28W, ij28H},
 	} {
-		photo := resizeHQ(centerCropToAspect(src, float64(p.w)/float64(p.h)), p.w, p.h)
+		photo := resizeTo(centerCropToAspect(src, float64(p.w)/float64(p.h)), p.w, p.h)
 		crop := image.Rect(p.w/2-250, p.h/2-250, p.w/2+250, p.h/2+250)
 		for _, m := range []struct {
 			name  string

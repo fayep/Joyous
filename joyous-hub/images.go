@@ -1049,30 +1049,13 @@ func colorRGBA8(c color.Color) color.RGBA {
 }
 
 // resizeTo scales img to the given dimensions using nearest-neighbour.
+// resizeTo resamples with a Catmull-Rom (bicubic) kernel, which x/image/draw
+// widens when shrinking so downscales average instead of dropping pixels.
+// Every panel path uses it: nearest-neighbour stair-stepped curves on
+// enlargements and aliased fine detail (hair, foliage, railings) on
+// reductions, which sharpening then exaggerated. Calibration charts are made
+// at the panel's native size, so they are returned untouched.
 func resizeTo(img image.Image, w, h int) image.Image {
-	b := img.Bounds()
-	if b.Dx() == w && b.Dy() == h {
-		return img
-	}
-	dst := image.NewRGBA(image.Rect(0, 0, w, h))
-	scaleX := float64(b.Dx()) / float64(w)
-	scaleY := float64(b.Dy()) / float64(h)
-	for dy := range h {
-		sy := int(float64(dy)*scaleY) + b.Min.Y
-		for dx := range w {
-			sx := int(float64(dx)*scaleX) + b.Min.X
-			dst.Set(dx, dy, img.At(sx, sy))
-		}
-	}
-	return dst
-}
-
-// resizeHQ resamples with a Catmull-Rom (bicubic) kernel — smooth gradients and
-// edges instead of resizeTo's nearest-neighbour blocks. Used for the 28.5" path,
-// where low-res sources (e.g. 403x604 -> 2160x3060, ~5.3x) otherwise upscale to
-// hard pixel blocks before dithering. Left off the 10"/Samsung paths so their
-// encodes (and caches/calibration) are unchanged.
-func resizeHQ(img image.Image, w, h int) image.Image {
 	b := img.Bounds()
 	if b.Dx() == w && b.Dy() == h {
 		return img
