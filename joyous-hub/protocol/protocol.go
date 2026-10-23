@@ -122,6 +122,8 @@ type BridgeDevice struct {
 	DisplayWidth      int       `json:"display_width,omitempty"`
 	DisplayHeight     int       `json:"display_height,omitempty"`
 	DeepSleepActive   bool      `json:"deep_sleep_active,omitempty"`
+	HardwareModel     int       `json:"hardware_model,omitempty"` // InkJoy login H (e.g. 3 = 28.5")
+	Panel             string    `json:"panel,omitempty"`          // InkJoy login panel SKU (e.g. "28.5")
 }
 
 // DevicesPayload is a full device list snapshot from a bridge.
@@ -220,7 +222,9 @@ type SendImageBody struct {
 	// at send time and handed to the bridge for this one encode. The bridge
 	// itself never stores or manages this; it only ever sees whatever the hub
 	// includes here, so bridges stay bridge-specific-config-free.
-	ColorOverride *[6]RGB `json:"color_override,omitempty"`
+	// One entry per panel ink (6, or 8 for the 28.5"); a bridge renderer ignores
+	// an override sized for a different panel and keeps its default palette.
+	ColorOverride []RGB `json:"color_override,omitempty"`
 }
 
 // RGB is a wire-safe 0-255 color triple (device-agnostic — used for any

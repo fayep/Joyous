@@ -125,7 +125,7 @@ func paletteRGBBytesFromFloat(p [6][3]float64) [6][3]byte {
 // i.e. ColorPipeline.InkJoyDisplay with colorOverride applied) for use as a
 // PNG's PLTE chunk -- see EncodeIndexedPNG4's comment on why this is
 // cosmetic-only from the firmware's perspective.
-func (s *ImageStore) devicePaletteRGB(id string, colorOverride *[6]PaletteRGB) [6][3]byte {
+func (s *ImageStore) devicePaletteRGB(id string, colorOverride []PaletteRGB) [6][3]byte {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return paletteRGBBytesFromFloat(s.colorPipeline().InkJoyDisplay)
