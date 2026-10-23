@@ -83,7 +83,12 @@ type Device struct {
 	// other non-real-InkJoy panel) starts from a value tuned for its own panel
 	// instead of the real-InkJoy-panel bridge default.
 	DeviceReportedP2 *[6]PaletteRGB `json:"device_reported_p2,omitempty"`
-	bridgeID         string         `json:"-"` // owning bridge when synced via joyous protocol
+	// CloudDeviceID / CloudUID are the session IDs the InkJoy cloud issued in
+	// this frame's last login_ack. The bridge's own login_ack reuses them so a
+	// cloud-relayed frame never sees two identities (see inkjoybridge.SessionIDStore).
+	CloudDeviceID string `json:"cloud_device_id,omitempty"`
+	CloudUID      string `json:"cloud_uid,omitempty"`
+	bridgeID      string `json:"-"` // owning bridge when synced via joyous protocol
 }
 
 // DeviceRegistry tracks known frames in memory and persists them to disk.
@@ -433,6 +438,30 @@ func (d *Device) InkNames() []string {
 		return inkNames8
 	}
 	return colorNames
+}
+
+// CloudSessionIDs returns the cloud-issued login_ack IDs last seen for mac.
+func (r *DeviceRegistry) CloudSessionIDs(mac string) (deviceID, uid string, ok bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	d, found := r.m[mac]
+	if !found || d.CloudDeviceID == "" || d.CloudUID == "" {
+		return "", "", false
+	}
+	return d.CloudDeviceID, d.CloudUID, true
+}
+
+// SetCloudSessionIDs records the cloud-issued login_ack IDs for mac and saves.
+func (r *DeviceRegistry) SetCloudSessionIDs(mac, deviceID, uid string) {
+	r.mu.Lock()
+	d, found := r.m[mac]
+	if found {
+		d.CloudDeviceID, d.CloudUID = deviceID, uid
+	}
+	r.mu.Unlock()
+	if found {
+		_ = r.Save()
+	}
 }
 
 // SetColorOverride stores (or, if palette is nil, clears) a per-device ink

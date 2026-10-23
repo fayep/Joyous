@@ -172,6 +172,7 @@ type bridgeSet struct {
 	rewritePlay     func(mac string, payload []byte) ([]byte, error)
 	m               map[string]*upstreamBridge
 	localOnly       sync.Map // mac → struct{} for Seeed H:9 etc. (no cloud upstream)
+	acks            loginAcks
 }
 
 func (bs *bridgeSet) markLocalOnly(mac string) {
@@ -291,6 +292,9 @@ func (b *upstreamBridge) onCloudMessage(_ mqtt.Client, msg mqtt.Message) {
 
 	writeCaptureErr("downstream", b.set.capture, b.set.captureRecordDownstream(b.mac, action, payload))
 	b.set.logCloudIn(b.mac, payload, "")
+	if action == "login_ack" {
+		b.set.noteCloudLoginAck(b.mac, payload)
+	}
 
 	forwardPayload := payload
 	if action == "play" && b.set.rewritePlay != nil {
@@ -487,11 +491,11 @@ func (h *frameHook) OnPublished(cl *mochi.Client, pk packets.Packet) {
 	// frames relayed upstream don't get a timely cloud login_ack either (the
 	// cloud's newer registration needs a device-pubkey attestation the relay
 	// can't satisfy), so without a local ack they login-loop every keepalive
-	// and never receive plays. A duplicate ack to a cloud-relayed frame (whose
-	// cloud also replies) is benign — the frame treats login_ack idempotently.
+	// and never receive plays. A cloud-relayed frame's local login_ack must
+	// carry the cloud's own device_id/uid, never synthetic ones — see ackLogin.
 	switch action {
 	case "login":
-		h.bridges.publishLocalAck(mac, BuildLoginAck(mac, MQTTMsgid(payload)))
+		h.bridges.ackLogin(mac, MQTTMsgid(payload), skipUpstream || h.bridges.upstreamHost == "")
 	case "heart":
 		h.bridges.publishLocalAck(mac, BuildHeartAck(mac, MQTTMsgid(payload)))
 	}
