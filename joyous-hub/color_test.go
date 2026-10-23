@@ -239,6 +239,89 @@ func TestLABDynamicRangeFitFromBlackForRay(t *testing.T) {
 	}
 }
 
+// remapRayDRSpan stretches the ray pass's black-anchored working span (fitted
+// in the 10" reference range on every panel) over the target panel's full
+// range: the span floor lands on that panel's black, the ceiling on its white,
+// and order is preserved in between.
+func TestRemapRayDRSpanStretchesToPanelRange(t *testing.T) {
+	pipe := ResolveColorPipeline(defaultColorConfig())
+	pipe.LABDynamicRangeStops = 3.5
+	fitLoL, fitHiL, stops := drFitParams(pipe, rayFitPalette)
+	botY, topY := drOutputSpanY(fitLoL, fitHiL, stops, true)
+	ls := []float64{linearYToLabL(botY), 0, 0, 0, linearYToLabL(topY)}
+	for i := 1; i < 4; i++ {
+		ls[i] = ls[0] + (ls[4]-ls[0])*float64(i)/4
+	}
+	img := image.NewRGBA(image.Rect(0, 0, len(ls), 1))
+	for x, L := range ls {
+		rgb := labToSRGB([3]float64{L, 0, 0})
+		img.SetRGBA(x, 0, color.RGBA{floatTo8(rgb[0]), floatTo8(rgb[1]), floatTo8(rgb[2]), 255})
+	}
+	for name, pal := range map[string][][3]float64{"10in": PaletteInkJoyDisplay[:], "28in": paletteInkJoy28Display[:]} {
+		outLoL, outHiL, _ := drFitParams(pipe, pal)
+		out := remapRayDRSpan(img, pipe, rayFitPalette, pal)
+		prev := -1.0
+		for x := range ls {
+			c := out.(*image.RGBA).RGBAAt(x, 0)
+			L := srgbToLAB([3]float64{float64(c.R) / 255, float64(c.G) / 255, float64(c.B) / 255})[0]
+			if L <= prev {
+				t.Errorf("%s x=%d: L* %.1f not above %.1f (order lost)", name, x, L, prev)
+			}
+			prev = L
+			switch x {
+			case 0:
+				if math.Abs(L-outLoL) > 1.5 {
+					t.Errorf("%s: span floor -> L*%.1f, want panel black L*%.1f", name, L, outLoL)
+				}
+			case len(ls) - 1:
+				if math.Abs(L-outHiL) > 1.5 {
+					t.Errorf("%s: span ceiling (L*%.1f) -> L*%.1f, want panel white L*%.1f", name, ls[x], L, outHiL)
+				}
+			}
+		}
+	}
+}
+
+// People photos go through the ray pass in its black-anchored space but must
+// still use the whole panel: a full-range ramp reaches both black and white ink.
+func TestPeoplePhotoUsesPanelBlackAndWhite(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 256, 32))
+	for x := range 256 {
+		for y := range 32 {
+			img.Set(x, y, color.RGBA{uint8(x), uint8(x), uint8(x), 255})
+		}
+	}
+	pipe := ResolveColorPipeline(defaultColorConfig())
+	pipe.LABDynamicRangeEnabled = true
+	pipe.LABDynamicRangeStops = 3.5
+	pipe.LABInkAffinityRayEnabled = true
+	pipe.LABInkAffinityRayStrength = 1
+	pipe.PeopleLikely = true
+	if !shouldApplyInkAffinityRay(pipe, img, false) {
+		t.Fatal("fixture should take the ray path")
+	}
+	pal := PaletteInkJoyDisplay[:]
+	idx := StuckiTwoPalette(img, pal, pipe, false, stuckiOptionsInkJoy(pipe))
+	share := func(x0, x1 int, ink byte) float64 {
+		n, hit := 0, 0
+		for _, row := range idx {
+			for _, i := range row[x0:x1] {
+				n++
+				if i == ink {
+					hit++
+				}
+			}
+		}
+		return float64(hit) / float64(n)
+	}
+	if w := share(240, 256, 1); w < 0.6 {
+		t.Errorf("brightest end is %.0f%% white ink, want mostly white", 100*w)
+	}
+	if k := share(0, 16, 0); k < 0.6 {
+		t.Errorf("darkest end is %.0f%% black ink, want mostly black", 100*k)
+	}
+}
+
 func TestDisplayPaletteDRRangeValid(t *testing.T) {
 	for _, pal := range [][][3]float64{PaletteInkJoyDisplay[:], PaletteSamsungDisplay[:]} {
 		lo, hi := displayPaletteDRRange(pal)
