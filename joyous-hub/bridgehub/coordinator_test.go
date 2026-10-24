@@ -213,3 +213,10 @@ func TestBridgeForPath(t *testing.T) {
 		t.Fatal("expected no match once the owning bridge is stale/offline")
 	}
 }
+
+// A panicking command handler must not take the bridge process down.
+func TestClientRunCmdRecoversPanic(t *testing.T) {
+	c := &Client{onCmd: func(protocol.CmdPayload) { panic("index out of range") }}
+	c.runCmd(protocol.CmdPayload{Cmd: protocol.CmdSendImage, DeviceID: "AA", Body: []byte(`{"send_id":"s1"}`)})
+	c.runCmd(protocol.CmdPayload{Cmd: protocol.CmdRefresh})
+}
