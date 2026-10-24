@@ -333,3 +333,30 @@ func validateInkJoyWipe(selection string) error {
 	}
 	return fmt.Errorf("unknown inkjoy_wipe %q", selection)
 }
+
+// fitWipeGrid returns wipe sized w×h. Wipe grids are frameW×frameH (landscape);
+// a native-portrait clone frame encodes at frameH×frameW, so a landscape grid
+// is turned to the portrait shape, and any other mismatch is resampled.
+func fitWipeGrid(wipe [][]byte, w, h int) [][]byte {
+	gh := len(wipe)
+	if gh == 0 {
+		return MakeVerticalSweepWipe(w, h)
+	}
+	gw := len(wipe[0])
+	if gh == h && gw == w {
+		return wipe
+	}
+	out := make([][]byte, h)
+	for y := range h {
+		out[y] = make([]byte, w)
+		for x := range w {
+			if gh == w && gw == h {
+				// Same rotation as rotate90CCW: portrait (x, y) is landscape (gw-1-y, x).
+				out[y][x] = wipe[x][gw-1-y]
+			} else {
+				out[y][x] = wipe[y*gh/h][x*gw/w]
+			}
+		}
+	}
+	return out
+}

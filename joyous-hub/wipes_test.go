@@ -434,3 +434,18 @@ func wipeFingerprint(lo [][]byte) string {
 	}
 	return b.String()
 }
+
+// A flat (calibration) image at the native-portrait clone shape must encode
+// with the landscape wipe grid turned to fit, not index past it.
+func TestSnapToPaletteNativePortrait(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, frameH, frameW))
+	wipe := calibrationWipeGrid()
+	hi, lo := snapToPaletteWithWipe(img, wipe)
+	if len(hi) != frameW || len(lo) != frameW || len(lo[0]) != frameH {
+		t.Fatalf("got %dx%d lo for a %dx%d image", len(lo[0]), len(lo), frameH, frameW)
+	}
+	// Portrait top-left is landscape top-right after a 90° CCW turn.
+	if lo[0][0] != wipe[0][frameW-1] || lo[frameW-1][frameH-1] != wipe[frameH-1][0] {
+		t.Fatal("wipe grid not rotated like rotate90CCW")
+	}
+}
