@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
@@ -573,9 +575,36 @@ func (c *Client) onCmdMessage(_ mqtt.Client, msg mqtt.Message) {
 	// Encoding and other heavy work must not run on the MQTT callback thread or
 	// hub→bridge UI HTTP tunneled over the same client will time out.
 	if longRunningBridgeCmd(cmd.Cmd) {
-		go c.onCmd(cmd)
+		go c.runCmd(cmd)
 		return
 	}
+	c.runCmd(cmd)
+}
+
+// runCmd runs one hub command, containing any panic in it: a bad render
+// (a mischosen orientation, an unexpected image) must fail that send, not take
+// the bridge and every frame connected to it down.
+func (c *Client) runCmd(cmd protocol.CmdPayload) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		log.Printf("bridgehub: cmd %s device=%s panicked: %v\n%s", cmd.Cmd, cmd.DeviceID, r, debug.Stack())
+		var body struct {
+			SendID string `json:"send_id"`
+		}
+		if json.Unmarshal(cmd.Body, &body) != nil || body.SendID == "" {
+			return
+		}
+		if err := c.PublishSendComplete(protocol.SendCompletePayload{
+			SendID:   body.SendID,
+			DeviceID: cmd.DeviceID,
+			Detail:   fmt.Sprintf("bridge error: %v", r),
+		}); err != nil {
+			log.Printf("bridgehub: send.complete after panic: %v", err)
+		}
+	}()
 	c.onCmd(cmd)
 }
 
@@ -683,6 +712,9 @@ func (c *Client) PublishUIState(state protocol.UIStatePayload) error {
 
 // PublishSendComplete notifies the hub of send delivery.
 func (c *Client) PublishSendComplete(body protocol.SendCompletePayload) error {
+	if c.client == nil {
+		return errors.New("bridgehub: not connected")
+	}
 	payload, err := protocol.NewEnvelope(protocol.TypeSendComplete, c.bridgeID, body)
 	if err != nil {
 		return err
