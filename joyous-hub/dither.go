@@ -1045,6 +1045,10 @@ func StuckiTwoPalette(img image.Image, displayPalette [][3]float64, pipe ColorPi
 	if pipe.PortraitEnhance && pipe.PortraitStrength > 0 && !flatRGB {
 		src = ApplySkinToneProcessing(src, pipe.PortraitStrength)
 	}
+	if fitDR && !flatRGB {
+		// DR-fitted highlights sit at panel white's L*; see adaptToPanelNeutral.
+		src = adaptToPanelNeutral(src, displayPalette)
+	}
 	if opts.PreDither && !flatRGB {
 		noise := stuckiPreDitherNoise
 		if opts.PreDitherStrength > 0 {
