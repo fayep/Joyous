@@ -1440,6 +1440,7 @@ func snapToPalette(img image.Image) (hi, lo [][]byte) {
 func snapToPaletteWithWipe(img image.Image, wipe [][]byte) (hi, lo [][]byte) {
 	b := img.Bounds()
 	h, w := b.Dy(), b.Dx()
+	wipe = fitWipeGrid(wipe, w, h)
 	hi = make([][]byte, h)
 	lo = make([][]byte, h)
 	for y := range h {
