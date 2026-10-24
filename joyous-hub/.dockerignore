@@ -1,0 +1,18 @@
+# Docker build context: the Go module and its go:embed assets (web/,
+# calibration/, fonts/, assets/, wipes/, inkjoybridge/*.pem). Leave out
+# local build outputs, runtime data and test-only material.
+.git
+*.md
+Dockerfile
+docker-compose.yml
+data/
+previews/
+testdata/
+*_test.go
+joyous-hub
+inkjoy-bridge
+samsung-bridge
+nixplay-bridge
+inkjoy-hub-linux-*
+*.log
+.DS_Store
