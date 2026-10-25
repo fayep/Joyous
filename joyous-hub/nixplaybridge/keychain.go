@@ -1,42 +1,60 @@
 package nixplaybridge
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
-	"os/exec"
-	"runtime"
 	"strings"
+
+	"github.com/zalando/go-keyring"
 )
 
-// Credentials holds a Nixplay account login pulled from macOS Keychain.
+// Credentials holds a Nixplay account login from the system credential store.
 type Credentials struct {
 	Email    string
 	Password string
 }
 
-// LoadCredentials reads the Nixplay account password from the macOS Keychain
-// (Passwords app) generic-password item created with:
+// LoadCredentials reads the Nixplay account password from the system
+// credential store: the macOS Keychain, the Secret Service on Linux (GNOME
+// Keyring, KWallet) or the Windows Credential Manager. service is the item's
+// service name and account the Nixplay account email. Store it with
+// SaveCredentials (nixplay-bridge -set-password); on macOS an item made with
 //
-//	security add-generic-password -a "<email>" -s "<service>" -w "<password>"
+//	security add-generic-password -a "<email>" -s "<service>" -w
 //
-// account must be the Nixplay account email (the Keychain "account" field).
+// is read the same way.
 func LoadCredentials(service, account string) (Credentials, error) {
-	if runtime.GOOS != "darwin" {
-		return Credentials{}, fmt.Errorf("keychain credential lookup is macOS-only (GOOS=%s)", runtime.GOOS)
+	if err := checkItem(service, account); err != nil {
+		return Credentials{}, err
 	}
-	if strings.TrimSpace(service) == "" || strings.TrimSpace(account) == "" {
-		return Credentials{}, fmt.Errorf("keychain_service and keychain_account must both be set in nixplay-config.yaml")
+	password, err := keyring.Get(service, account)
+	if errors.Is(err, keyring.ErrNotFound) {
+		return Credentials{}, fmt.Errorf("no password stored for service=%q account=%q", service, account)
 	}
-	cmd := exec.Command("security", "find-generic-password", "-a", account, "-s", service, "-w")
-	var out, stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return Credentials{}, fmt.Errorf("security find-generic-password (service=%q account=%q): %w: %s", service, account, err, strings.TrimSpace(stderr.String()))
+	if err != nil {
+		return Credentials{}, fmt.Errorf("credential store (service=%q account=%q): %w", service, account, err)
 	}
-	password := strings.TrimRight(out.String(), "\n")
 	if password == "" {
-		return Credentials{}, fmt.Errorf("empty password returned from Keychain for service=%q account=%q", service, account)
+		return Credentials{}, fmt.Errorf("empty password stored for service=%q account=%q", service, account)
 	}
 	return Credentials{Email: account, Password: password}, nil
+}
+
+// SaveCredentials stores the Nixplay account password in the system
+// credential store, replacing any earlier one; see LoadCredentials.
+func SaveCredentials(service, account, password string) error {
+	if err := checkItem(service, account); err != nil {
+		return err
+	}
+	if password == "" {
+		return errors.New("empty password")
+	}
+	return keyring.Set(service, account, password)
+}
+
+func checkItem(service, account string) error {
+	if strings.TrimSpace(service) == "" || strings.TrimSpace(account) == "" {
+		return errors.New("keychain_service and keychain_account must both be set in nixplay-config.yaml")
+	}
+	return nil
 }

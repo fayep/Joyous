@@ -1,6 +1,8 @@
 # Nixplay bridge configuration
 #
-# macOS:  ~/Library/Application Support/Joyous/nixplay-config.yaml
+# macOS:   ~/Library/Application Support/Joyous/nixplay-config.yaml
+# Linux:   ~/.config/Joyous/nixplay-config.yaml
+# Windows: %AppData%\Joyous\nixplay-config.yaml
 #
 # CLI flags override these values.
 
@@ -13,13 +15,15 @@ hub_http: "http://127.0.0.1:18080"
 # Bridge-local data (currently unused, reserved for future caching)
 data_dir: "./data-nixplay"
 
-# macOS Keychain (Passwords app) lookup for the Nixplay account. Add the
-# password once with:
+# The Nixplay account password lives in the system credential store (macOS
+# Keychain, the Secret Service on Linux, Windows Credential Manager), never in
+# this file. Set keychain_account, then store the password once with:
 #
+#   nixplay-bridge -set-password
+#
+# It prompts without echo. On macOS, an item added with
 #   security add-generic-password -a "you@example.com" -s "joyous-hub-nixplay" -w
-#
-# (run that yourself in Terminal — it'll prompt for the password so it never
-# has to be typed into a config file or a chat).
+# works too.
 keychain_service: "joyous-hub-nixplay"
 keychain_account: ""  # your Nixplay account email
 

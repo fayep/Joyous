@@ -11,6 +11,8 @@ This archive has the hub and its three bridges in `bin/`:
 
 Run the hub plus the bridges for the frames you have.
 
+**Nixplay:** set `keychain_account` (your Nixplay email) in `nixplay-config.yaml`, then run `nixplay-bridge -set-password` once. It saves the password in the system credential store: the macOS Keychain, the Secret Service on Linux (GNOME Keyring or KWallet), or Windows Credential Manager.
+
 Each binary reads its settings from your config folder:
 
 - **macOS:** `~/Library/Application Support/Joyous/`

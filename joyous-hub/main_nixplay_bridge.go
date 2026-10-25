@@ -21,6 +21,8 @@ import (
 	"joyous-hub/internal/linkmeta"
 	"joyous-hub/nixplaybridge"
 	"joyous-hub/protocol"
+
+	"golang.org/x/term"
 )
 
 // playlistRefreshInterval is how often the bridge re-lists Nixplay galleries
@@ -45,11 +47,18 @@ func main() {
 		log.Printf("config: %s", cfgPath)
 	}
 
+	if hasArg(os.Args, "-set-password") {
+		if err := setNixplayPassword(fileCfg); err != nil {
+			log.Fatalf("set password: %v", err)
+		}
+		return
+	}
+
 	log.Printf("nixplay-bridge version %s", linkmeta.Version)
 
 	creds, err := nixplaybridge.LoadCredentials(fileCfg.KeychainService, fileCfg.KeychainAccount)
 	if err != nil {
-		log.Fatalf("nixplay credentials: %v (add them with: security add-generic-password -a %q -s %q -w)", err, fileCfg.KeychainAccount, fileCfg.KeychainService)
+		log.Fatalf("nixplay credentials: %v (store the password with: nixplay-bridge -set-password)", err)
 	}
 
 	nx := nixplaybridge.NewClient(creds.Email, creds.Password)
@@ -236,4 +245,33 @@ func ensureNixplayJPEG(data []byte, fileName string, rotateOverride int) ([]byte
 	}
 	newName := strings.TrimSuffix(fileName, filepath.Ext(fileName)) + ".jpg"
 	return buf.Bytes(), newName, nil
+}
+
+// hasArg reports whether flag appears in args, with one or two leading dashes.
+func hasArg(args []string, flag string) bool {
+	for _, a := range args[1:] {
+		if a == flag || a == "-"+flag {
+			return true
+		}
+	}
+	return false
+}
+
+// setNixplayPassword prompts for the Nixplay account password without echo
+// and stores it in the system credential store for keychain_account.
+func setNixplayPassword(cfg NixplayBridgeConfig) error {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return fmt.Errorf("run it in a terminal so the password can be typed without echo")
+	}
+	fmt.Fprintf(os.Stderr, "Nixplay password for %s: ", cfg.KeychainAccount)
+	pw, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return err
+	}
+	if err := nixplaybridge.SaveCredentials(cfg.KeychainService, cfg.KeychainAccount, string(pw)); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Saved to the system credential store (service %q).\n", cfg.KeychainService)
+	return nil
 }
