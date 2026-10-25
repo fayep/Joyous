@@ -68,32 +68,6 @@ func fetchHubImage(ctx context.Context, hubBase, imageID string) (ImageMeta, []b
 	return meta, raw, nil
 }
 
-// syncColorFromHub refreshes bridge color settings from the hub (best-effort).
-func syncColorFromHub(store *ColorStore, hubBase string) {
-	if store == nil {
-		return
-	}
-	base := strings.TrimRight(hubBase, "/")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/color", nil)
-	if err != nil {
-		return
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil {
-			resp.Body.Close()
-		}
-		return
-	}
-	defer resp.Body.Close()
-	var cfg ColorConfig
-	if json.NewDecoder(resp.Body).Decode(&cfg) == nil {
-		_ = store.Save(cfg)
-	}
-}
-
 func decodeOverlaySendInfo(info *protocol.OverlaySendInfo) (OverlayConfig, WeatherSnapshot, error) {
 	if info == nil {
 		return OverlayConfig{}, WeatherSnapshot{}, fmt.Errorf("overlay info missing")
@@ -177,7 +151,6 @@ func bridgeEncodeInkJoy(
 	}
 	portrait := dev.Portrait
 	nativeDims := body.NativeDims
-	syncColorFromHub(hub.color, body.HubBaseURL)
 
 	meta, raw, err := fetchHubImage(ctx, body.HubBaseURL, body.ImageID)
 	if err != nil {
@@ -223,9 +196,9 @@ func bridgeEncodeInkJoy(
 				// ij28OverlayScale enlarges the overlay so it isn't tiny on this
 				// large panel (the engine would otherwise shrink it ~0.78x).
 				return drawWeatherOverlayScaled(img, cfg, weather, photoName, !portrait, ij28OverlayScale), nil
-			}, colorOverride)
+			}, colorOverride, body.Transition)
 		}
-		return hub.images.ServeInkJoy28IJI3(body.ImageID, portrait, colorOverride)
+		return hub.images.ServeInkJoy28IJI3(body.ImageID, portrait, colorOverride, body.Transition)
 	}
 	if body.OverlayToken != "" {
 		cfg, weather, err := bridgeOverlayContext(ctx, hub, body, portrait)
@@ -235,9 +208,9 @@ func bridgeEncodeInkJoy(
 		photoName := overlayPhotoNameFromMeta(meta, cfg)
 		return hub.images.ServeBinOrientationOverlayForDevice(body.ImageID, portrait, body.OverlayToken, func(img image.Image, flatRGB bool) (image.Image, error) {
 			return drawWeatherOverlay(img, cfg, weather, photoName, portrait), nil
-		}, colorOverride, dev.ID, nativeDims)
+		}, colorOverride, dev.ID, body.Transition, nativeDims)
 	}
-	return hub.images.ServeBinOrientationForDevice(body.ImageID, portrait, colorOverride, dev.ID, nativeDims)
+	return hub.images.ServeBinOrientationForDevice(body.ImageID, portrait, colorOverride, dev.ID, body.Transition, nativeDims)
 }
 
 // paletteToProtocolRGB / protocolRGBToPalette convert between the hub's
@@ -303,6 +276,7 @@ func buildSendImageBody(h *Hub, dev *Device, imageID, overlayToken, sendID strin
 		SendID:        sendID,
 		HubBaseURL:    hubBaseURL(h.serverAddr),
 		ColorOverride: paletteToProtocolRGB(dev.ColorOverride),
+		Transition:    dev.Transition,
 	}
 	if h.images != nil {
 		crops, err := h.images.GetCrops(imageID)
@@ -409,7 +383,6 @@ func bridgeEncodeSamsung(
 	if body.HubBaseURL == "" {
 		return nil, fmt.Errorf("bridge encode: hub_base_url required")
 	}
-	syncColorFromHub(hub.color, body.HubBaseURL)
 
 	meta, raw, err := fetchHubImage(ctx, body.HubBaseURL, body.ImageID)
 	if err != nil {

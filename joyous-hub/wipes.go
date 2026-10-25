@@ -207,8 +207,8 @@ func inkJoyWipeUniformLevels() []WipeUniformLevel {
 func inkJoyWipeChoices() []WipeChoice {
 	loadEmbeddedWipes()
 	out := []WipeChoice{
-		{ID: WipeUniformPrefix + "picker", Label: "Uniform lo (consistent — use slider below)"},
-		{ID: WipeLuminance, Label: "Luminance topo (pre-DR)"},
+		{ID: WipeLuminance, Label: "Luminance (dark first → light last)"},
+		{ID: WipeUniformPrefix + "248", Label: "Uniform (whole frame at once)"},
 		{ID: WipeRandom, Label: "Random pattern"},
 	}
 	for _, name := range embeddedWipeNames {

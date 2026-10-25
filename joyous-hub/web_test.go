@@ -19,11 +19,8 @@ import (
 func buildTestHub(t *testing.T) *Hub {
 	t.Helper()
 	dir := t.TempDir()
-	colorStore := NewColorStore(dir)
 	images := NewImageStore(dir)
-	images.SetColorStore(colorStore)
 	samsung := NewSamsungStore(dir)
-	samsung.SetColorStore(colorStore)
 	return &Hub{
 		devices:        NewDeviceRegistry(dir),
 		samsungBattery: NewSamsungBatteryStore(dir),
@@ -33,7 +30,6 @@ func buildTestHub(t *testing.T) *Hub {
 		samsung:        samsung,
 		sendDelivery:   NewSendDeliveryTracker(),
 		overlay:        NewOverlayStore(dir),
-		color:          colorStore,
 		scheduledSends: NewScheduledSendStore(dir),
 		events:         NewEventBus(),
 		publisher:      &noopPublisher{},

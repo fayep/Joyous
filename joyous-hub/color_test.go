@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"image"
 	"image/color"
 	"math"
@@ -9,59 +8,6 @@ import (
 	"path/filepath"
 	"testing"
 )
-
-func TestColorConfigSaveLoad(t *testing.T) {
-	dir := t.TempDir()
-	store := NewColorStore(dir)
-	cfg := defaultColorConfig()
-	if !cfg.LABInkAffinityEnabled {
-		t.Fatal("expected ink affinity on by default")
-	}
-	if cfg.InkJoyWipe != WipeUniform248 {
-		t.Fatalf("default wipe = %q, want %q", cfg.InkJoyWipe, WipeUniform248)
-	}
-	cfg.LABChromaEnabled = true
-	cfg.LABChromaStrength = 0.5
-	cfg.LABHighlightEnabled = false
-	cfg.InkJoyDisplayPreset = ColorPresetLegacy
-	if err := store.Save(cfg); err != nil {
-		t.Fatal(err)
-	}
-	got := NewColorStore(dir).Config()
-	if !got.LABChromaEnabled || got.LABChromaStrength != 0.5 || got.LABHighlightEnabled || got.InkJoyDisplayPreset != ColorPresetLegacy {
-		t.Fatalf("reload: %+v", got)
-	}
-}
-
-func TestMigrateLegacyLABConfig(t *testing.T) {
-	dir := t.TempDir()
-	raw := `{"lab_enhance":true,"lab_strength":1.5,"inkjoy_display_preset":"calibrated"}`
-	if err := os.WriteFile(filepath.Join(dir, colorConfigFile), []byte(raw), 0644); err != nil {
-		t.Fatal(err)
-	}
-	got := NewColorStore(dir).Config()
-	if !got.LABChromaEnabled || !got.LABHighlightEnabled || got.LABChromaStrength != 1.5 {
-		t.Fatalf("migrate: %+v", got)
-	}
-}
-
-func TestResolveColorPipelinePresets(t *testing.T) {
-	cfg := defaultColorConfig()
-	pipe := ResolveColorPipeline(cfg)
-	if pipe.InkJoyDisplay != PaletteInkJoyDisplay {
-		t.Fatal("expected calibrated inkjoy display")
-	}
-	if pipe.SamsungSend != PaletteSamsungSend {
-		t.Fatal("expected calibrated samsung send")
-	}
-
-	cfg.InkJoyDisplayPreset = ColorPresetCustom
-	cfg.InkJoyDisplay = [6]PaletteRGB{{1, 2, 3}}
-	pipe = ResolveColorPipeline(cfg)
-	if pipe.InkJoyDisplay[0] != [3]float64{1, 2, 3} {
-		t.Fatalf("custom: %v", pipe.InkJoyDisplay[0])
-	}
-}
 
 func TestShouldApplyLABProcessing(t *testing.T) {
 	pipe := ColorPipeline{LABChromaEnabled: true, LABChromaStrength: 1}
@@ -136,18 +82,6 @@ func TestImageStoreClearBinCache(t *testing.T) {
 	}
 }
 
-func TestLegacyColorJSONUnmarshal(t *testing.T) {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(`{"lab_enhance":false}`), &raw); err != nil {
-		t.Fatal(err)
-	}
-	cfg := ColorConfig{}
-	migrateLegacyLABConfig(&cfg, raw)
-	if cfg.LABChromaEnabled || cfg.LABHighlightEnabled {
-		t.Fatal("expected both off from legacy false")
-	}
-}
-
 // The fit maps the scene onto each panel's own black..white range (the stops
 // setting only shapes the ray pass's working space).
 func TestLABDynamicRangeFit(t *testing.T) {
@@ -162,7 +96,7 @@ func TestLABDynamicRangeFit(t *testing.T) {
 	if labLSpanStops(inLo, inHi) < 5 {
 		t.Fatalf("test gradient too narrow: %.2f stops", labLSpanStops(inLo, inHi))
 	}
-	pipe := ResolveColorPipeline(defaultColorConfig())
+	pipe := standardColorPipeline()
 	pipe.LABDynamicRangeEnabled = true
 	pipe.LABDynamicRangeStops = 4
 	for name, pal := range map[string][][3]float64{"samsung": PaletteSamsungDisplay[:], "inkjoy": PaletteInkJoyDisplay[:]} {
@@ -191,7 +125,7 @@ func TestLABDynamicRangeFitTopIsPanelWhite(t *testing.T) {
 		"samsung": PaletteSamsungDisplay[:],
 	} {
 		for _, stops := range []float64{2.5, 3.5, 6} {
-			pipe := ResolveColorPipeline(defaultColorConfig())
+			pipe := standardColorPipeline()
 			pipe.LABDynamicRangeEnabled = true
 			pipe.LABDynamicRangeStops = stops
 			out := ApplyLABProcessing(img, pipe, pal, true)
@@ -221,7 +155,7 @@ func TestLABDynamicRangeFitFromBlackForRay(t *testing.T) {
 	}
 	pal := PaletteInkJoyDisplay[:]
 	lo, hi := displayPaletteDRRange(pal)
-	pipe := ResolveColorPipeline(defaultColorConfig())
+	pipe := standardColorPipeline()
 	pipe.LABDynamicRangeEnabled = true
 	pipe.LABDynamicRangeStops = 3.5
 	pipe.LABDynamicRangeFromBlack = true
@@ -241,7 +175,7 @@ func TestLABDynamicRangeFitFromBlackForRay(t *testing.T) {
 // range: the span floor lands on that panel's black, the ceiling on its white,
 // and order is preserved in between.
 func TestRemapRayDRSpanStretchesToPanelRange(t *testing.T) {
-	pipe := ResolveColorPipeline(defaultColorConfig())
+	pipe := standardColorPipeline()
 	pipe.LABDynamicRangeStops = 3.5
 	fitLoL, fitHiL, stops := drFitParams(pipe, rayFitPalette)
 	botY, topY := drOutputSpanY(fitLoL, fitHiL, stops, true)
@@ -288,7 +222,7 @@ func TestPeoplePhotoUsesPanelBlackAndWhite(t *testing.T) {
 			img.Set(x, y, color.RGBA{uint8(x), uint8(x), uint8(x), 255})
 		}
 	}
-	pipe := ResolveColorPipeline(defaultColorConfig())
+	pipe := standardColorPipeline()
 	pipe.LABDynamicRangeEnabled = true
 	pipe.LABDynamicRangeStops = 3.5
 	pipe.LABInkAffinityRayEnabled = true
@@ -337,15 +271,5 @@ func TestDisplayPaletteLABRangeInkJoyVsSamsung(t *testing.T) {
 	}
 	if inkHi <= samHi {
 		t.Fatalf("inkjoy white L* %.1f should be brighter than samsung %.1f", inkHi, samHi)
-	}
-}
-
-func TestLABDynamicRangeStopsValidation(t *testing.T) {
-	dir := t.TempDir()
-	store := NewColorStore(dir)
-	cfg := defaultColorConfig()
-	cfg.LABDynamicRangeStops = 8
-	if err := store.Save(cfg); err == nil {
-		t.Fatal("expected validation error for stops > 6")
 	}
 }

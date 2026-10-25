@@ -181,11 +181,12 @@ func (r *DeviceRegistry) SyncBridgeDevices(bridgeID string, devices []protocol.B
 		lastImageID, lastOverlayHash string
 		displayPreviewAt             time.Time
 		colorOverride                []PaletteRGB
+		transition                   string
 	}
 	owned := make(map[string]hubOwned)
 	for id, d := range r.m {
 		if d.bridgeID == bridgeID {
-			owned[id] = hubOwned{d.LastImageID, d.LastOverlayHash, d.DisplayPreviewAt, d.ColorOverride}
+			owned[id] = hubOwned{d.LastImageID, d.LastOverlayHash, d.DisplayPreviewAt, d.ColorOverride, d.Transition}
 		}
 		if d.bridgeID == bridgeID && d.Type == DeviceTypeSamsung {
 			preserved[id] = contact{
@@ -204,8 +205,8 @@ func (r *DeviceRegistry) SyncBridgeDevices(bridgeID string, devices []protocol.B
 		r.applyBridgeDeviceLocked(bridgeID, bd)
 		d := r.m[bd.ID]
 		if o, ok := owned[bd.ID]; ok && d != nil {
-			d.LastImageID, d.LastOverlayHash, d.DisplayPreviewAt, d.ColorOverride =
-				o.lastImageID, o.lastOverlayHash, o.displayPreviewAt, o.colorOverride
+			d.LastImageID, d.LastOverlayHash, d.DisplayPreviewAt, d.ColorOverride, d.Transition =
+				o.lastImageID, o.lastOverlayHash, o.displayPreviewAt, o.colorOverride, o.transition
 		}
 		if d == nil || d.Type != DeviceTypeSamsung {
 			continue

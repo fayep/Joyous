@@ -225,6 +225,10 @@ type SendImageBody struct {
 	// One entry per panel ink (6, or 8 for the 28.5"); a bridge renderer ignores
 	// an override sized for a different panel and keeps its default palette.
 	ColorOverride []RGB `json:"color_override,omitempty"`
+	// Transition is the device's refresh transition (hub-owned, see the hub's
+	// Device.Transition): a 10" wipe or a 28.5" transition, "" for the standard
+	// one. Like ColorOverride it applies to this one encode only.
+	Transition string `json:"transition,omitempty"`
 }
 
 // RGB is a wire-safe 0-255 color triple (device-agnostic — used for any

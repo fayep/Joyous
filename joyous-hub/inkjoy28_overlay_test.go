@@ -89,7 +89,7 @@ func TestServeInkJoy28IJI3OverlayCompositesAndStaysValid(t *testing.T) {
 	store := NewImageStore(t.TempDir())
 	id := storeSynthInkJoy28(t, store)
 
-	plain, err := store.ServeInkJoy28IJI3(id, true, nil)
+	plain, err := store.ServeInkJoy28IJI3(id, true, nil, "")
 	if err != nil {
 		t.Fatalf("plain serve: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestServeInkJoy28IJI3OverlayCompositesAndStaysValid(t *testing.T) {
 		bar := image.Rect(0, ij28H-240, ij28W, ij28H)
 		draw.Draw(out, bar, image.NewUniform(color.Black), image.Point{}, draw.Src)
 		return out, nil
-	}, nil)
+	}, nil, "")
 	if err != nil {
 		t.Fatalf("overlay serve: %v", err)
 	}

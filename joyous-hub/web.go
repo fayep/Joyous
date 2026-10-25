@@ -31,7 +31,6 @@ type Hub struct {
 	sendDelivery   *SendDeliveryTracker
 	inkjoyRetry    *InkJoySendRetry
 	overlay        *OverlayStore
-	color          *ColorStore
 	scheduledSends *ScheduledSendStore
 	events         *EventBus
 	weather        weatherClient
@@ -258,8 +257,9 @@ func (h *Hub) handleSleep(w http.ResponseWriter, r *http.Request, id string) {
 // handleDevicePatch serves PATCH /api/devices/{id} — updates mutable fields (name, portrait).
 func (h *Hub) handleDevicePatch(w http.ResponseWriter, r *http.Request, id string) {
 	var body struct {
-		Name     *string `json:"name"`
-		Portrait *bool   `json:"portrait"`
+		Name       *string `json:"name"`
+		Portrait   *bool   `json:"portrait"`
+		Transition *string `json:"transition"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -271,6 +271,19 @@ func (h *Hub) handleDevicePatch(w http.ResponseWriter, r *http.Request, id strin
 	}
 	if body.Portrait != nil {
 		found = h.devices.SetPortrait(id, *body.Portrait)
+	}
+	if body.Transition != nil {
+		dev, ok := h.devices.Get(id)
+		if !ok {
+			http.Error(w, "device not found", http.StatusNotFound)
+			return
+		}
+		t, err := validateTransition(dev, *body.Transition)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		found = h.devices.SetTransition(id, t)
 	}
 	if !found {
 		http.Error(w, "device not found", http.StatusNotFound)

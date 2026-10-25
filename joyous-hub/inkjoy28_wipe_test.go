@@ -73,35 +73,23 @@ func writeWipe28PNG(t *testing.T, dataDir, name string, gray byte) {
 	}
 }
 
-// The InkJoy28Wipe setting picks the steps for a send.
+// The device's transition picks the steps for a send.
 func TestInkJoy28WipeSelection(t *testing.T) {
 	dataDir := t.TempDir()
 	store := NewImageStore(dataDir)
-	colors := NewColorStore(dataDir)
-	store.SetColorStore(colors)
 	writeWipe28PNG(t, dataDir, "art", 0x58) // step 11
 	writeWipe28PNG(t, dataDir, "zero", 0)   // clamps to step 1
 	lum := [][]byte{{7}}
 
-	for sel, want := range map[string]byte{"luminance": 7, "captured:art": 11, "captured:zero": 1} {
-		cfg := colors.Config()
-		cfg.InkJoy28Wipe = sel
-		if err := colors.Save(cfg); err != nil {
-			t.Fatalf("%s: %v", sel, err)
-		}
-		if got := store.inkjoy28Steps(lum); got == nil || got[0][0] != want {
+	for sel, want := range map[string]byte{"": 7, "luminance": 7, "captured:art": 11, "captured:zero": 1} {
+		if got := store.inkjoy28Steps(lum, sel); got == nil || got[0][0] != want {
 			t.Fatalf("%s: step %v, want %d", sel, got, want)
 		}
 	}
-	cfg := colors.Config()
-	cfg.InkJoy28Wipe = "random"
-	colors.Save(cfg)
-	if got := store.inkjoy28Steps(lum); got == nil || (got[0][0] != 11 && got[0][0] != 1) {
+	if got := store.inkjoy28Steps(lum, "random"); got == nil || (got[0][0] != 11 && got[0][0] != 1) {
 		t.Fatalf("random: %v", got)
 	}
-	cfg.InkJoy28Wipe = "off"
-	colors.Save(cfg)
-	if got := store.inkjoy28Steps(lum); got != nil {
+	if got := store.inkjoy28Steps(lum, "off"); got != nil {
 		t.Fatal("off returned steps")
 	}
 	for _, bad := range []string{"captured:../x", "captured:", "sideways"} {
@@ -110,7 +98,8 @@ func TestInkJoy28WipeSelection(t *testing.T) {
 		}
 	}
 	choices := inkJoy28WipeChoices(dataDir)
-	if len(choices) != 5 || choices[3].ID != "captured:art" {
+	// The standard transition leads the device dropdown.
+	if len(choices) != 5 || choices[0].ID != Wipe28Luminance || choices[3].ID != "captured:art" {
 		t.Fatalf("choices %+v", choices)
 	}
 }

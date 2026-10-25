@@ -26,11 +26,7 @@ func TestBlueNoiseAB(t *testing.T) {
 		t.Fatal(err)
 	}
 	tdir := t.TempDir()
-	if cj, e := os.ReadFile(dir + "/color.json"); e == nil {
-		os.WriteFile(tdir+"/color.json", cj, 0644)
-	}
 	store := NewImageStore(tdir)
-	store.SetColorStore(NewColorStore(tdir))
 	pipe := store.colorPipelineForMetaOverride(ImageMeta{}, nil)
 	src, err := decodeAnyImage(raw)
 	if err != nil {

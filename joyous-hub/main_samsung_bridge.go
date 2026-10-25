@@ -79,9 +79,7 @@ func main() {
 	}
 	log.Printf("samsung PNG cache root %s (hub serves GET /samsung/{frameId}/…)", filepath.Join(pngRoot, "samsung"))
 
-	colorStore := NewColorStore(*dataDir)
 	samsungStore := NewSamsungStore(pngRoot)
-	samsungStore.SetColorStore(colorStore)
 	samsungBattery := NewSamsungBatteryStore(*dataDir)
 	if err := samsungBattery.Load(); err != nil {
 		log.Printf("warn: load samsung battery history: %v", err)
@@ -97,7 +95,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("image store: %v", err)
 	}
-	imageStore.SetColorStore(colorStore)
 	overlayStore := NewOverlayStore(*dataDir)
 
 	hub := &Hub{
@@ -106,7 +103,6 @@ func main() {
 		samsungAliases: loadSamsungFrameAliases(filepath.Join(pngRoot, "samsung")),
 		samsung:        samsungStore,
 		sendDelivery:   NewSendDeliveryTracker(),
-		color:          colorStore,
 		images:         imageStore,
 		overlay:        overlayStore,
 		serverAddr:     hubPlayAddr,

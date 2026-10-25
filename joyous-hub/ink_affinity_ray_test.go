@@ -393,28 +393,6 @@ func TestShouldApplyInkAffinityRay(t *testing.T) {
 	}
 }
 
-func TestColorConfigRaySaveLoad(t *testing.T) {
-	dir := t.TempDir()
-	store := NewColorStore(dir)
-	cfg := defaultColorConfig()
-	if cfg.LABInkAffinityRayEnabled {
-		t.Fatal("ray affinity should default off")
-	}
-	cfg.LABInkAffinityRayEnabled = true
-	cfg.LABInkAffinityRayStrength = 1.4
-	if err := store.Save(cfg); err != nil {
-		t.Fatal(err)
-	}
-	got := NewColorStore(dir).Config()
-	if !got.LABInkAffinityRayEnabled || got.LABInkAffinityRayStrength != 1.4 {
-		t.Fatalf("reload: %+v", got)
-	}
-	pipe := ResolveColorPipeline(got)
-	if !pipe.LABInkAffinityRayEnabled || pipe.LABInkAffinityRayStrength != 1.4 {
-		t.Fatalf("pipeline: %+v", pipe)
-	}
-}
-
 func solidRGB(r, g, b uint8) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.Set(0, 0, color.RGBA{R: r, G: g, B: b, A: 255})

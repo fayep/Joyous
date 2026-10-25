@@ -42,18 +42,18 @@ type CropRect struct {
 
 // ImageMeta holds persisted metadata for a stored image.
 type ImageMeta struct {
-	ID             string              `json:"id"`
-	Name           string              `json:"name"`
-	Size           int64               `json:"size"`
-	Width          int                  `json:"width,omitempty"`
-	Height         int                  `json:"height,omitempty"`
-	Crops          map[string]CropRect `json:"crops,omitempty"`
-	FlatRGB        bool                `json:"flat_rgb,omitempty"` // calibration PNG: per-pixel snap, no Stucki/LAB
-	ChromaBoost    *bool               `json:"chroma_boost,omitempty"` // nil = global color setting
-	PeopleLikely     bool `json:"people_likely,omitempty"`
-	PeopleAnalyzed   bool `json:"people_analyzed,omitempty"`
-	PeopleDetectVer  int  `json:"people_detect_ver,omitempty"`
-	Tags             []string `json:"tags,omitempty"`
+	ID              string              `json:"id"`
+	Name            string              `json:"name"`
+	Size            int64               `json:"size"`
+	Width           int                 `json:"width,omitempty"`
+	Height          int                 `json:"height,omitempty"`
+	Crops           map[string]CropRect `json:"crops,omitempty"`
+	FlatRGB         bool                `json:"flat_rgb,omitempty"`     // calibration PNG: per-pixel snap, no Stucki/LAB
+	ChromaBoost     *bool               `json:"chroma_boost,omitempty"` // nil = global color setting
+	PeopleLikely    bool                `json:"people_likely,omitempty"`
+	PeopleAnalyzed  bool                `json:"people_analyzed,omitempty"`
+	PeopleDetectVer int                 `json:"people_detect_ver,omitempty"`
+	Tags            []string            `json:"tags,omitempty"`
 	// RotateOverride is an additional 0/90/180/270° clockwise correction applied after EXIF
 	// orientation, for sources (e.g. Nixplay-imported photos, whose rotation lived only in the
 	// exporting app's own database, never in EXIF) where EXIF alone doesn't produce the correct
@@ -66,7 +66,6 @@ type ImageStore struct {
 	dir      string
 	cat      *catalog.DB
 	CacheMax int64 // max total bytes in cache dir; exported so tests can override
-	colors   *ColorStore
 }
 
 // NewImageStore creates an ImageStore rooted at dir.
@@ -92,25 +91,14 @@ func NewImageStoreE(dir string) (*ImageStore, error) {
 	return s, nil
 }
 
-func (s *ImageStore) SetColorStore(c *ColorStore) { s.colors = c }
-
-func (s *ImageStore) colorPipeline() ColorPipeline {
-	if s.colors != nil {
-		return s.colors.Pipeline()
-	}
-	return defaultColorPipeline()
-}
+func (s *ImageStore) colorPipeline() ColorPipeline { return standardColorPipeline() }
 
 func (s *ImageStore) colorPipelineForMeta(meta ImageMeta) ColorPipeline {
 	pipe := s.colorPipeline()
 	if meta.ChromaBoost != nil {
 		pipe.LABChromaEnabled = *meta.ChromaBoost
 	}
-	cfg := defaultColorConfig()
-	if s.colors != nil {
-		cfg = s.colors.Config()
-	}
-	return applyPortraitEnhance(pipe, meta.PeopleLikely, cfg)
+	return pipelineForPeople(pipe, meta.PeopleLikely)
 }
 
 func (s *ImageStore) colorPipelineForID(id string) ColorPipeline {
@@ -225,7 +213,7 @@ func (s *ImageStore) ServeBin(id string) ([]byte, error) {
 }
 
 func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, error) {
-	return s.ServeBinOrientationForDevice(id, portrait, nil, "", false)
+	return s.ServeBinOrientationForDevice(id, portrait, nil, "", "", false)
 }
 
 // ServeBinOrientationForDevice is ServeBinOrientation with an optional per-device
@@ -237,8 +225,10 @@ func (s *ImageStore) ServeBinOrientation(id string, portrait bool) ([]byte, erro
 // native (swapped) panel-dimension encode for portrait content instead of
 // the fixed frameW x frameH rotate-to-fit shape — see
 // prepareInkJoyFrameFromRaw's own comment; bridge-only, always false from
-// hub-compiled callers.
-func (s *ImageStore) ServeBinOrientationForDevice(id string, portrait bool, colorOverride []PaletteRGB, cacheKeySuffix string, nativeDims bool) ([]byte, error) {
+// hub-compiled callers. transition is the device's refresh wipe ("" for the
+// standard one, see Device.Transition).
+func (s *ImageStore) ServeBinOrientationForDevice(id string, portrait bool, colorOverride []PaletteRGB, cacheKeySuffix, transition string, nativeDims bool) ([]byte, error) {
+	transition = inkjoyTransition(transition)
 	cacheFile := s.cachePath(id)
 	if colorOverride != nil && cacheKeySuffix != "" {
 		cacheFile = s.cachePath(id) + "~dev-" + sanitizeCacheKey(cacheKeySuffix)
@@ -252,17 +242,22 @@ func (s *ImageStore) ServeBinOrientationForDevice(id string, portrait bool, colo
 	if nativeDims {
 		cacheFile += ".native"
 	}
+	// A pattern wipe overwrites the lo plane on every serve; only the
+	// luminance wipe is baked in at encode time, so keep the two apart.
+	if !isImageDerivedInkJoyWipe(transition) {
+		cacheFile += ".wipe"
+	}
 	meta, _ := s.readMeta(id)
 	// Calibration charts always re-encode so the fixed vertical-sweep wipe is applied.
 	if !meta.FlatRGB && !isProgrammaticInkJoyCalibration(meta.Name) {
 		if bin, err := os.ReadFile(cacheFile); err == nil {
-			s.applyWipeIfConverted(id, bin)
+			s.applyWipeIfConverted(id, bin, transition)
 			return bin, nil
 		}
 	}
 
 	// Cache miss — convert (or flat calibration refresh).
-	bin, err := s.convertToBinOrientationForDevice(id, portrait, colorOverride, nativeDims)
+	bin, err := s.convertToBinOrientationForDevice(id, portrait, colorOverride, transition, nativeDims)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +267,7 @@ func (s *ImageStore) ServeBinOrientationForDevice(id string, portrait bool, colo
 	os.WriteFile(cacheFile, bin, 0644)
 	s.evictCache()
 
-	s.applyWipeIfConverted(id, bin)
+	s.applyWipeIfConverted(id, bin, transition)
 	return bin, nil
 }
 
@@ -282,22 +277,23 @@ func sanitizeCacheKey(s string) string {
 	return strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(s)
 }
 
-func (s *ImageStore) inkjoyWipeSelection() string {
-	if s.colors != nil {
-		return normalizeInkJoyWipe(s.colors.Config().InkJoyWipe)
+// inkjoyTransition resolves a device's 10" wipe; "" is the standard luminance wipe.
+func inkjoyTransition(sel string) string {
+	if sel == "" {
+		return WipeLuminance
 	}
-	return DefaultInkJoyWipe
+	return normalizeInkJoyWipe(sel)
 }
 
-func (s *ImageStore) applyWipeIfConverted(id string, bin []byte) {
+func (s *ImageStore) applyWipeIfConverted(id string, bin []byte, transition string) {
 	meta, err := s.readMeta(id)
 	if err != nil || isStoredBin(meta.Name) || meta.FlatRGB || isProgrammaticInkJoyCalibration(meta.Name) {
 		return
 	}
-	if isImageDerivedInkJoyWipe(s.inkjoyWipeSelection()) {
+	if isImageDerivedInkJoyWipe(transition) {
 		return
 	}
-	applyInkJoyWipe(bin, s.inkjoyWipeSelection())
+	applyInkJoyWipe(bin, transition)
 }
 
 func isStoredBin(name string) bool {
@@ -1086,10 +1082,10 @@ func (s *ImageStore) readMeta(id string) (ImageMeta, error) {
 }
 
 func (s *ImageStore) convertToBinOrientation(id string, portrait bool) ([]byte, error) {
-	return s.convertToBinOrientationForDevice(id, portrait, nil, false)
+	return s.convertToBinOrientationForDevice(id, portrait, nil, "", false)
 }
 
-func (s *ImageStore) convertToBinOrientationForDevice(id string, portrait bool, colorOverride []PaletteRGB, nativeDims bool) ([]byte, error) {
+func (s *ImageStore) convertToBinOrientationForDevice(id string, portrait bool, colorOverride []PaletteRGB, transition string, nativeDims bool) ([]byte, error) {
 	meta, err := s.readMeta(id)
 	if err != nil {
 		return nil, err
@@ -1122,7 +1118,7 @@ func (s *ImageStore) convertToBinOrientationForDevice(id string, portrait bool, 
 		return nil, err
 	}
 	wipe := flatCalibrationWipeGrid(meta.Name)
-	return encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipelineForMetaOverride(meta, colorOverride), wipe, s.inkjoyWipeSelection())
+	return encodeInkJoyBinFromRGBA(rgba, flatRGB, s.colorPipelineForMetaOverride(meta, colorOverride), wipe, inkjoyTransition(transition))
 }
 
 func (s *ImageStore) overlayCacheFile(id, token string, portrait bool) string {
@@ -1137,16 +1133,20 @@ type overlayFrameMutator func(img image.Image, flatRGB bool) (image.Image, error
 
 // ServeBinOrientationOverlay converts the album image, applies mutate, caches under token.
 func (s *ImageStore) ServeBinOrientationOverlay(id string, portrait bool, token string, mutate overlayFrameMutator) ([]byte, error) {
-	return s.ServeBinOrientationOverlayForDevice(id, portrait, token, mutate, nil, "", false)
+	return s.ServeBinOrientationOverlayForDevice(id, portrait, token, mutate, nil, "", "", false)
 }
 
 // ServeBinOrientationOverlayForDevice is ServeBinOrientationOverlay with an
 // optional per-device ink palette override — see ServeBinOrientationForDevice.
 // nativeDims — see ServeBinOrientationForDevice's own comment.
-func (s *ImageStore) ServeBinOrientationOverlayForDevice(id string, portrait bool, token string, mutate overlayFrameMutator, colorOverride []PaletteRGB, cacheKeySuffix string, nativeDims bool) ([]byte, error) {
+func (s *ImageStore) ServeBinOrientationOverlayForDevice(id string, portrait bool, token string, mutate overlayFrameMutator, colorOverride []PaletteRGB, cacheKeySuffix, transition string, nativeDims bool) ([]byte, error) {
+	transition = inkjoyTransition(transition)
 	cacheFile := s.overlayCacheFile(id, token, portrait)
 	if colorOverride != nil && cacheKeySuffix != "" {
 		cacheFile += "~dev-" + sanitizeCacheKey(cacheKeySuffix)
+	}
+	if transition != WipeLuminance {
+		cacheFile += "~wipe-" + sanitizeCacheKey(transition)
 	}
 	if nativeDims {
 		cacheFile += ".native"
@@ -1163,7 +1163,7 @@ func (s *ImageStore) ServeBinOrientationOverlayForDevice(id string, portrait boo
 		return nil, err
 	}
 	wipe := flatCalibrationWipeGrid(meta.Name)
-	bin, err := encodeInkJoyBinWithOverlay(rgba, flatRGB, s.colorPipelineForMetaOverride(meta, colorOverride), wipe, s.inkjoyWipeSelection(), mutate)
+	bin, err := encodeInkJoyBinWithOverlay(rgba, flatRGB, s.colorPipelineForMetaOverride(meta, colorOverride), wipe, transition, mutate)
 	if err != nil {
 		return nil, err
 	}
@@ -1292,7 +1292,7 @@ func convertImageWithCrop(raw []byte, crop CropRect, portrait bool, flatRGB bool
 	if flatRGB {
 		wipe = calibrationWipeGrid()
 	}
-	return encodeInkJoyBinFromRGBA(img, flatRGB, defaultColorPipeline(), wipe, DefaultInkJoyWipe)
+	return encodeInkJoyBinFromRGBA(img, flatRGB, standardColorPipeline(), wipe, DefaultInkJoyWipe)
 }
 
 // applyCrop extracts the crop rect (normalized 0–1) from img.

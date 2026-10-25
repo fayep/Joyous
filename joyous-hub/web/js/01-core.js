@@ -152,7 +152,6 @@ function showTab(name,btn){
   else if(name==='samsung'){ startTabRefresh(60000, refreshSamsungTab); startSamsungLogPoll(); }
   else if(name==='album') loadImages();
   else if(name==='overlays') loadOverlaysTab();
-  else if(name==='color') loadColorTab();
   if(name==='mqtt') startMQTTLogPoll();
   else stopMQTTLogPoll();
   if(name!=='samsung') stopSamsungLogPoll();

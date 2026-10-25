@@ -73,8 +73,8 @@ func capturedWipe28Names(dataDir string) []string {
 
 func inkJoy28WipeChoices(dataDir string) []WipeChoice {
 	out := []WipeChoice{
+		{ID: Wipe28Luminance, Label: "Luminance (dark first → light last)"},
 		{ID: Wipe28Off, Label: "Off (no transition)"},
-		{ID: Wipe28Luminance, Label: "Luminance (black first → white last)"},
 		{ID: Wipe28Random, Label: "Random captured transition"},
 	}
 	for _, n := range capturedWipe28Names(dataDir) {
@@ -138,17 +138,20 @@ func loadCapturedWipe28(path string) ([][]byte, error) {
 	return steps, nil
 }
 
-func (s *ImageStore) inkjoy28WipeSelection() string {
-	if s.colors != nil {
-		return normalizeInkJoy28Wipe(s.colors.Config().InkJoy28Wipe)
+// inkjoy28Transition resolves a device's 28.5" transition; "" is the
+// standard luminance one.
+func inkjoy28Transition(sel string) string {
+	if sel == "" {
+		return Wipe28Luminance
 	}
-	return Wipe28Off
+	return normalizeInkJoy28Wipe(sel)
 }
 
 // inkjoy28Steps resolves the transition steps for one send; nil means all 0.
-// lum is the render's luminance steps (luminanceSteps28).
-func (s *ImageStore) inkjoy28Steps(lum [][]byte) [][]byte {
-	sel := s.inkjoy28WipeSelection()
+// lum is the render's luminance steps (luminanceSteps28); transition is the
+// device's (Device.Transition).
+func (s *ImageStore) inkjoy28Steps(lum [][]byte, transition string) [][]byte {
+	sel := inkjoy28Transition(transition)
 	name := ""
 	switch {
 	case sel == Wipe28Luminance:

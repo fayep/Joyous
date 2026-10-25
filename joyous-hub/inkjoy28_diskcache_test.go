@@ -94,11 +94,11 @@ func TestInkJoy28DefaultValuedOverrideMatchesNoOverride(t *testing.T) {
 	for i, c := range paletteInkJoy28Display {
 		override[i] = PaletteRGB{int(c[0]), int(c[1]), int(c[2])}
 	}
-	a, err := store.ServeInkJoy28IJI3(id, true, nil)
+	a, err := store.ServeInkJoy28IJI3(id, true, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := store.ServeInkJoy28IJI3(id, true, override)
+	b, err := store.ServeInkJoy28IJI3(id, true, override, "")
 	if err != nil {
 		t.Fatal(err)
 	}

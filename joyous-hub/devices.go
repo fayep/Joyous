@@ -72,9 +72,9 @@ type Device struct {
 	DeepSleepActive  bool      `json:"deep_sleep_active,omitempty"` // samsung: overnight deep sleep (button wake)
 	// ColorOverride is a per-device snapshot of the panel's ink RGB values (one
 	// per ink, in palette-index order: 6, or 8 for the 28.5" — see InkNames),
-	// captured at save time. nil means "use the bridge's current display palette."
-	// Unlike the bridge-wide ColorConfig, this does not track later bridge edits —
-	// re-save (or reset) to pick up a new bridge default.
+	// captured at save time. nil means "use the panel's standard palette"
+	// (standardColorPipeline); a saved override doesn't follow later changes
+	// to that standard, so reset it to pick one up.
 	ColorOverride []PaletteRGB `json:"color_override,omitempty"`
 	// DeviceReportedP2 is the device's own factory/NVS P2 calibration, reported
 	// at login (see inkjoybridge.LoginInfo.P2). Distinct from ColorOverride
@@ -83,6 +83,10 @@ type Device struct {
 	// other non-real-InkJoy panel) starts from a value tuned for its own panel
 	// instead of the real-InkJoy-panel bridge default.
 	DeviceReportedP2 *[6]PaletteRGB `json:"device_reported_p2,omitempty"`
+	// Transition is the panel's refresh transition: a 10" wipe (see
+	// inkJoyWipeChoices) or a 28.5" transition (inkJoy28WipeChoices), by
+	// TransitionKind. "" means the standard luminance transition.
+	Transition string `json:"transition,omitempty"`
 	// SessionDeviceID / SessionUID are the login session IDs this frame holds
 	// (from the cloud's login_ack, or its own pubkey_report). When the bridge
 	// has to answer a login itself it reuses them, so it never changes the
@@ -425,6 +429,39 @@ func (r *DeviceRegistry) SetPortrait(id string, portrait bool) bool {
 	}
 	d.Portrait = portrait
 	return true
+}
+
+// SetTransition stores a device's refresh transition; see Device.Transition.
+func (r *DeviceRegistry) SetTransition(id, transition string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.m[id]
+	if !ok {
+		return false
+	}
+	d.Transition = transition
+	return true
+}
+
+// Transition kinds: which set of refresh transitions a panel supports.
+const (
+	TransitionKindInkJoy   = "inkjoy"   // 10" .bin lo-byte wipes
+	TransitionKindInkJoy28 = "inkjoy28" // 28.5"/25.3" per-pixel refresh steps
+)
+
+// TransitionKind is the set of refresh transitions this panel supports, or ""
+// for none: the Seeed and GooDisplay clones draw PNGs with no transition.
+func (d *Device) TransitionKind() string {
+	if d.Type != DeviceTypeInkJoy {
+		return ""
+	}
+	switch {
+	case d.HardwareModel == inkjoybridge.HardwareModelInkJoy28 || d.Panel == "28.5" || d.Panel == "25.3":
+		return TransitionKindInkJoy28
+	case d.HardwareModel == inkjoybridge.HardwareModelInkJoy10 || d.Panel == "10":
+		return TransitionKindInkJoy
+	}
+	return ""
 }
 
 // inkNames8 names an 8-ink InkJoy palette (paletteInkJoy28Display's order):

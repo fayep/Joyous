@@ -104,13 +104,6 @@ func TestServeBinRandomizesWipeForPNG(t *testing.T) {
 	}
 	dir := t.TempDir()
 	store := NewImageStore(dir)
-	colorStore := NewColorStore(dir)
-	cfg := defaultColorConfig()
-	cfg.InkJoyWipe = WipeRandom
-	if err := colorStore.Save(cfg); err != nil {
-		t.Fatal(err)
-	}
-	store.SetColorStore(colorStore)
 
 	img := image.NewRGBA(image.Rect(0, 0, frameW, frameH))
 	palColors := []color.RGBA{
@@ -133,7 +126,7 @@ func TestServeBinRandomizesWipeForPNG(t *testing.T) {
 
 	seen := map[string]struct{}{}
 	for range 12 {
-		bin, err := store.ServeBin(id)
+		bin, err := store.ServeBinOrientationForDevice(id, false, nil, "", WipeRandom, false)
 		if err != nil {
 			t.Fatalf("ServeBin: %v", err)
 		}
@@ -145,13 +138,12 @@ func TestServeBinRandomizesWipeForPNG(t *testing.T) {
 	}
 }
 
-func TestServeBinUsesUniformWipeByDefault(t *testing.T) {
+func TestServeBinUsesDeviceUniformWipe(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping PNG conversion test in short mode")
 	}
 	dir := t.TempDir()
 	store := NewImageStore(dir)
-	store.SetColorStore(NewColorStore(dir))
 
 	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
 	for y := range 32 {
@@ -167,7 +159,7 @@ func TestServeBinUsesUniformWipeByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin, err := store.ServeBin(id)
+	bin, err := store.ServeBinOrientationForDevice(id, false, nil, "", WipeUniformPrefix+"248", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +167,7 @@ func TestServeBinUsesUniformWipeByDefault(t *testing.T) {
 	for y := range frameH {
 		for x := range frameW {
 			if lo[y][x] != 248 {
-				t.Fatalf("default wipe at %d,%d = %d, want 248", x, y, lo[y][x])
+				t.Fatalf("uniform wipe at %d,%d = %d, want 248", x, y, lo[y][x])
 			}
 		}
 	}
@@ -237,8 +229,14 @@ func TestInkJoyWipeChoicesIncludesEmbedded(t *testing.T) {
 	if len(choices) < 3 {
 		t.Fatalf("expected uniform, random, and embedded wipes, got %d", len(choices))
 	}
-	if choices[0].ID != WipeUniformPrefix+"picker" {
+	// The standard transition leads the device dropdown.
+	if choices[0].ID != WipeLuminance {
 		t.Fatalf("first choice = %q", choices[0].ID)
+	}
+	for _, c := range choices {
+		if err := validateInkJoyWipe(c.ID); err != nil {
+			t.Errorf("choice %q: %v", c.ID, err)
+		}
 	}
 	foundClock := false
 	for _, c := range choices {
@@ -387,12 +385,10 @@ func distinctLoInRect(lo [][]byte, x0, x1, y0, y1 int) int {
 	return len(seen)
 }
 
+// Luminance is the standard wipe, so a plain ServeBin uses it.
 func TestLuminanceWipeNotReappliedOnServe(t *testing.T) {
 	dir := t.TempDir()
-	colors := NewColorStore(dir)
-	colors.Save(ColorConfig{InkJoyWipe: WipeLuminance})
 	store := NewImageStore(dir)
-	store.SetColorStore(colors)
 
 	img := image.NewRGBA(image.Rect(0, 0, frameW, frameH))
 	for y := 0; y < frameH; y++ {
