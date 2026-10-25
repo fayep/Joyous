@@ -1,140 +1,121 @@
-# PhotoFrames / Joyous Hub
+# Joyous
 
-Local-first control for e-ink photo frames on your LAN. **Joyous Hub** (`joyous-hub/`) is a single Go service that hosts a web UI, serves images, and talks to frames directly — no cloud upload for your photos.
+Local-first control for e-ink photo frames. Joyous keeps your photo library on your own machine, renders each photo for the panel it's going to (dithering against that panel's real inks), and sends it to the frame over your LAN. No cloud upload for your photos.
 
-| Frame | Protocol | Hub role |
-|-------|----------|----------|
-| **InkJoy** | MQTT + HTTP `.bin` download | Local MQTT broker, optional cloud bridge, image encode & push |
-| **Samsung EM32DX** | MDC (TLS `:1515`) + HTTP pull | Wake/sleep, MDC content push, battery logging |
+| Frame | How Joyous talks to it |
+|---|---|
+| **InkJoy** 10" and 28.5" | MQTT and HTTP. Joyous runs the broker the frame connects to and can relay to InkJoy's cloud. |
+| **Seeed XIAO EE02 / GooDisplay ESP32-133C02** e-paper boards | Same as InkJoy, using the custom firmware in [`Firmware/`](Firmware/) |
+| **Samsung E-Paper** (EM32DX) | MDC over TLS plus HTTP pull: wake, push, then sleep again |
+| **Nixplay** | Nixplay's own cloud: Joyous uploads to your Nixplay galleries |
 
-See [CHANGELOG.md](CHANGELOG.md) for recent hub changes. Album brainstorm: [docs/future-ideas.md](docs/future-ideas.md). Image catalog & smart albums: [ADR 0001](docs/adr/0001-sqlite-catalog-smart-albums.md), [implementation plan](docs/plans/sqlite-catalog-implementation.md), [upgrade guide](docs/migrations/sqlite-catalog-upgrade.md).
+## Install
 
-## Joyous Hub at a glance
+Download the archive for your platform from the [latest release](https://github.com/fayep/Joyous/releases/latest). Each archive has an `INSTALL.md` with the steps for that platform:
 
-```
-┌─────────────┐     HTTP (album, UI)      ┌──────────────────┐
-│   Browser   │◄─────────────────────────►│   Joyous Hub     │
-└─────────────┘                           │  :18080 HTTP     │
-                                          │  :11883 MQTT     │
-┌─────────────┐     MQTT + /images/*.bin    └────────┬─────────┘
-│  InkJoy     │◄───────────────────────────────────┤
-│  frame      │                                    │
-└─────────────┘                                    │ MDC + HTTP
-                                                   │ /samsung/…
-┌─────────────┐     WoL + magic UDP + MDC          │
-│  Samsung    │◄───────────────────────────────────┘
-│  E-Paper    │
-└─────────────┘
-```
+- **macOS (Apple silicon):** `joyous-<version>-darwin-arm64.tar.gz`. It includes an installer that sets Joyous up as login services.
+- **Linux (amd64, arm64):** `joyous-<version>-linux-<arch>.tar.gz`. A Docker image is also published: `ghcr.io/fayep/joyous-hub`.
+- **Windows (amd64):** `joyous-<version>-windows-amd64.zip`
 
-**InkJoy:** Point the frame at the hub’s MQTT port (redirect / BLE adopt). The hub can bridge selected traffic to the vendor cloud, intercept OTA and sleep commands, encode album images to `.bin`, and push play URLs.
+`SHA256SUMS` in the release lets you check the download.
 
-**Samsung:** The hub discovers frames via SSDP, wakes them over the network when needed, pushes PNGs via MDC (mobile deploy `content.json` URL), then puts the display back to sleep to save battery. Battery level is read on the same MDC session as sleep — no extra wake-only polls.
+Joyous is four programs. Run the hub plus the bridges for the frames you have:
 
-## Quick start (macOS)
+| Program | Does |
+|---|---|
+| `joyous-hub` | Web UI, photo library, rendering, frame list |
+| `inkjoy-bridge` | InkJoy frames and the custom-firmware boards (also does their Bluetooth setup) |
+| `samsung-bridge` | Samsung E-Paper frames |
+| `nixplay-bridge` | Nixplay |
 
-Requires **Go 1.22+**, **libheif** (`brew install libheif`) for HEIC uploads, and **Local Network** permission for SSDP / MDC discovery.
+Then open `http://<host>:18080`, and follow [Frame setup](docs/frame-setup.md) to connect each frame.
 
-```bash
-cd joyous-hub
-cp config.yaml.example ~/Library/Application\ Support/Joyous/config.yaml
-# edit data_dir, discover_subnets, server_addr as needed
+### Ports
 
-make build
-./joyous-hub
-# Web UI: http://localhost:18080
-```
+| Port | Used by |
+|---|---|
+| 18080 (TCP) | Web UI and API; frames download their images here |
+| 1883 (TCP) | Hub MQTT broker: the bridges connect to it (local only) |
+| 11883 (TCP) | InkJoy bridge MQTT broker: InkJoy frames connect to it |
+| 1900 (UDP) | SSDP discovery of Samsung frames |
 
-**Production install** (launchd + `JoyousHub.app`, grants Local Network on macOS):
+Frames must be able to reach the host on 18080 and 11883.
 
-```bash
-cd joyous-hub
-./scripts/install-local.sh
-# or remote: ./install.sh   (builds, rsyncs to hubhost, runs install-local.sh there)
-```
+### Configuration
 
-Default ports: HTTP **18080**, MQTT **11883**. Config path:
+Each program reads a YAML file from your config folder:
 
-- macOS: `~/Library/Application Support/Joyous/config.yaml`
-- Linux: `~/.config/Joyous/config.yaml`
+- **macOS:** `~/Library/Application Support/Joyous/`
+- **Linux:** `~/.config/Joyous/`
+- **Windows:** `%AppData%\Joyous\`
 
-## Web UI
+The files are `config.yaml` (hub), `inkjoy-config.yaml`, `samsung-config.yaml` and `nixplay-config.yaml`. Commented examples are in [`joyous-hub/`](joyous-hub/) and in every release archive. A missing file means defaults; `-config <path>` points a program at another file.
 
-Open the hub HTTP URL in a browser.
+The settings most people need:
 
-- **Devices** — discovered InkJoy and Samsung frames; send album images, refresh InkJoy display, discover SSDP.
-- **Album** — upload JPEG/PNG/HEIC; per-format crops; send to a frame (no background frame polling).
-- **InkJoy** — per-frame editor: name, portrait, sleep schedule, display preview, BLE adopt.
-- **Samsung** — per-frame editor: wake (moon) / sleep (power), WiFi MAC for remote wake, poll interval, auto-sleep after send, battery history and “since last push” delta.
+| File | Setting | What it's for |
+|---|---|---|
+| `config.yaml` | `data_dir` | Where the photo library and frame list live |
+| `config.yaml` | `server_addr` | `host:18080` as the frames should reach it (required) |
+| `inkjoy-config.yaml` | `upstream` | InkJoy's cloud broker, relayed to so the InkJoy app keeps working; `""` keeps frames local-only |
+| `samsung-config.yaml` | `discover_subnets` | Your LAN (e.g. `192.168.1.0/24`), searched when SSDP discovery is quiet |
+| `nixplay-config.yaml` | `keychain_account` | Your Nixplay email; store the password with `nixplay-bridge -set-password` |
 
-### Samsung send & power (sleep by default)
+## Using Joyous
 
-The panel should be **asleep almost always**. The hub only wakes it for an image send (or if you tap moon wake). After delivery it sleeps again — battery is read on that same MDC session before sleep.
+- **Album:** upload JPEG, PNG, HEIC or AVIF photos. Tag them, build smart albums, set a crop per aspect ratio, and send to a frame.
+- **Devices:** every frame, with:
+  - **Send image** and **Scheduled sends**.
+  - **Color calibration:** send a colour chart, then save the panel's measured inks.
+  - The refresh **Transition** (InkJoy 10" and 28.5").
+- **Overlays:** optional weather and photo-name overlay drawn onto sent photos.
+- **InkJoy** and **Nixplay:** the bridges' own pages, including InkJoy Bluetooth setup.
+- **Samsung:** wake and sleep, Wi-Fi MAC for remote wake, polling, inactive hours, battery history.
 
-1. Set **WiFi MAC** from the Samsung E-Paper app (device info) — required for wake-on-send.
-2. Enable **Network Standby** on the frame (E-Paper app → power settings). Remote wake does not work when standby is off.
-3. Leave **Sleep after send** on; set delay long enough for e-ink refresh (often 30–45s).
-4. **Asleep** in the UI is normal. The hub does not MDC-poll Samsung frames in the background.
+Each photo is rendered for its frame:
+- sharpened on lightness only;
+- fitted to the panel's black-to-white range;
+- dithered against that panel's own measured inks.
 
-**On send:** wake → push → wait → battery read → sleep.
+Per-frame colour calibration corrects panels whose inks differ from the standard set.
 
-If remote wake fails, press the frame **power button** when prompted; the hub keeps retrying MDC for up to 5 minutes.
+## License
 
-Battery samples append to `{data_dir}/samsung_battery_history.json` from pre-sleep reads during sends — no wake-only battery polls.
-
-## Configuration
-
-`joyous-hub/config.yaml.example` documents all options. Highlights:
-
-| Setting | Purpose |
-|---------|---------|
-| `listen_http` / `listen_mqtt` | Hub bind addresses |
-| `upstream` | InkJoy cloud broker (`13.39.148.101:1883`); empty = local-only |
-| `upstream_allow` / `downstream_allow` | Which MQTT actions cross the bridge |
-| `intercept` | Hub-handled cloud→frame actions (`ota`, `wifi_sleep`, `mqtt_config`, …) |
-| `data_dir` | `devices.json`, album images, Samsung configs, battery history |
-| `server_addr` | Host:port frames use to fetch images (e.g. `hubhost.local:18080`) |
-| `discover_subnets` | LAN prefixes for Samsung MDC sweep when SSDP is quiet |
-
-Credentials: `INKJOY_MQTT_USER` / `INKJOY_MQTT_PASSWORD` or `upstream_usr` / `upstream_pwd`.
+Joyous is free software under the [GNU Affero General Public License v3](LICENSE). If you run a modified version for others over a network, you must offer them its source. The binaries include third-party components under their own licences, listed in [THIRD_PARTY_NOTICES.md](joyous-hub/THIRD_PARTY_NOTICES.md), among them libde265 (LGPL-3.0) for HEIC decoding.
 
 ## Development
+
+Requires Go 1.27 and a C/C++ compiler (CGO builds the HEIC decoder and, on macOS, the Bluetooth bridge).
 
 ```bash
 cd joyous-hub
 make test          # unit tests
-make build         # dev binary
+make build-all     # hub + the three bridges
+./install.sh       # macOS: build, rsync to a remote Mac, install as launchd services
 ```
 
-Docker: `joyous-hub/docker-compose.yml`. Cross-build targets: `linux-arm64`, `linux-arm`, `linux-mips` in the Makefile.
+Architecture: [BRIDGES.md](joyous-hub/BRIDGES.md). Image catalog and smart albums: [ADR 0001](docs/adr/0001-sqlite-catalog-smart-albums.md). Ideas: [docs/future-ideas.md](docs/future-ideas.md). Research notes: `research/firmware-notes.md`, `Samsung/README.md`.
 
-Research notes: `research/firmware-notes.md`, `Samsung/README.md` (APK / MDC reference).
+### Releases
 
-## Legacy InkJoy pipeline
+Pushing a `v*` tag (e.g. `git tag v1.0.0 && git push origin v1.0.0`) runs `.github/workflows/release.yml`. It does three things:
 
-Lower-level tools from before the hub — still useful for router-level interception or offline encoding.
+- Builds the hub and the three bridges natively for macOS (Apple silicon), Linux (amd64, arm64) and Windows (amd64), each with HEIC support.
+- Publishes them as a GitHub release with `SHA256SUMS`.
+- Pushes the multi-arch hub image to `ghcr.io/fayep/joyous-hub`.
 
-| Path | Purpose |
-|------|---------|
-| `encode_bin.py` | Image → InkJoy `.bin` (Stucki dither, 6-color palette) |
-| `local_push.py` | Serve `.bin` + inject MQTT play via control port |
-| `inkjoy-proxy/` | Transparent MQTT proxy on a LAN gateway (iptables REDIRECT) |
+To pack one platform locally, run `joyous-hub/scripts/package-release.sh <goos> <goarch> <version> <out-dir>`. After changing dependencies, regenerate the notices with `joyous-hub/scripts/gen-notices.sh`.
 
-### Encode an image
+### Standalone InkJoy tools
 
-```bash
-uv run encode_bin.py photo.jpg /tmp/image.bin
-uv run encode_bin.py photo.jpg /tmp/image.bin --portrait --crop-bottom
-```
+Older scripts from before the hub, still handy for offline work:
 
-### Router proxy (optional)
+| Script | Does |
+|---|---|
+| `encode_bin.py` | Image → InkJoy `.bin` (`uv run encode_bin.py photo.jpg out.bin [--portrait]`) |
+| `decode_bin.py` | InkJoy `.bin` → PNG |
+| `local_push.py` | Host a `.bin` locally and tell a frame to play it over MQTT |
+| `mqtt_watch.py` | Watch InkJoy MQTT traffic |
+| `ble_scan.py` | Scan for Samsung E-Paper frames over Bluetooth |
 
-```bash
-cd inkjoy-proxy
-cp .env.example .env   # ROUTER_SSH=user@router
-./deploy.sh
-```
-
-The proxy forwards MQTT, injects play messages on `:18831`, and drops injected `play_ack` so the cloud never sees local pushes.
-
-**Bin format:** 1600×1200, 2 bytes/pixel (color index + wipe order), bottom-to-top row order — see encoder source for palette and portrait handling.
+**`.bin` format:** 1600×1200, 2 bytes per pixel (ink index, then wipe order), rows bottom to top.

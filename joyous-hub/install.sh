@@ -17,6 +17,7 @@ REMOTE=${REMOTE:-hubhost}
 REMOTE_DIR=${REMOTE_DIR:-~/joyous-hub}
 SERVER_ADDR=${SERVER_ADDR:-hubhost.local:18080}
 DISCOVER_SUBNETS=${DISCOVER_SUBNETS:-192.168.50}
+DATA_DIR=${DATA_DIR:-/Volumes/tank/Media/photoframe}
 # Timestamp suffix so every deploy gets a distinct version even when unset — a rebuild that
 # doesn't touch the SPA's HTML would otherwise hash identically to the previous build's
 # uiRevision (see ui_revision.go), so the browser never sees a version change to reload on.
@@ -113,6 +114,7 @@ ssh "$REMOTE" \
 	SKIP_BUILD=1 \
 	SERVER_ADDR="$SERVER_ADDR" \
 	DISCOVER_SUBNETS="$DISCOVER_SUBNETS" \
+	DATA_DIR="$DATA_DIR" \
 	JOYOUS_VERSION="$JOYOUS_VERSION" \
 	WITH_INKJOY="$WITH_INKJOY" \
 	WITH_SAMSUNG="$WITH_SAMSUNG" \

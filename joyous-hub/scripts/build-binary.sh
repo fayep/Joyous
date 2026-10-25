@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build joyous-hub (or a tagged bridge binary) with its version linked in.
 # Usage: build-binary.sh <output-path> [build-tags]
-# Env: SRC_DIR (repo root), JOYOUS_VERSION
+# Env: SRC_DIR (repo root), JOYOUS_VERSION. HEIC decoding (goheif) compiles its
+# own HEVC decoder with CGO, so it needs a C/C++ compiler but no system library;
+# CGO_ENABLED=0 (with GOOS/GOARCH) cross-builds without HEIC support.
 set -euo pipefail
 
 OUT="${1:?output path required}"
@@ -11,18 +13,29 @@ SRC_DIR="${SRC_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 # version per build — see install.sh's JOYOUS_VERSION default and ui_revision.go's uiRevision.
 JOYOUS_VERSION="${JOYOUS_VERSION:-dev-$(date -u +%Y%m%d%H%M%S)}"
 
-export CGO_ENABLED=1
+export CGO_ENABLED="${CGO_ENABLED:-1}"
 # Vector exp2/log2 kernel for the batch LAB conversions (pow_batch_simd.go);
 # without it the build falls back to math.Pow (pow_batch_scalar.go).
 export GOEXPERIMENT="${GOEXPERIMENT:-simd}"
-if prefix="$(brew --prefix libheif 2>/dev/null)"; then
-	export CGO_CFLAGS="${CGO_CFLAGS:-} -I${prefix}/include"
-	export CGO_LDFLAGS="${CGO_LDFLAGS:-} -L${prefix}/lib -lheif"
-fi
 
 (
 	cd "$SRC_DIR"
 	LDFLAGS="-X joyous-hub/internal/linkmeta.Version=${JOYOUS_VERSION}"
+	if [[ "$CGO_ENABLED" == "1" ]]; then
+		case "$(go env GOOS)" in
+		windows)
+			# goheif's libde265 headers mark its API dllimport unless told the
+			# build is static; link MinGW's C++ runtime in so no DLLs ship.
+			export CGO_CFLAGS="${CGO_CFLAGS:-} -DLIBDE265_STATIC_BUILD"
+			export CGO_CXXFLAGS="${CGO_CXXFLAGS:-} -DLIBDE265_STATIC_BUILD"
+			LDFLAGS+=" -extldflags=-static"
+			;;
+		linux)
+			# Keep the binary off the host's libstdc++ version.
+			LDFLAGS+=" '-extldflags=-static-libstdc++ -static-libgcc'"
+			;;
+		esac
+	fi
 	if [[ -n "$BUILD_TAGS" ]]; then
 		go build -tags "$BUILD_TAGS" -ldflags "$LDFLAGS" -o "$OUT" .
 	else

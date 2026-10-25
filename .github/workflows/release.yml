@@ -1,0 +1,131 @@
+# Builds the hub and bridges natively on each platform (CGO for the HEIC
+# decoder, and CoreBluetooth on macOS), plus the multi-arch Docker image.
+# A v* tag publishes them as a GitHub release and to ghcr.io; a pull request
+# touching the release machinery runs the same builds as a dry run.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - joyous-hub/scripts/package-release.sh
+      - joyous-hub/scripts/build-binary.sh
+      - joyous-hub/Dockerfile
+      - joyous-hub/scripts/gen-notices.sh
+      - joyous-hub/go.mod
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dev-{0}', github.sha) }}
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, goos: darwin, goarch: arm64, test: true }
+          # 22.04's glibc 2.35 keeps the binaries running on Debian 12 and
+          # Raspberry Pi OS (bookworm).
+          - { os: ubuntu-22.04, goos: linux, goarch: amd64, test: true }
+          - { os: ubuntu-22.04-arm, goos: linux, goarch: arm64 }
+          - { os: windows-2022, goos: windows, goarch: amd64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: joyous-hub
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: joyous-hub/go.mod
+          cache-dependency-path: joyous-hub/go.sum
+      - name: C compiler
+        run: gcc --version | head -1
+      - name: Test
+        if: matrix.test
+        run: go test -short ./...
+      - name: Third-party notices up to date
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          bash scripts/gen-notices.sh "$RUNNER_TEMP/notices.md"
+          diff -u THIRD_PARTY_NOTICES.md "$RUNNER_TEMP/notices.md" || {
+            echo "::error::THIRD_PARTY_NOTICES.md is stale: run joyous-hub/scripts/gen-notices.sh"; exit 1; }
+      - name: Package
+        run: bash scripts/package-release.sh "${{ matrix.goos }}" "${{ matrix.goarch }}" "$VERSION" "$GITHUB_WORKSPACE/dist"
+      - name: Linked libraries
+        working-directory: dist
+        run: |
+          mkdir -p /tmp/peek && tar -xzf ./*.tar.gz -C /tmp/peek 2>/dev/null || unzip -qo ./*.zip -d /tmp/peek
+          f=$(find /tmp/peek -name 'joyous-hub*' -type f | head -1)
+          case "${{ matrix.goos }}" in
+            linux) ldd "$f" ;;
+            darwin) otool -L "$f" ;;
+            windows) objdump -p "$f" | grep "DLL Name" ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  docker:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/joyous-hub
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=sha
+      - uses: docker/build-push-action@v6
+        with:
+          context: joyous-hub
+          platforms: linux/amd64,linux/arm64
+          build-args: JOYOUS_VERSION=${{ env.VERSION }}
+          push: ${{ startsWith(github.ref, 'refs/tags/') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build, docker]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes

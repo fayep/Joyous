@@ -1,7 +1,8 @@
 # Samsung bridge configuration
 #
-# macOS:  ~/Library/Application Support/Joyous/samsung-config.yaml
-# Linux:  ~/.config/Joyous/samsung-config.yaml
+# macOS:   ~/Library/Application Support/Joyous/samsung-config.yaml
+# Linux:   ~/.config/Joyous/samsung-config.yaml
+# Windows: %AppData%\Joyous\samsung-config.yaml
 #
 # CLI flags override these values.
 
@@ -21,13 +22,14 @@ data_dir: "./data-samsung"
 
 # Hub data_dir — must match hub config.yaml data_dir exactly (case-sensitive volumes).
 # Bridge writes frame PNGs to {hub_data_dir}/samsung/{frameId}.png; hub serves them.
-# When unset, samsung-bridge reads ~/Library/Application Support/Joyous/config.yaml.
+# When unset, it is read from the hub's config.yaml in the same folder.
 hub_data_dir: ""
 
-# LAN for MDC discovery sweep when SSDP is quiet. Prefer CIDR (covers a /23 fully).
-# Bare "192.168.50" only sweeps 192.168.50.0–255, not 192.168.51.x.
-# WoL broadcast is NOT taken from this — it uses the host interface prefix length.
-discover_subnets: "192.168.50.0/23"
+# Your LAN, searched for frames when SSDP discovery is quiet, e.g.
+# "192.168.1.0/24". Prefer CIDR: a bare "192.168.1" only covers .0–.255, so a
+# /23 needs the CIDR form. Wake-on-LAN doesn't use this; it broadcasts on the
+# host interface's own subnet. Empty = SSDP only.
+discover_subnets: ""
 
 # Optional directory for bridge file logging (launchd uses its own paths)
 log_dir: ""

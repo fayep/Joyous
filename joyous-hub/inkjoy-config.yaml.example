@@ -1,7 +1,8 @@
 # InkJoy bridge configuration
 #
-# macOS:  ~/Library/Application Support/Joyous/inkjoy-config.yaml
-# Linux:  ~/.config/Joyous/inkjoy-config.yaml
+# macOS:   ~/Library/Application Support/Joyous/inkjoy-config.yaml
+# Linux:   ~/.config/Joyous/inkjoy-config.yaml
+# Windows: %AppData%\Joyous\inkjoy-config.yaml
 #
 # CLI flags override these values. Upstream credentials can also come from
 # INKJOY_MQTT_USER / INKJOY_MQTT_PASSWORD when left blank here.
@@ -36,7 +37,7 @@ intercept: "mqtt_config,wifi_sleep,ota,fpga"
 data_dir: "./data-inkjoy"
 
 # Hub data_dir — must match hub config.yaml data_dir exactly (case-sensitive volumes).
-# When unset, inkjoy-bridge reads ~/Library/Application Support/Joyous/config.yaml.
+# When unset, it is read from the hub's config.yaml in the same folder.
 hub_data_dir: ""
 
 # Unknown MQTT actions → {capture_dir}/frame-to-broker|broker-to-frame|intercept/
