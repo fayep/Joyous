@@ -13,6 +13,8 @@ on:
       - joyous-hub/scripts/package-release.sh
       - joyous-hub/scripts/build-binary.sh
       - joyous-hub/Dockerfile
+      - joyous-hub/scripts/gen-notices.sh
+      - joyous-hub/go.mod
   workflow_dispatch:
 
 permissions:
@@ -50,6 +52,12 @@ jobs:
       - name: Test
         if: matrix.test
         run: go test -short ./...
+      - name: Third-party notices up to date
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          bash scripts/gen-notices.sh "$RUNNER_TEMP/notices.md"
+          diff -u THIRD_PARTY_NOTICES.md "$RUNNER_TEMP/notices.md" || {
+            echo "::error::THIRD_PARTY_NOTICES.md is stale: run joyous-hub/scripts/gen-notices.sh"; exit 1; }
       - name: Package
         run: bash scripts/package-release.sh "${{ matrix.goos }}" "${{ matrix.goarch }}" "$VERSION" "$GITHUB_WORKSPACE/dist"
       - name: Linked libraries

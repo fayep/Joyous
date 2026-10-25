@@ -13,5 +13,6 @@ FROM alpine:3
 # libstdc++: the CGO HEIC decoder (goheif) is C++.
 RUN apk add --no-cache libstdc++ libgcc ca-certificates tzdata
 COPY --from=builder /out/joyous-hub /joyous-hub
+COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/joyous/
 EXPOSE 1883 8080
 ENTRYPOINT ["/joyous-hub"]

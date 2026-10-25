@@ -22,6 +22,8 @@
     <button onclick="showTab('samsung',this)">Samsung</button>
     <button id="nav-nixplay" style="display:none" onclick="showTab('nixplay',this)">Nixplay</button>
   </nav>
+  <!-- AGPL-3.0 §13: point users at the source. A modified version must link to its own. -->
+  <a class="source-link" href="https://github.com/fayep/Joyous" target="_blank" rel="noopener" title="Joyous is free software under the GNU AGPL v3">Source</a>
 </header>
 <div id="send-picker"></div>
 <main>
@@ -43,12 +45,12 @@
         <div class="album-toolbar" id="album-toolbar"></div>
         <div class="album-upload-wrap">
           <div id="upload-zone" class="album-upload" onclick="document.getElementById('file-input').click()">
-            Drop images here or click to upload <span class="album-upload-mono">(.bin, .png, .jpg, .avif)</span>
+            Drop images here or click to upload <span class="album-upload-mono">(.jpg, .png, .heic, .avif, .bin)</span>
           </div>
         </div>
         <p class="album-reorder-hint" id="album-reorder-hint" hidden>Drag a photo onto the left edge of another to reorder</p>
         <div id="image-grid" class="album-grid"></div>
-        <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg,.avif" multiple>
+        <input type="file" id="file-input" accept=".bin,.png,.jpg,.jpeg,.heic,.heif,.avif" multiple>
       </div>
     </div>
   </div>

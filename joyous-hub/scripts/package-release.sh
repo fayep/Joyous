@@ -33,7 +33,7 @@ for spec in joyous-hub: inkjoy-bridge:inkjoybridge samsung-bridge:samsungbridge 
 	bash "$SRC_DIR/scripts/build-binary.sh" "$stage/bin/$bin$ext" "$tags"
 done
 
-cp "$SRC_DIR"/*.yaml.example "$stage/"
+cp "$SRC_DIR"/*.yaml.example "$SRC_DIR/LICENSE" "$SRC_DIR/THIRD_PARTY_NOTICES.md" "$stage/"
 cp "$SRC_DIR/scripts/RELEASE-INSTALL.md" "$stage/INSTALL.md"
 if [[ "$GOOS_T" == "darwin" ]]; then
 	mkdir -p "$stage/scripts"

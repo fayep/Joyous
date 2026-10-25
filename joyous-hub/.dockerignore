@@ -16,3 +16,4 @@ nixplay-bridge
 inkjoy-hub-linux-*
 *.log
 .DS_Store
+!THIRD_PARTY_NOTICES.md
