@@ -72,8 +72,8 @@ var hiBytes8 = [8]byte{0x01, 0x02, 0x03, 0x04, 0x06, 0x07, 0x00, 0x05}
 // natively portrait: portrait=false means the frame is hung landscape, so the
 // photo is cropped √2:1 and rotated 90° CCW onto the panel (same convention as
 // the 10"'s portrait rotate, and as drawWeatherOverlay's portrait flag).
-func (s *ImageStore) ServeInkJoy28IJI3(id string, portrait bool, colorOverride []PaletteRGB) ([]byte, error) {
-	return s.serveInkJoy28IJI3(id, portrait, nil, colorOverride)
+func (s *ImageStore) ServeInkJoy28IJI3(id string, portrait bool, colorOverride []PaletteRGB, transition string) ([]byte, error) {
+	return s.serveInkJoy28IJI3(id, portrait, nil, colorOverride, transition)
 }
 
 // ServeInkJoy28IJI3Overlay is ServeInkJoy28IJI3 with a server-side overlay
@@ -85,8 +85,8 @@ func (s *ImageStore) ServeInkJoy28IJI3(id string, portrait bool, colorOverride [
 // cache by overlay token, so the clean render remains under its own filename.
 // The mutate receives the panel-native 2160x3060 image; for a landscape frame
 // that is the photo rotated CCW, so the mutator must rotate its overlay to match.
-func (s *ImageStore) ServeInkJoy28IJI3Overlay(id string, portrait bool, mutate overlayFrameMutator, colorOverride []PaletteRGB) ([]byte, error) {
-	return s.serveInkJoy28IJI3(id, portrait, mutate, colorOverride)
+func (s *ImageStore) ServeInkJoy28IJI3Overlay(id string, portrait bool, mutate overlayFrameMutator, colorOverride []PaletteRGB, transition string) ([]byte, error) {
+	return s.serveInkJoy28IJI3(id, portrait, mutate, colorOverride, transition)
 }
 
 // serveInkJoy28IJI3 produces the IJI3 for the photo, optionally with an overlay.
@@ -100,12 +100,12 @@ func (s *ImageStore) ServeInkJoy28IJI3Overlay(id string, portrait bool, mutate o
 // Non-overlay pixels are already exact palette colours, so they map to
 // themselves (untouched); only the overlay marks change, landing as crisp flat
 // black/white ink. Reusing the cached base dither makes overlay renders fast.
-func (s *ImageStore) serveInkJoy28IJI3(id string, portrait bool, mutate overlayFrameMutator, colorOverride []PaletteRGB) ([]byte, error) {
+func (s *ImageStore) serveInkJoy28IJI3(id string, portrait bool, mutate overlayFrameMutator, colorOverride []PaletteRGB, transition string) ([]byte, error) {
 	render, err := s.inkjoy28Render(id, portrait, colorOverride)
 	if err != nil {
 		return nil, err
 	}
-	base, steps := render.idx, s.inkjoy28Steps(render.lum)
+	base, steps := render.idx, s.inkjoy28Steps(render.lum, transition)
 	if mutate == nil {
 		return scanWrapInkJoy28(base, steps)
 	}

@@ -17,7 +17,6 @@
     <button onclick="showTab('devices',this)">Devices</button>
     <button class="active" onclick="showTab('album',this)">Album</button>
     <button onclick="showTab('overlays',this)">Overlays</button>
-    <button onclick="showTab('color',this)">Color</button>
     <button id="nav-inkjoy" style="display:none" onclick="showTab('inkjoy',this)">InkJoy</button>
     <button id="nav-mqtt" style="display:none" onclick="showTab('mqtt',this)">MQTT</button>
     <button onclick="showTab('samsung',this)">Samsung</button>
@@ -144,113 +143,6 @@
         <p style="font-size:.85rem;color:#666;margin:.25rem 0 .75rem">Re-sends each frame’s current album image with a fresh weather overlay. Album → Send also adds the overlay when enabled.</p>
         <div id="ovl-send-list"><p style="color:#888;font-size:.9rem">Loading frames…</p></div>
       </div>
-    </div>
-  </div>
-  <div id="tab-color" style="display:none">
-    <div class="card" style="max-width:760px">
-      <div class="section-label" style="margin-top:0">Pre-dither LAB processing</div>
-      <p style="font-size:.85rem;color:#666;margin:.25rem 0 .75rem">Optional steps before Stucki dithering (skipped for calibration swatches and ≤6-color images). Sharpening, dynamic range, chroma, highlight, and shadow are independent.</p>
-      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
-        <input type="checkbox" id="clr-sharpen" checked> Sharpen edges (unsharp mask on lightness only, so the dither keeps edges crisp; smooth skin and sky are left alone)
-      </label>
-      <label style="display:block;margin:.35rem 0 .35rem;font-size:.85rem">Sharpen strength
-        <input type="range" id="clr-sharpen-amount" min="0.1" max="3" step="0.1" value="1.2" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-sharpen-amount-val').textContent=this.value">
-        <span id="clr-sharpen-amount-val" style="font-family:monospace">1.2</span>
-      </label>
-      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Sharpen radius (panel pixels)
-        <input type="range" id="clr-sharpen-radius" min="0.5" max="3" step="0.1" value="1.4" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-sharpen-radius-val').textContent=this.value">
-        <span id="clr-sharpen-radius-val" style="font-family:monospace">1.4</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
-        <input type="checkbox" id="clr-lab-dynamic-range"> Fit dynamic range (InkJoy &amp; Samsung — compress scene luminance to N stops in log space)
-      </label>
-      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Target stops
-        <input type="range" id="clr-lab-dynamic-range-stops" min="2" max="6" step="0.5" value="4.5" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-dynamic-range-stops-val').textContent=this.value">
-        <span id="clr-lab-dynamic-range-stops-val" style="font-family:monospace">4.5</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
-        <input type="checkbox" id="clr-lab-chroma"> Chroma boost (pulls neutrals toward their hue)
-      </label>
-      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Chroma strength
-        <input type="range" id="clr-lab-chroma-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-chroma-strength-val').textContent=this.value">
-        <span id="clr-lab-chroma-strength-val" style="font-family:monospace">1</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
-        <input type="checkbox" id="clr-lab-highlight"> Highlight rolloff (targets bright blue sky/water; leaves neutral snow and clouds mostly alone)
-      </label>
-      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Highlight strength
-        <input type="range" id="clr-lab-highlight-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-highlight-strength-val').textContent=this.value">
-        <span id="clr-lab-highlight-strength-val" style="font-family:monospace">1</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
-        <input type="checkbox" id="clr-lab-shadow"> Shadow lift (L channel — brightens dark areas)
-      </label>
-      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Shadow strength
-        <input type="range" id="clr-lab-shadow-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-shadow-strength-val').textContent=this.value">
-        <span id="clr-lab-shadow-strength-val" style="font-family:monospace">1</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
-        <input type="checkbox" id="clr-lab-skin-tone" checked> Portrait skin tones (auto when people detected — warm shadows, preserve depth; not frame orientation)
-      </label>
-      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Skin tone strength
-        <input type="range" id="clr-lab-skin-tone-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-skin-tone-strength-val').textContent=this.value">
-        <span id="clr-lab-skin-tone-strength-val" style="font-family:monospace">1</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
-        <input type="checkbox" id="clr-lab-ink-affinity" checked> Ink affinity (nudge hues toward nearest P2 ink before dither)
-      </label>
-      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Ink affinity strength
-        <input type="range" id="clr-lab-ink-affinity-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-ink-affinity-strength-val').textContent=this.value">
-        <span id="clr-lab-ink-affinity-strength-val" style="font-family:monospace">1</span>
-      </label>
-      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Ink affinity keeps lightness similar but pulls a*/b* toward the calibrated ink that will carry each region, so Stucki has less impossible color error. Re-send test images after saving.</p>
-      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
-        <input type="checkbox" id="clr-lab-ink-affinity-mix"> Stucki 2×2 mix affinity (nudge toward nearest four-ink average — ~126 mixtures from 6 primaries)
-      </label>
-      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Mix affinity strength
-        <input type="range" id="clr-lab-ink-affinity-mix-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-ink-affinity-mix-strength-val').textContent=this.value">
-        <span id="clr-lab-ink-affinity-mix-strength-val" style="font-family:monospace">1</span>
-      </label>
-      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Runs after primary ink affinity. Targets colors Stucki can actually render in a 2×2 tile (e.g. brown from black+red+yellow), not just the six primaries.</p>
-      <label style="display:flex;align-items:center;gap:.5rem;margin:.5rem 0;font-size:.9rem">
-        <input type="checkbox" id="clr-lab-ink-affinity-ray"> High-DPI ray affinity (7″ GooDisplay — K/W carry lightness)
-      </label>
-      <label style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Ray affinity strength
-        <input type="range" id="clr-lab-ink-affinity-ray-strength" min="0" max="3" step="0.1" value="1" style="width:100%;margin-top:.35rem" oninput="document.getElementById('clr-lab-ink-affinity-ray-strength-val').textContent=this.value">
-        <span id="clr-lab-ink-affinity-ray-strength-val" style="font-family:monospace">1</span>
-      </label>
-      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">For the 7.09″ 282&nbsp;PPI panel. Labels face vs sky fields first (same peach in a cloud is not a forehead). Histograms skin L* only on faces, keeps the modal band, and merges the highlight tail into it. Pale skies keep their lightness and get a blue dust. Replaces primary and 2×2 mix affinity while on. Leave off on 13″.</p>
-      <div class="section-label">InkJoy refresh wipe</div>
-      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Transition pattern
-        <select id="clr-inkjoy-wipe" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px" onchange="onInkJoyWipePatternChange()"></select>
-      </label>
-      <label id="clr-inkjoy-uniform-wrap" style="display:block;margin:.35rem 0 .75rem;font-size:.85rem">Uniform lo level (step 0 = lo 0 … step 30 = lo 248)
-        <input type="range" id="clr-inkjoy-uniform-step" min="0" max="30" step="1" value="30" style="width:100%;margin-top:.35rem" oninput="updateInkJoyUniformLoLabel()">
-        <span id="clr-inkjoy-uniform-step-val" style="font-family:monospace">step 30 · lo 248</span>
-      </label>
-      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">28.5″ transition
-        <select id="clr-inkjoy28-wipe" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
-      </label>
-      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">The 28.5″ stores a refresh step (1–31) per pixel. <strong>Luminance</strong> refreshes each pixel by its brightness in the photo, black first and white last. <strong>Captured</strong> transitions are copied from artwork the InkJoy cloud has sent; <strong>Random</strong> picks one each send.</p>
-      <p style="font-size:.8rem;color:#888;margin:0 0 .75rem;line-height:1.4">Uniform lo fills the whole frame with one sub-tone step (31 levels). Lower lo may read brighter if the panel runs more refresh phases — try step 0 vs 30 on the same photo. Spatial patterns (box, clock, …) also vary lo by region. <strong>Random</strong> picks a bundled pattern each send.</p>
-      <div class="section-label">InkJoy dither palette (P2)</div>
-      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
-        <select id="clr-inkjoy-display-preset" onchange="onColorPresetChange('inkjoy_display')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
-      </label>
-      <div id="clr-inkjoy-display-swatches"></div>
-      <div class="section-label">Samsung dither palette (P2)</div>
-      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
-        <select id="clr-samsung-display-preset" onchange="onColorPresetChange('samsung_display')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
-      </label>
-      <div id="clr-samsung-display-swatches"></div>
-      <div class="section-label">Samsung send palette (P1 PNG)</div>
-      <label style="display:block;margin:.5rem 0 .35rem;font-size:.85rem">Preset
-        <select id="clr-samsung-send-preset" onchange="onColorPresetChange('samsung_send')" style="width:100%;padding:.35rem;margin-top:.25rem;border:1px solid #ccc;border-radius:4px"></select>
-      </label>
-      <div id="clr-samsung-send-swatches"></div>
-      <button class="btn btn-primary btn-sm" style="margin-top:1rem" onclick="saveColorConfig()">Save color settings</button>
-      <div id="clr-save-status" style="font-size:.85rem;color:#666;margin-top:.5rem"></div>
-      <p style="font-size:.8rem;color:#888;margin-top:.75rem">Saving clears the converted .bin cache. Re-send album images to frames to apply new palettes.</p>
     </div>
   </div>
   <div id="tab-inkjoy" style="display:none">

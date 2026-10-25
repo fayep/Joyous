@@ -95,13 +95,13 @@ func TestServeInkJoy28IJI3OverlayLandscapeLandsOnLandscapeBottom(t *testing.T) {
 		DisplayDate: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC),
 		Temperature: OverlayTemperature{Current: 20, Min: 14, Max: 22},
 	}
-	plain, err := store.ServeInkJoy28IJI3(id, false, nil)
+	plain, err := store.ServeInkJoy28IJI3(id, false, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	over, err := store.ServeInkJoy28IJI3Overlay(id, false, func(img image.Image, flatRGB bool) (image.Image, error) {
 		return drawWeatherOverlayScaled(img, cfg, weather, "", true, ij28OverlayScale), nil
-	}, nil)
+	}, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

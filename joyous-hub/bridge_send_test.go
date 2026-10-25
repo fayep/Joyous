@@ -57,9 +57,6 @@ func TestBridgeEncodeInkJoyOverlay(t *testing.T) {
 		case "/images/" + imageID + "/original":
 			w.Header().Set("Content-Type", "image/png")
 			w.Write(pngBuf.Bytes())
-		case "/api/color":
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(ColorConfig{})
 		case "/api/overlay":
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(cfg)
@@ -74,10 +71,8 @@ func TestBridgeEncodeInkJoyOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.SetColorStore(NewColorStore(dir))
 	encodeHub := &Hub{
 		images:  store,
-		color:   NewColorStore(dir),
 		overlay: NewOverlayStore(dir),
 	}
 

@@ -109,13 +109,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("image store: %v", err)
 	}
-	colorStore := NewColorStore(*dataDir)
-	imageStore.SetColorStore(colorStore)
 	overlayStore := NewOverlayStore(*dataDir)
 	displayPreview := NewDisplayPreviewStore(*dataDir)
 	encodeHub := &Hub{
 		images:     imageStore,
-		color:      colorStore,
 		overlay:    overlayStore,
 		serverAddr: hubPlayAddr,
 		hubIP:      hubPlayIP,
@@ -148,10 +145,10 @@ func main() {
 	deviceEvents.srv = srv
 	inkjoyRetry := NewInkJoySendRetry(&Hub{
 		devices: devices, sendDelivery: sendDelivery, publisher: srvPublisher{srv: srv},
-		// overlay/images/color are wired so a hub-mode retry (r.resend unset)
+		// overlay/images are wired so a hub-mode retry (r.resend unset)
 		// can still rebuild an overlay-enabled send body — buildSendImageBody
 		// hard-errors on a nil h.overlay when the entry's overlayToken is set.
-		overlay: overlayStore, images: imageStore, color: colorStore,
+		overlay: overlayStore, images: imageStore,
 	})
 	deviceEvents.retry = inkjoyRetry
 	srv.SetInjectedPlayCheck(isInjectedPlay, func(ackMsgid string, result int) {

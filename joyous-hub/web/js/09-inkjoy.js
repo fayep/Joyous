@@ -240,6 +240,7 @@ function deviceCardHTML(d){
     '<button class="btn btn-sm btn-primary" onclick="sendToFrame(\''+d.id+'\')">Send image</button> '+
     '<button class="btn btn-sm" onclick="toggleSchedule(\''+d.id+'\')">Scheduled sends</button> '+
     colorCalBtn+
+    ' <span id="trans-'+d.id+'"></span>'+
     '</div>'+
     '<div id="sched-'+d.id+'" style="display:none;margin-top:.6rem;padding-top:.6rem;border-top:1px solid #eee"></div>'+
     '<div id="colorcal-'+d.id+'" style="display:none;margin-top:.6rem;padding-top:.6rem;border-top:1px solid #eee"></div>'+
@@ -281,9 +282,58 @@ function applyDevicesSnapshot(newDevices){
   el.querySelectorAll('.card[data-device-id]').forEach(card=>{
     if(!seen.has(card.dataset.deviceId)) card.remove();
   });
+  fillTransitionPickers();
   // Album sends update last_image_id here; refresh Samsung "currently displayed"
   // from hub PNG etag without waiting for the 60s tab poll.
   if(activeTab==='samsung') loadSamsungFrames();
+}
+
+// ── Refresh transition (10" and 28.5" InkJoys only) ─────────────────────────
+// /api/transitions says which devices have a transition and the choices for
+// each panel kind; refetched when a device without a picker turns up.
+let transitionInfo=null, transitionFetch=null;
+
+async function fillTransitionPickers(){
+  const pending=devices.filter(d=>{
+    const el=document.getElementById('trans-'+d.id);
+    return el&&!el.dataset.filled;
+  });
+  if(!pending.length)return;
+  if(!transitionInfo||pending.some(d=>!(d.id in transitionInfo.seen))){
+    transitionFetch=transitionFetch||fetch('/api/transitions').then(r=>r.json()).then(j=>{
+      transitionInfo={choices:j.choices||{},kinds:j.devices||{},seen:Object.fromEntries(devices.map(d=>[d.id,true]))};
+    }).finally(()=>{transitionFetch=null;});
+    try{ await transitionFetch; }catch(e){ return; }
+  }
+  pending.forEach(d=>{
+    const el=document.getElementById('trans-'+d.id);
+    if(!el)return;
+    el.dataset.filled='1';
+    const choices=transitionInfo.choices[transitionInfo.kinds[d.id]];
+    if(!choices||!choices.length)return;
+    const cur=d.transition||choices[0].id;
+    el.innerHTML='<label style="font-size:.85rem;color:#555">Transition '+
+      '<select onchange="saveTransition(\''+d.id+'\',this)" style="padding:.2rem;border:1px solid #ccc;border-radius:4px">'+
+      choices.map(c=>'<option value="'+escHtml(c.id)+'"'+(c.id===cur?' selected':'')+'>'+escHtml(c.label)+'</option>').join('')+
+      '</select></label>';
+  });
+}
+
+async function saveTransition(deviceId, sel){
+  sel.disabled=true;
+  try{
+    const r=await fetch('/api/devices/'+encodeURIComponent(deviceId),{
+      method:'PATCH',headers:sessionHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({transition:sel.value})
+    });
+    if(!r.ok) throw new Error(await r.text());
+    const d=devices.find(x=>x.id===deviceId);
+    if(d) d.transition=sel.value;
+  }catch(e){
+    alert('Transition not saved: '+e.message);
+  }finally{
+    sel.disabled=false;
+  }
 }
 
 async function loadDevicesInner(){

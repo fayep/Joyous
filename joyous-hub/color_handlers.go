@@ -2,49 +2,47 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 )
 
-func (h *Hub) handleColorGet(w http.ResponseWriter, r *http.Request) {
-	if h.color == nil {
-		http.Error(w, "color not configured", http.StatusInternalServerError)
-		return
+// handleTransitions serves GET /api/transitions for the device settings: the
+// refresh transitions each panel kind supports ("choices"), and each device's
+// kind ("devices", only devices that have one; see Device.TransitionKind).
+func (h *Hub) handleTransitions(w http.ResponseWriter, r *http.Request) {
+	kinds := map[string]string{}
+	for _, d := range h.devices.List() {
+		if k := d.TransitionKind(); k != "" {
+			kinds[d.ID] = k
+		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(h.color.Config())
-}
-
-func (h *Hub) handleColorPut(w http.ResponseWriter, r *http.Request) {
-	if h.color == nil {
-		http.Error(w, "color not configured", http.StatusInternalServerError)
-		return
-	}
-	var cfg ColorConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	if err := h.color.Save(cfg); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if h.images != nil {
-		_ = h.images.ClearBinCache()
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"ok": true})
-}
-
-func (h *Hub) handleColorPresets(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"presets":        colorPresetCatalog(),
-		"names":          colorNames,
-		"wipes":          inkJoyWipeChoices(),
-		"wipes28":        inkJoy28WipeChoices(h.imagesDataDir()),
-		"uniform_levels": inkJoyWipeUniformLevels(),
+		"choices": map[string][]WipeChoice{
+			TransitionKindInkJoy:   inkJoyWipeChoices(),
+			TransitionKindInkJoy28: inkJoy28WipeChoices(h.imagesDataDir()),
+		},
+		"devices": kinds,
 	})
 }
+
+// validateTransition checks a transition against the device's panel kind and
+// returns it normalized; "" (the standard transition) is always valid.
+func validateTransition(dev *Device, transition string) (string, error) {
+	kind := dev.TransitionKind()
+	if kind == "" {
+		return "", errNoTransition
+	}
+	if transition == "" {
+		return "", nil
+	}
+	if kind == TransitionKindInkJoy28 {
+		return normalizeInkJoy28Wipe(transition), validateInkJoy28Wipe(transition)
+	}
+	return normalizeInkJoyWipe(transition), validateInkJoyWipe(transition)
+}
+
+var errNoTransition = errors.New("this panel has no refresh transition")
 
 // imagesDataDir is the hub data dir ("" without an image store).
 func (h *Hub) imagesDataDir() string {
@@ -54,12 +52,7 @@ func (h *Hub) imagesDataDir() string {
 	return h.images.dir
 }
 
-func (h *Hub) colorPipeline() ColorPipeline {
-	if h.color != nil {
-		return h.color.Pipeline()
-	}
-	return defaultColorPipeline()
-}
+func (h *Hub) colorPipeline() ColorPipeline { return standardColorPipeline() }
 
 func (h *Hub) colorPipelineForImage(imageID string) ColorPipeline {
 	if h.images != nil {

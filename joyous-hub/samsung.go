@@ -29,28 +29,27 @@ const defaultPollInterval = 60
 
 // SamsungFrameConfig is persisted per frame under {data-dir}/samsung/{frameId}.json.
 type SamsungFrameConfig struct {
-	FrameID               string `json:"frame_id"`
-	Name                  string `json:"name,omitempty"`
-	WifiMAC               string `json:"wifi_mac,omitempty"` // WiFi MAC for Samsung magic wake (AA:BB:…)
-	PollIntervalMinutes   int    `json:"poll_interval_minutes"`
-	InactiveBegin         string `json:"inactive_begin"` // "HH:MM" or empty
-	InactiveEnd           string `json:"inactive_end"`     // "HH:MM" or empty
-	CropFormat            string `json:"crop_format,omitempty"`
-	DisplayWidth          int    `json:"display_width,omitempty"`
-	DisplayHeight         int    `json:"display_height,omitempty"`
-	AutoSleepAfterPush    *bool  `json:"auto_sleep_after_push,omitempty"`
-	SleepAfterPushSeconds int    `json:"sleep_after_push_seconds,omitempty"`
-	OvernightDeepSleep    *bool  `json:"overnight_deep_sleep,omitempty"`
-	DeepSleepActive       bool   `json:"deep_sleep_active,omitempty"`
-	OvernightDeepSleepAt  time.Time `json:"overnight_deep_sleep_at,omitempty"`
-	DailyRefreshTime      string `json:"daily_refresh_time,omitempty"` // HH:MM on frame
+	FrameID                  string    `json:"frame_id"`
+	Name                     string    `json:"name,omitempty"`
+	WifiMAC                  string    `json:"wifi_mac,omitempty"` // WiFi MAC for Samsung magic wake (AA:BB:…)
+	PollIntervalMinutes      int       `json:"poll_interval_minutes"`
+	InactiveBegin            string    `json:"inactive_begin"` // "HH:MM" or empty
+	InactiveEnd              string    `json:"inactive_end"`   // "HH:MM" or empty
+	CropFormat               string    `json:"crop_format,omitempty"`
+	DisplayWidth             int       `json:"display_width,omitempty"`
+	DisplayHeight            int       `json:"display_height,omitempty"`
+	AutoSleepAfterPush       *bool     `json:"auto_sleep_after_push,omitempty"`
+	SleepAfterPushSeconds    int       `json:"sleep_after_push_seconds,omitempty"`
+	OvernightDeepSleep       *bool     `json:"overnight_deep_sleep,omitempty"`
+	DeepSleepActive          bool      `json:"deep_sleep_active,omitempty"`
+	OvernightDeepSleepAt     time.Time `json:"overnight_deep_sleep_at,omitempty"`
+	DailyRefreshTime         string    `json:"daily_refresh_time,omitempty"` // HH:MM on frame
 	MorningStandbyRestoredAt time.Time `json:"morning_standby_restored_at,omitempty"`
 }
 
 // SamsungStore manages Samsung EM32DX frame images and config on disk.
 type SamsungStore struct {
-	dir    string
-	colors *ColorStore
+	dir string
 }
 
 // NewSamsungStore creates a SamsungStore rooted at dir/samsung.
@@ -58,14 +57,7 @@ func NewSamsungStore(dir string) *SamsungStore {
 	return &SamsungStore{dir: filepath.Join(dir, "samsung")}
 }
 
-func (s *SamsungStore) SetColorStore(c *ColorStore) { s.colors = c }
-
-func (s *SamsungStore) colorPipeline() ColorPipeline {
-	if s.colors != nil {
-		return s.colors.Pipeline()
-	}
-	return defaultColorPipeline()
-}
+func (s *SamsungStore) colorPipeline() ColorPipeline { return standardColorPipeline() }
 
 func (s *SamsungStore) ensureDir() error {
 	return os.MkdirAll(s.dir, 0755)
@@ -1222,34 +1214,34 @@ func (h *Hub) handleSamsungList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type frameInfo struct {
-		ID                    string    `json:"id"`
-		Name                  string    `json:"name,omitempty"`
-		DeviceID              string    `json:"device_id,omitempty"`
-		IP                    string    `json:"ip,omitempty"`
-		Connected             bool      `json:"connected"`
-		Battery               int       `json:"battery,omitempty"`
-		PowerSource           string    `json:"power_source,omitempty"`
-		BatterySamples        int       `json:"battery_samples,omitempty"`
-		BatteryDelta          *int      `json:"battery_delta,omitempty"`
-		BatteryPushDelta      *int      `json:"battery_push_delta,omitempty"`
-		BatteryAt             time.Time `json:"battery_at,omitempty"`
+		ID                    string                 `json:"id"`
+		Name                  string                 `json:"name,omitempty"`
+		DeviceID              string                 `json:"device_id,omitempty"`
+		IP                    string                 `json:"ip,omitempty"`
+		Connected             bool                   `json:"connected"`
+		Battery               int                    `json:"battery,omitempty"`
+		PowerSource           string                 `json:"power_source,omitempty"`
+		BatterySamples        int                    `json:"battery_samples,omitempty"`
+		BatteryDelta          *int                   `json:"battery_delta,omitempty"`
+		BatteryPushDelta      *int                   `json:"battery_push_delta,omitempty"`
+		BatteryAt             time.Time              `json:"battery_at,omitempty"`
 		BatteryHistory        []SamsungBatterySample `json:"battery_history,omitempty"`
-		LastSeen              time.Time `json:"last_seen,omitempty"`
-		LastAction            string    `json:"last_action,omitempty"`
-		HasImage              bool      `json:"has_image"`
-		Locked                bool      `json:"locked"`
-		ETag                  string    `json:"etag,omitempty"`
-		WifiMAC               string    `json:"wifi_mac,omitempty"`
-		PollIntervalMinutes   int       `json:"poll_interval_minutes"`
-		InactiveBegin         string    `json:"inactive_begin"`
-		InactiveEnd           string    `json:"inactive_end"`
-		CropFormat            string    `json:"crop_format"`
-		DisplayWidth          int       `json:"display_width"`
-		DisplayHeight         int       `json:"display_height"`
-		AutoSleepAfterPush    bool      `json:"auto_sleep_after_push"`
-		SleepAfterPushSeconds int       `json:"sleep_after_push_seconds"`
-		OvernightDeepSleep    bool      `json:"overnight_deep_sleep"`
-		DeepSleepActive       bool      `json:"deep_sleep_active"`
+		LastSeen              time.Time              `json:"last_seen,omitempty"`
+		LastAction            string                 `json:"last_action,omitempty"`
+		HasImage              bool                   `json:"has_image"`
+		Locked                bool                   `json:"locked"`
+		ETag                  string                 `json:"etag,omitempty"`
+		WifiMAC               string                 `json:"wifi_mac,omitempty"`
+		PollIntervalMinutes   int                    `json:"poll_interval_minutes"`
+		InactiveBegin         string                 `json:"inactive_begin"`
+		InactiveEnd           string                 `json:"inactive_end"`
+		CropFormat            string                 `json:"crop_format"`
+		DisplayWidth          int                    `json:"display_width"`
+		DisplayHeight         int                    `json:"display_height"`
+		AutoSleepAfterPush    bool                   `json:"auto_sleep_after_push"`
+		SleepAfterPushSeconds int                    `json:"sleep_after_push_seconds"`
+		OvernightDeepSleep    bool                   `json:"overnight_deep_sleep"`
+		DeepSleepActive       bool                   `json:"deep_sleep_active"`
 	}
 	devByFrame := make(map[string]Device)
 	for _, d := range h.devices.List() {

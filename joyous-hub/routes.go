@@ -90,9 +90,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub) {
 	mux.HandleFunc("GET /api/overlay/preview", hub.handleOverlayPreview)
 	mux.HandleFunc("POST /api/overlay/preview", hub.handleOverlayPreview)
 	mux.HandleFunc("POST /api/overlay/metrics", hub.handleOverlayMetrics)
-	mux.HandleFunc("GET /api/color", hub.handleColorGet)
-	mux.HandleFunc("PUT /api/color", hub.handleColorPut)
-	mux.HandleFunc("GET /api/color/presets", hub.handleColorPresets)
+	mux.HandleFunc("GET /api/transitions", hub.handleTransitions)
 	mux.HandleFunc("GET /api/calibration/{kind}", func(w http.ResponseWriter, r *http.Request) {
 		hub.handleCalibrationPNG(w, r, r.PathValue("kind"))
 	})

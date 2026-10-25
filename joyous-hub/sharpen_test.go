@@ -3,8 +3,6 @@ package main
 import (
 	"image"
 	"image/color"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -73,7 +71,7 @@ func TestSharpenLIgnoresDetailUnderThreshold(t *testing.T) {
 }
 
 func TestShouldSharpen(t *testing.T) {
-	pipe := defaultColorPipeline()
+	pipe := standardColorPipeline()
 	photo := sharpenTestEdge(64, 16)
 	if !shouldSharpen(pipe, photo, false) {
 		t.Fatal("default pipeline should sharpen a photo")
@@ -91,33 +89,6 @@ func TestShouldSharpen(t *testing.T) {
 	pipe.SharpenEnabled = false
 	if shouldSharpen(pipe, photo, false) {
 		t.Error("disabled setting must not sharpen")
-	}
-}
-
-func TestSharpenConfigDefaultsAndPersistence(t *testing.T) {
-	dir := t.TempDir()
-	// A color.json from before the setting existed gets sharpening on.
-	if err := os.WriteFile(filepath.Join(dir, colorConfigFile), []byte(`{"lab_chroma_enabled":false}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-	got := NewColorStore(dir).Config()
-	if !got.SharpenEnabled || got.SharpenAmount != defaultSharpenAmount || got.SharpenRadius != defaultSharpenRadius {
-		t.Fatalf("legacy config: %+v", got)
-	}
-	store := NewColorStore(dir)
-	cfg := store.Config()
-	cfg.SharpenEnabled = false
-	cfg.SharpenAmount = 1.2
-	if err := store.Save(cfg); err != nil {
-		t.Fatal(err)
-	}
-	got = NewColorStore(dir).Config()
-	if got.SharpenEnabled || got.SharpenAmount != 1.2 {
-		t.Fatalf("reload: enabled=%v amount=%v", got.SharpenEnabled, got.SharpenAmount)
-	}
-	cfg.SharpenRadius = 5
-	if err := store.Save(cfg); err == nil {
-		t.Error("radius 5 should be rejected")
 	}
 }
 

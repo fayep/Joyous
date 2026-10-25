@@ -17,11 +17,15 @@ func TestBridgeSyncKeepsHubOwnedFields(t *testing.T) {
 	override := []PaletteRGB{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {1, 1, 1}, {2, 2, 2}, {3, 3, 3}}
 	reg.SetColorOverride("D0CF13EF4080", override)
 	reg.SetLastImage("D0CF13EF4080", "img1", "tok")
+	reg.SetTransition("D0CF13EF4080", WipeRandom)
 
 	reg.SyncBridgeDevices(protocol.KindInkJoy, snap)
 	d, _ := reg.Get("D0CF13EF4080")
 	if len(d.ColorOverride) != 6 || d.ColorOverride[2] != (PaletteRGB{7, 8, 9}) || d.LastImageID != "img1" || d.LastOverlayHash != "tok" {
 		t.Fatalf("after sync: override %v, last image %q/%q", d.ColorOverride, d.LastImageID, d.LastOverlayHash)
+	}
+	if d.Transition != WipeRandom {
+		t.Fatalf("after sync: transition %q", d.Transition)
 	}
 	// A frame dropped from the snapshot is still removed.
 	reg.SyncBridgeDevices(protocol.KindInkJoy, nil)

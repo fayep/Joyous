@@ -34,7 +34,7 @@ func TestOverlayEncodePinsWhiteAfterDR(t *testing.T) {
 		return drawWeatherOverlay(img, cfg, weather, "", false), nil
 	}
 
-	pipe := ResolveColorPipeline(defaultColorConfig())
+	pipe := standardColorPipeline()
 	pipe.LABDynamicRangeEnabled = true
 	pipe.LABDynamicRangeStops = 4.5
 	pipe.LABInkAffinityEnabled = true
@@ -85,7 +85,6 @@ func TestOverlayEncodePinsWhiteAfterDR(t *testing.T) {
 func TestOverlayEncodeSkipsRandomWipeReapply(t *testing.T) {
 	dir := t.TempDir()
 	store := NewImageStore(dir)
-	store.SetColorStore(NewColorStore(dir))
 
 	id, err := store.Store(bytesReader(makeTestPNG()), "test.png")
 	if err != nil {

@@ -77,7 +77,7 @@ function renderColorCal(deviceId){
   const palette=usingOverride?st.override:(st?st.bridgeDefault:[]);
   el.innerHTML=
     '<div style="color:#666;font-size:.85rem;margin-bottom:.4rem">'+
-      (usingOverride?'Custom calibration for this panel.':'Using the bridge default palette (Color tab).')+
+      (usingOverride?'Custom calibration for this panel.':'Using the standard palette for this panel.')+
     '</div>'+
     colorCalRowsHTML(deviceId, palette)+
     '<div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.4rem">'+
