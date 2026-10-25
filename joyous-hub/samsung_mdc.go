@@ -1099,10 +1099,10 @@ func sendWoL(mac, frameIP string) {
 		return
 	}
 	defer conn.Close()
-	if f, err := conn.File(); err == nil {
-		fd := int(f.Fd())
-		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
-		_ = f.Close()
+	if rc, err := conn.SyscallConn(); err == nil {
+		_ = rc.Control(func(raw uintptr) {
+			_ = syscall.SetsockoptInt(sockFD(raw), syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
+		})
 	}
 	if _, err := conn.WriteToUDP(packet, addr); err != nil {
 		logOutbound("wol fail mac=%s err=%v", mac, err)

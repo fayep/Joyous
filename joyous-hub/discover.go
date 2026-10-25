@@ -431,15 +431,16 @@ func listenSSDPSocket() (*net.UDPConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	if f, err := conn.File(); err == nil {
-		fd := int(f.Fd())
-		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
-		_ = syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_TTL, 4)
-		_ = syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_LOOP, 1)
-		mreq := &syscall.IPMreq{}
-		copy(mreq.Multiaddr[:], net.IPv4(239, 255, 255, 250).To4())
-		_ = syscall.SetsockoptIPMreq(fd, syscall.IPPROTO_IP, syscall.IP_ADD_MEMBERSHIP, mreq)
-		_ = f.Close()
+	if rc, err := conn.SyscallConn(); err == nil {
+		_ = rc.Control(func(raw uintptr) {
+			fd := sockFD(raw)
+			_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+			_ = syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_TTL, 4)
+			_ = syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_LOOP, 1)
+			mreq := &syscall.IPMreq{}
+			copy(mreq.Multiaddr[:], net.IPv4(239, 255, 255, 250).To4())
+			_ = syscall.SetsockoptIPMreq(fd, syscall.IPPROTO_IP, syscall.IP_ADD_MEMBERSHIP, mreq)
+		})
 	}
 	return conn, nil
 }
