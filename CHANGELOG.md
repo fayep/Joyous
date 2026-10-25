@@ -6,11 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+The first public release: downloadable builds for macOS, Linux and Windows, under the AGPL v3.
+
 ### Added
 
-- **Samsung battery history** — pre-sleep readings during normal push cycles are appended to `samsung_battery_history.json` (up to 365 samples per frame). The UI shows level, delta since last push, and recent readings without wake-only polls.
+- **Releases** — native builds of the hub and bridges for macOS (Apple silicon), Linux (amd64, arm64) and Windows (amd64), each with HEIC support, plus a multi-arch Docker image (`ghcr.io/fayep/joyous-hub`). See `docs/frame-setup.md` for connecting frames.
+- **Vendor bridges** — the hub runs alongside `inkjoy-bridge`, `samsung-bridge` and `nixplay-bridge`, so you only run the ones for the frames you have.
+- **Nixplay** — upload to Nixplay galleries. The password lives in the system credential store (`nixplay-bridge -set-password`).
+- **InkJoy 28.5"** (8 inks, IJI3) and **custom-firmware boards** (Seeed XIAO EE02, GooDisplay ESP32-133C02) alongside the InkJoy 10".
+- **Album** — SQLite catalog, tags and smart albums, per-aspect crops, captions, scheduled sends, live updates.
+- **Overlays** — weather and photo-name overlays drawn onto sent photos.
+- **Per-device colour calibration** and **per-device refresh transitions** (InkJoy 10" and 28.5").
+- **InkJoy cloud relay** over MQTTS to the cloud's current hosts, including waveform (`wf_update`) pass-through.
+
+### Changed
+
+- **One standard render pipeline**:
+  - sharpening on lightness;
+  - Catmull-Rom scaling;
+  - a dynamic-range fit to each panel's black-to-white range;
+  - ink affinity;
+  - blue-noise Stucki dithering against the panel's measured inks.
+
+  The Color tab of experimental switches is gone.
+- **Panel white is neutral** — after the dynamic-range fit, the panel's own white and black count as neutral, so bluish whites (Samsung) no longer get yellow dither.
+- HEIC decoding no longer needs libheif.
 
 ### Fixed
+
+- A crash in one bridge command (e.g. a calibration chart for a native-portrait frame) no longer takes down the whole bridge.
+
+### Earlier changes
+
+- **Samsung battery history** — pre-sleep readings during normal push cycles are appended to `samsung_battery_history.json` (up to 365 samples per frame). The UI shows level, delta since last push, and recent readings without wake-only polls.
 
 - **UI polling** — removed global Samsung MDC poll and 5s device refresh on every tab; Album does not query frames. Registry refresh is tab-scoped; Send from Album loads the device list once on click.
 - **Samsung send when remote wake fails** — after WoL/magic timeout, hub polls MDC every 5s for up to 5 minutes so a manual power-button wake can complete the push; UI prompts “Press power button on frame…” after 20s.

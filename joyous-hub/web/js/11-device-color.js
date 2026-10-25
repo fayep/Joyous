@@ -83,7 +83,7 @@ function renderColorCal(deviceId){
     '<div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.4rem">'+
       '<button type="button" class="btn btn-sm" onclick="sendColorCalChart(\''+deviceId+'\')">Send calibration image</button>'+
       '<button type="button" class="btn btn-sm btn-primary" onclick="saveColorCal(\''+deviceId+'\')">Save</button>'+
-      '<button type="button" class="btn btn-sm" onclick="resetColorCal(\''+deviceId+'\')"'+(usingOverride?'':' disabled')+'>Reset to bridge default</button>'+
+      '<button type="button" class="btn btn-sm" onclick="resetColorCal(\''+deviceId+'\')"'+(usingOverride?'':' disabled')+'>Reset to standard</button>'+
     '</div>'+
     '<span id="colorcal-status-'+deviceId+'" style="display:block;margin-top:.4rem;color:#666;font-size:.85rem"></span>';
 }
@@ -146,7 +146,7 @@ async function resetColorCal(deviceId){
     if(!r.ok) throw new Error(await r.text());
     await loadColorCal(deviceId);
     const st2=document.getElementById('colorcal-status-'+deviceId);
-    if(st2) st2.textContent='✓ Reset to bridge default.';
+    if(st2) st2.textContent='✓ Reset to the standard palette.';
   }catch(e){
     if(st) st.textContent='Reset failed: '+e.message;
   }

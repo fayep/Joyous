@@ -61,6 +61,12 @@ docker run -d --network host -v /path/to/library:/data \
 
 ## Windows
 
-Copy `config.yaml.example` to `%AppData%\Joyous\config.yaml` and edit it. Then run `bin\joyous-hub.exe` and the bridges you need.
+Copy `config.yaml.example` to `%AppData%\Joyous\config.yaml` and edit `data_dir` and `server_addr`. Then run `bin\joyous-hub.exe` and the bridges you need.
 
 Allow them through Windows Firewall when asked: frames connect in to MQTT and HTTP.
+
+## Next
+
+Open `http://<host>:18080`, then connect your frames: see the frame setup guide at https://github.com/fayep/Joyous/blob/main/docs/frame-setup.md.
+
+Joyous is free software under the GNU AGPL v3 (`LICENSE`). Bundled third-party components and their licences are listed in `THIRD_PARTY_NOTICES.md`.

@@ -1,7 +1,8 @@
 # Joyous Hub configuration
 #
-# macOS:  ~/Library/Application Support/Joyous/config.yaml
-# Linux:  ~/.config/Joyous/config.yaml  ($XDG_CONFIG_HOME/Joyous/config.yaml)
+# macOS:   ~/Library/Application Support/Joyous/config.yaml
+# Linux:   ~/.config/Joyous/config.yaml  ($XDG_CONFIG_HOME/Joyous/config.yaml)
+# Windows: %AppData%\Joyous\config.yaml
 #
 # InkJoy bridge settings (upstream MQTT, allow lists, frame broker) live in
 # inkjoy-config.yaml in the same directory.
@@ -12,10 +13,14 @@ listen_http: ":18080"
 # Device registry, uploaded images, Samsung frame configs
 data_dir: "./data"
 
-# Hostname:port shown to Samsung frames for image URLs
+# host:port that frames use to download their images: this host and the
+# listen_http port, e.g. "joyous.local:18080". Set it; the host part is
+# swapped for this machine's LAN address where frames can't resolve names,
+# but an empty value falls back to port 8080.
 server_addr: ""
 
-# Comma-separated LAN prefixes for Samsung MDC discovery fallback
+# Comma-separated LANs (CIDR, e.g. "192.168.1.0/24") searched for Samsung
+# frames when SSDP discovery is quiet; also set it in samsung-config.yaml.
 discover_subnets: ""
 
 # Optional directory for stdout.log / stderr.log (launchd uses its own paths)
