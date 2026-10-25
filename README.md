@@ -108,6 +108,10 @@ make build         # dev binary
 
 Docker: `joyous-hub/docker-compose.yml`. Cross-build targets: `linux-arm64`, `linux-arm`, `linux-mips` in the Makefile.
 
+### Releases
+
+Pushing a `v*` tag (e.g. `git tag v1.0.0 && git push origin v1.0.0`) runs `.github/workflows/release.yml`. It builds the hub and the three bridges natively for macOS (Apple silicon), Linux (amd64, arm64) and Windows (amd64), each with HEIC support. It publishes them as a GitHub release with `SHA256SUMS`, and pushes the multi-arch hub image to `ghcr.io/fayep/joyous-hub`. Each archive includes install notes (`joyous-hub/scripts/RELEASE-INSTALL.md`). To pack one platform locally, run `joyous-hub/scripts/package-release.sh <goos> <goarch> <version> <out-dir>`.
+
 Research notes: `research/firmware-notes.md`, `Samsung/README.md` (APK / MDC reference).
 
 ## Legacy InkJoy pipeline
