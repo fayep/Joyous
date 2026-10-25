@@ -21,6 +21,21 @@ export GOEXPERIMENT="${GOEXPERIMENT:-simd}"
 (
 	cd "$SRC_DIR"
 	LDFLAGS="-X joyous-hub/internal/linkmeta.Version=${JOYOUS_VERSION}"
+	if [[ "$CGO_ENABLED" == "1" ]]; then
+		case "$(go env GOOS)" in
+		windows)
+			# goheif's libde265 headers mark its API dllimport unless told the
+			# build is static; link MinGW's C++ runtime in so no DLLs ship.
+			export CGO_CFLAGS="${CGO_CFLAGS:-} -DLIBDE265_STATIC_BUILD"
+			export CGO_CXXFLAGS="${CGO_CXXFLAGS:-} -DLIBDE265_STATIC_BUILD"
+			LDFLAGS+=" -extldflags=-static"
+			;;
+		linux)
+			# Keep the binary off the host's libstdc++ version.
+			LDFLAGS+=" '-extldflags=-static-libstdc++ -static-libgcc'"
+			;;
+		esac
+	fi
 	if [[ -n "$BUILD_TAGS" ]]; then
 		go build -tags "$BUILD_TAGS" -ldflags "$LDFLAGS" -o "$OUT" .
 	else

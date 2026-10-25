@@ -29,8 +29,10 @@ jobs:
       matrix:
         include:
           - { os: macos-15, goos: darwin, goarch: arm64, test: true }
-          - { os: ubuntu-24.04, goos: linux, goarch: amd64, test: true }
-          - { os: ubuntu-24.04-arm, goos: linux, goarch: arm64 }
+          # 22.04's glibc 2.35 keeps the binaries running on Debian 12 and
+          # Raspberry Pi OS (bookworm).
+          - { os: ubuntu-22.04, goos: linux, goarch: amd64, test: true }
+          - { os: ubuntu-22.04-arm, goos: linux, goarch: arm64 }
           - { os: windows-2022, goos: windows, goarch: amd64 }
     runs-on: ${{ matrix.os }}
     defaults:
@@ -50,6 +52,16 @@ jobs:
         run: go test -short ./...
       - name: Package
         run: bash scripts/package-release.sh "${{ matrix.goos }}" "${{ matrix.goarch }}" "$VERSION" "$GITHUB_WORKSPACE/dist"
+      - name: Linked libraries
+        working-directory: dist
+        run: |
+          mkdir -p /tmp/peek && tar -xzf ./*.tar.gz -C /tmp/peek 2>/dev/null || unzip -qo ./*.zip -d /tmp/peek
+          f=$(find /tmp/peek -name 'joyous-hub*' -type f | head -1)
+          case "${{ matrix.goos }}" in
+            linux) ldd "$f" ;;
+            darwin) otool -L "$f" ;;
+            windows) objdump -p "$f" | grep "DLL Name" ;;
+          esac
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
