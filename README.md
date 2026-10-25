@@ -104,7 +104,6 @@ Credentials: `INKJOY_MQTT_USER` / `INKJOY_MQTT_PASSWORD` or `upstream_usr` / `up
 cd joyous-hub
 make test          # unit tests
 make build         # dev binary
-make build-release # needs JOYOUS_SEAL for signed link metadata
 ```
 
 Docker: `joyous-hub/docker-compose.yml`. Cross-build targets: `linux-arm64`, `linux-arm`, `linux-mips` in the Makefile.
