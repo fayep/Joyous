@@ -1,4 +1,4 @@
-.PHONY: build test darwin-arm64 linux-arm linux-mips clean install build-release ldflags-linkmeta build-inkjoy-bridge build-samsung-bridge build-nixplay-bridge build-all dither-swatches
+.PHONY: build test darwin-arm64 linux-arm linux-mips clean install build-inkjoy-bridge build-samsung-bridge build-nixplay-bridge build-all dither-swatches
 
 # A timestamp default (rather than a static "dev") ensures every build gets a distinct
 # linkmeta.Version even when the caller doesn't pass one — see ui_revision.go's uiRevision,
@@ -20,15 +20,6 @@ build-nixplay-bridge:
 	CGO_ENABLED=1 go build -tags nixplaybridge -ldflags "-X joyous-hub/internal/linkmeta.Version=$(VERSION)" -o nixplay-bridge .
 
 build-all: build build-inkjoy-bridge build-samsung-bridge build-nixplay-bridge
-
-# Release build with version-linked metadata (JOYOUS_SEAL must be set).
-build-release:
-	@test -n "$$JOYOUS_SEAL" || (echo "JOYOUS_SEAL required" >&2; exit 1)
-	CGO_ENABLED=1 go build -ldflags "$$(VERSION=$(VERSION) JOYOUS_SEAL=$$JOYOUS_SEAL go run ./cmd/embed-linkmeta)" -o joyous-hub .
-
-ldflags-linkmeta:
-	@test -n "$$JOYOUS_SEAL" || (echo "JOYOUS_SEAL required" >&2; exit 1)
-	@VERSION=$(VERSION) JOYOUS_SEAL=$$JOYOUS_SEAL go run ./cmd/embed-linkmeta
 
 # Native macOS build (requires: brew install libheif)
 darwin-arm64:

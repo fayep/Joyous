@@ -28,7 +28,6 @@ Samsung e-paper frames should see a large reduction in idle power draw after thi
 - **WiFi MAC field** — stored for wake-on-send and manual wake (from Samsung E-Paper app device info).
 - **InkJoy synthetic acks** — hub emits frame-shaped progress/result MQTT acks so the UI reflects push state when the real device acks are missing.
 - **Display preview** — last pushed image thumbnail on InkJoy and Samsung device rows.
-- **Version-sealed builds** — `linkmeta` embeds build metadata; `make build-release` with `JOYOUS_SEAL`.
 - **`wipe_petals`** transition mask for InkJoy wipes.
 
 ### Changed

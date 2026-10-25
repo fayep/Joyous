@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build joyous-hub (or a tagged bridge binary) with version / link metadata ldflags.
+# Build joyous-hub (or a tagged bridge binary) with its version linked in.
 # Usage: build-binary.sh <output-path> [build-tags]
-# Env: SRC_DIR (repo root), JOYOUS_VERSION, JOYOUS_SEAL or INKJOY_SIGN_KEY
+# Env: SRC_DIR (repo root), JOYOUS_VERSION
 set -euo pipefail
 
 OUT="${1:?output path required}"
@@ -22,12 +22,7 @@ fi
 
 (
 	cd "$SRC_DIR"
-	if [[ -n "${JOYOUS_SEAL:-${INKJOY_SIGN_KEY:-}}" ]]; then
-		SEAL="${JOYOUS_SEAL:-$INKJOY_SIGN_KEY}"
-		LDFLAGS="$(VERSION="$JOYOUS_VERSION" JOYOUS_SEAL="$SEAL" go run ./cmd/embed-linkmeta)"
-	else
-		LDFLAGS="-X joyous-hub/internal/linkmeta.Version=${JOYOUS_VERSION}"
-	fi
+	LDFLAGS="-X joyous-hub/internal/linkmeta.Version=${JOYOUS_VERSION}"
 	if [[ -n "$BUILD_TAGS" ]]; then
 		go build -tags "$BUILD_TAGS" -ldflags "$LDFLAGS" -o "$OUT" .
 	else
