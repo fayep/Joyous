@@ -73,7 +73,7 @@ func capturedWipe28Names(dataDir string) []string {
 
 func inkJoy28WipeChoices(dataDir string) []WipeChoice {
 	out := []WipeChoice{
-		{ID: Wipe28Luminance, Label: "Luminance (black first → white last)"},
+		{ID: Wipe28Luminance, Label: "Luminance (dark first → light last)"},
 		{ID: Wipe28Off, Label: "Off (no transition)"},
 		{ID: Wipe28Random, Label: "Random captured transition"},
 	}
